@@ -3,7 +3,7 @@ import queue
 import socket
 import threading
 
-from network.messages import HELLO, READY, PING
+from network.messages import HELLO, READY, PING, INPUT
 from network.protocol import encode_message, decode_message
 
 
@@ -20,10 +20,8 @@ class NetworkClient:
         self.sock.connect((host, port))
         self.running = True
 
-        # Envoi du HELLO
         self.send({"type": HELLO, "name": name})
 
-        # Démarrage du thread de lecture
         self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self.reader_thread.start()
 
@@ -81,7 +79,18 @@ class NetworkClient:
     def send_ping(self):
         self.send({"type": PING})
 
-    def poll_messages(self) -> list[dict]:
+    def send_input(self, up: bool, down: bool, left: bool, right: bool):
+        self.send(
+            {
+                "type": INPUT,
+                "up": up,
+                "down": down,
+                "left": left,
+                "right": right,
+            }
+        )
+
+    def poll_messages(self):
         messages = []
         while True:
             try:
@@ -129,7 +138,7 @@ def run_cli_client(host: str, port: int, name: str):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Arena Duel - client LAN (phase 1)")
+    parser = argparse.ArgumentParser(description="Arena Duel - client LAN")
     parser.add_argument("--host", required=True, help="IP du serveur")
     parser.add_argument("--port", type=int, default=5000, help="Port TCP")
     parser.add_argument("--name", required=True, help="Nom du joueur")
