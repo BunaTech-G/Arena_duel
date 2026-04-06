@@ -96,7 +96,6 @@ class LobbyState:
                 "handler": handler,
                 "input": {"up": False, "down": False, "left": False, "right": False},
             }
-            print(f"[server-debug] counts={self.get_team_counts()} -> assigned_team={assigned_team} for {name}")
             self.clients[client_id] = info
             return info
 
