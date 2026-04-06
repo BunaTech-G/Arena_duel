@@ -48,15 +48,15 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self.local_ip_label = ctk.CTkLabel(
             self,
-            text=f"IP locale détectée : {self.detected_local_ip}"
+            text=f"Mon IP locale : {self.detected_local_ip}"
         )
         self.local_ip_label.pack(pady=(0, 6))
 
         self.use_local_ip_btn = ctk.CTkButton(
             self,
-            text="Utiliser mon IP locale",
-            command=self._use_local_ip,
-            width=220
+            text="Utiliser 127.0.0.1 (même PC que le serveur)",
+            command=self._use_loopback_ip,
+            width=280
         )
         self.use_local_ip_btn.pack(pady=(0, 10))
 
@@ -86,19 +86,16 @@ class NetworkLobbyView(ctk.CTkToplevel):
     def _load_saved_server_ip(self) -> str:
         try:
             if not os.path.exists(self.config_file):
-                return self.detected_local_ip
+                return ""
 
             with open(self.config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
             ip = data.get("last_server_ip", "").strip()
-            if ip:
-                return ip
+            return ip
 
         except Exception:
-            pass
-
-        return self.detected_local_ip
+            return ""
 
     def _save_server_ip(self, ip: str):
         try:
@@ -107,9 +104,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
         except Exception:
             pass
 
-    def _use_local_ip(self):
+    def _use_loopback_ip(self):
         self.ip_entry.delete(0, "end")
-        self.ip_entry.insert(0, self.detected_local_ip)
+        self.ip_entry.insert(0, "127.0.0.1")
 
     # =========================
     # Connexion réseau
