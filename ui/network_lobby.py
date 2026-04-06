@@ -14,7 +14,7 @@ from network.net_utils import get_local_lan_ip
 
 
 class NetworkLobbyView(ctk.CTkToplevel):
-    def __init__(self, parent):
+    def __init__(self, parent, default_server_ip=None, host_mode=False):
         super().__init__(parent)
 
         self.title("Arena Duel - Lobby Réseau")
@@ -32,6 +32,11 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self.config_file = "client_lan_config.json"
         self.detected_local_ip = get_local_lan_ip()
+        self.default_server_ip = default_server_ip
+        self.host_mode = host_mode
+
+        self.config_file = "client_lan_config.json"
+        self.detected_local_ip = get_local_lan_ip()
 
         self.my_slot = None
         self.my_team = None
@@ -39,6 +44,10 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.ready_state = False
 
         self._build_ui()
+        if self.host_mode:
+            self.info_label.configure(
+                text="Serveur LAN démarré. Entrez votre pseudo puis cliquez sur Se connecter."
+            )
 
     def _build_ui(self):
         # === Connexion ===
@@ -46,7 +55,8 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.ip_entry.pack(pady=(10, 6))
 
         default_ip = self._load_saved_server_ip()
-        self.ip_entry.insert(0, default_ip)
+        if default_ip:
+            self.ip_entry.insert(0, default_ip)
 
         self.local_ip_label = ctk.CTkLabel(
             self,
@@ -86,6 +96,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.ready_btn.pack(pady=10)
 
     def _load_saved_server_ip(self) -> str:
+        if self.default_server_ip:
+            return self.default_server_ip
+
         try:
             if not os.path.exists(self.config_file):
                 return ""
