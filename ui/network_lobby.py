@@ -11,6 +11,7 @@ from game.net_match_window import run_network_match
 from game.audio import play_click, init_audio
 from network.net_utils import get_local_lan_ip
 from runtime_utils import resource_path
+from runtime_utils import set_runtime_override
 
 
 
@@ -164,7 +165,20 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.my_name = name
         self._save_server_ip(ip)
 
+        # DB selon le mode :
+        # - host -> localhost
+        # - join -> IP du serveur
+        if self.host_mode:
+            set_runtime_override("db_host", "localhost")
+        else:
+            set_runtime_override("db_host", ip)
+
         self._start_network_thread()
+
+        if self.host_mode:
+            self.info_label.configure(text=f"Connecté en tant que {name} | DB locale")
+        else:
+            self.info_label.configure(text=f"Connecté en tant que {name} | DB du serveur {ip}")
 
     # =========================
     # Réception réseau

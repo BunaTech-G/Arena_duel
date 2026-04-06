@@ -9,6 +9,7 @@ from ui.player_select import PlayerSelectView
 from ui.history_view import HistoryView
 from ui.network_lobby import NetworkLobbyView
 from runtime_utils import resource_path
+from runtime_utils import set_runtime_override, clear_runtime_override
 
 
 ctk.set_appearance_mode("dark")
@@ -30,6 +31,7 @@ class LauncherApp(ctk.CTk):
         self.embedded_server = None
         self.embedded_server_thread = None
         self.embedded_server_ip = None
+        self.current_db_mode = "local"
 
         # audio
         pygame.mixer.pre_init(44100, -16, 2, 512)
@@ -163,6 +165,14 @@ class LauncherApp(ctk.CTk):
         self.info_box.insert("0.0", text)
         self.info_box.configure(state="disabled")
 
+    def _set_db_mode_local(self):
+        set_runtime_override("db_host", "localhost")
+        self.current_db_mode = "local"
+
+    def _set_db_mode_remote(self, server_ip: str):
+        set_runtime_override("db_host", server_ip)
+        self.current_db_mode = f"remote:{server_ip}"    
+
     def _handle_test_db(self):
         try:
             play_click()
@@ -190,6 +200,8 @@ class LauncherApp(ctk.CTk):
         except Exception:
             pass
 
+        self._set_db_mode_local()
+
         window = PlayerSelectView(self)
         window.lift()
         window.focus_force()
@@ -209,7 +221,7 @@ class LauncherApp(ctk.CTk):
             play_click()
         except Exception:
             pass
-
+            
         # si le serveur est déjà démarré, on réutilise l'IP
         if self.embedded_server is None:
             try:
@@ -231,6 +243,8 @@ class LauncherApp(ctk.CTk):
             except Exception as e:
                 messagebox.showerror("Erreur serveur LAN", f"Impossible de démarrer le serveur LAN : {e}")
                 return
+            
+        self._set_db_mode_local()
 
         window = NetworkLobbyView(
             self,
