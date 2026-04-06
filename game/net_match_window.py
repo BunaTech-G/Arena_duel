@@ -64,13 +64,8 @@ def run_network_match(client, my_slot, my_name):
 
         pygame.display.flip()
 
-    try:
-        client.close()
-    except Exception:
-        pass
-
     pygame.quit()
-
+    return
 
 def draw_state(screen, state, my_slot, font, big_font):
     arena_w = state.get("arena_w", 1280)

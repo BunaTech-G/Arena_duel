@@ -84,8 +84,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.connect_btn.configure(state="disabled")
         self.ready_btn.configure(state="normal")
 
-        self.running = True
-        threading.Thread(target=self._network_loop, daemon=True).start()
+        self._start_network_thread()
 
     # =========================
     # Réception réseau
@@ -114,7 +113,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         elif msg_type == START:
             self.info_label.configure(text="Match en cours...")
+            self.ready_btn.configure(state="disabled")
             self.after(150, self._launch_match)
+
+    def _start_network_thread(self):
+        self.running = True
+        threading.Thread(target=self._network_loop, daemon=True).start()
 
     # =========================
     # Lobby UI
@@ -146,12 +150,34 @@ class NetworkLobbyView(ctk.CTkToplevel):
         if not self.client or self.my_slot is None or not self.my_name:
             return
 
+        # on stoppe la boucle lobby pendant le match
         self.running = False
+
+        # on cache le lobby
         self.withdraw()
         self.update()
 
+        # on lance le match réseau
         run_network_match(self.client, self.my_slot, self.my_name)
-        self.shutdown()
+
+        # retour au lobby après le match
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        self.attributes("-topmost", True)
+        self.after(200, lambda: self.attributes("-topmost", False))
+
+        # reset visuel du ready
+        self.ready_state = False
+        self.ready_btn.configure(
+            text="Je suis prêt",
+            state="normal"
+        )
+
+        self.info_label.configure(text="Retour au lobby...")
+
+        # relance la boucle réseau lobby
+        self._start_network_thread()
 
     def shutdown(self):
             self.running = False
