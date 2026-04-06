@@ -229,7 +229,7 @@ class LauncherApp(ctk.CTk):
 
         window = NetworkLobbyView(
             self,
-            default_server_ip=self.embedded_server_ip,
+            default_server_ip="127.0.0.1",
             host_mode=True
         )
         window.lift()
