@@ -35,9 +35,6 @@ MATCH_SECONDS = 60
 TICK_RATE = 20
 
 
-def slot_to_team(slot: int) -> str:
-    return "A" if slot <= 3 else "B"
-
 
 def clamp(value, minimum, maximum):
     return max(minimum, min(maximum, value))
@@ -57,6 +54,25 @@ class LobbyState:
             if slot not in used:
                 return slot
         return None
+    
+    def get_team_counts(self):
+        counts = {"A": 0, "B": 0}
+        for info in self.clients.values():
+            team = info.get("team")
+            if team in counts:
+                counts[team] += 1
+        return counts
+    
+    def get_next_balanced_team(self) -> str:
+        counts = self.get_team_counts()
+
+        if counts["A"] < counts["B"]:
+            return "A"
+        elif counts["B"] < counts["A"]:
+            return "B"
+        else:
+            # si égalité, on commence par A
+            return "A"
 
     def add_client(self, name: str, handler):
         with self.lock:
@@ -67,12 +83,14 @@ class LobbyState:
             if slot is None:
                 return None
 
+            assigned_team = self.get_next_balanced_team()
             client_id = str(uuid.uuid4())[:8]
+
             info = {
                 "client_id": client_id,
                 "name": name,
                 "slot": slot,
-                "team": slot_to_team(slot),
+                "team": assigned_team,
                 "ready": False,
                 "handler": handler,
                 "input": {"up": False, "down": False, "left": False, "right": False},
@@ -155,17 +173,30 @@ class GameState:
         self._spawn_orbs()
 
     def _spawn_players(self, lobby_snapshot: dict):
-        spawns = {
-            1: (120, 180),
-            2: (120, 360),
-            3: (120, 540),
-            4: (1160, 180),
-            5: (1160, 360),
-            6: (1160, 540),
+        team_spawns = {
+            "A": [(120, 180), (120, 360), (120, 540)],
+            "B": [(1160, 180), (1160, 360), (1160, 540)],
         }
 
-        for client_id, info in lobby_snapshot.items():
-            x, y = spawns.get(info["slot"], (100, 100))
+        team_indexes = {"A": 0, "B": 0}
+
+        # tri par slot pour garder un ordre stable
+        sorted_players = sorted(
+            lobby_snapshot.items(),
+            key=lambda item: item[1]["slot"]
+        )
+
+        for client_id, info in sorted_players:
+            team = info["team"]
+            index = team_indexes.get(team, 0)
+
+            spawn_list = team_spawns.get(team, [(100, 100)])
+            if index >= len(spawn_list):
+                index = len(spawn_list) - 1
+
+            x, y = spawn_list[index]
+            team_indexes[team] += 1
+
             self.players[client_id] = {
                 "client_id": client_id,
                 "slot": info["slot"],
@@ -174,6 +205,7 @@ class GameState:
                 "x": float(x),
                 "y": float(y),
                 "score": 0,
+                "disconnected": False,
             }
 
     def _spawn_orbs(self):
