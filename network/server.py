@@ -20,6 +20,7 @@ from network.messages import (
     END,
 )
 from network.protocol import send_message_binary, receive_message_binary
+from db.network_match_repository import save_network_match_result
 
 MAX_PLAYERS = 6
 
@@ -276,6 +277,34 @@ class GameState:
             "team_a_score": self.team_a_score,
             "team_b_score": self.team_b_score,
         }
+    
+    
+    def build_persistable_result(self):
+        if self.team_a_score > self.team_b_score:
+            winner_team = "A"
+        elif self.team_b_score > self.team_a_score:
+            winner_team = "B"
+        else:
+            winner_team = "DRAW"
+
+        players = []
+        for p in self.players.values():
+            players.append(
+                {
+                    "name": p["name"],
+                    "team": p["team"],
+                    "score": p["score"],
+                }
+            )
+
+        return {
+            "team_a_score": self.team_a_score,
+            "team_b_score": self.team_b_score,
+            "winner_team": winner_team,
+            "duration_seconds": MATCH_SECONDS,
+            "players": players,
+        }
+
 
 
 class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -331,13 +360,22 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             self.broadcast(self.game_state.export_state())
 
             if self.game_state.is_finished():
-                self.broadcast(self.game_state.build_end_message())
+                end_message = self.game_state.build_end_message()
+                self.broadcast(end_message)
+
+                # sauvegarde DB du match réseau
+                try:
+                    match_result = self.game_state.build_persistable_result()
+                    match_id = save_network_match_result(match_result)
+                    print(f"[server] match LAN sauvegardé en base (match_id={match_id})")
+                except Exception as e:
+                    print(f"[server] erreur sauvegarde match LAN: {e}")
 
                 with self.game_lock:
                     self.match_running = False
                     self.game_state = None
 
-                # remettre les joueurs en non-ready après le match
+                # remettre les joueurs en not ready après le match
                 for cid in list(snapshot.keys()):
                     self.lobby.set_ready(cid, False)
 
