@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "assets": {
+    "launcher_twilight_bastion": {
+      "file": "launcher_twilight_bastion_bg.png",
+      "label": "Launcher Twilight Bastion"
+    },
+    "launcher_sanctum": {
+      "file": "launcher_sanctum_bg.png",
+      "label": "Launcher Sanctum"
+    },
+    "forgotten_sanctum_floor": {
+      "file": "arena_forgotten_sanctum_floor.png",
+      "label": "Forgotten Sanctum Floor"
+    }
+  }
+}

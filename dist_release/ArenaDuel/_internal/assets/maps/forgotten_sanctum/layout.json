@@ -1,0 +1,77 @@
+{
+  "id": "forgotten_sanctum",
+  "label": "Forgotten Sanctum",
+  "theme": "fantasy_ruins_light_undead",
+  "arena": {
+    "window_size": [1280, 720],
+    "hud_height": 80,
+    "margin": 60,
+    "playable_rect": [60, 80, 1160, 580]
+  },
+  "spawn_groups": {
+    "A": [[160, 220], [160, 360], [160, 500]],
+    "B": [[1120, 220], [1120, 360], [1120, 500]]
+  },
+  "lanes": [
+    "north_arc",
+    "mid_temple",
+    "south_arc"
+  ],
+  "obstacles": [
+    {
+      "id": "north_dais",
+      "kind": "ruin_wall",
+      "rect": [520, 148, 220, 42],
+      "collision": true
+    },
+    {
+      "id": "south_dais",
+      "kind": "ruin_wall",
+      "rect": [520, 530, 220, 42],
+      "collision": true
+    },
+    {
+      "id": "west_pillar_cluster",
+      "kind": "pillar_cluster",
+      "rect": [248, 310, 118, 96],
+      "collision": true
+    },
+    {
+      "id": "east_pillar_cluster",
+      "kind": "pillar_cluster",
+      "rect": [914, 310, 118, 96],
+      "collision": true
+    },
+    {
+      "id": "mid_left_grave",
+      "kind": "grave_marker",
+      "rect": [448, 286, 64, 132],
+      "collision": true
+    },
+    {
+      "id": "mid_right_grave",
+      "kind": "grave_marker",
+      "rect": [768, 286, 64, 132],
+      "collision": true
+    }
+  ],
+  "decor": [
+    {
+      "id": "central_rune_ring",
+      "kind": "rune_circle",
+      "rect": [474, 244, 312, 152],
+      "collision": false
+    },
+    {
+      "id": "north_banner_shadow",
+      "kind": "banner_shadow",
+      "rect": [482, 112, 296, 46],
+      "collision": false
+    }
+  ],
+  "notes": [
+    "Map designed for quick readability with three simple lanes.",
+    "Obstacles break direct movement without fully blocking cross-map travel.",
+    "All art can be replaced later without changing collision data format."
+  ]
+}

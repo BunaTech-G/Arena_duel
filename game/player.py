@@ -1,5 +1,6 @@
 import math
 import pygame
+from game.arena import draw_player_avatar
 from game.settings import PLAYER_RADIUS, PLAYER_SPEED
 
 
@@ -46,6 +47,8 @@ class Player:
         self.speed = PLAYER_SPEED
         self.score = 0
         self.team_code = team_code
+        self.facing = 1 if team_code == "A" else -1
+        self.is_moving = False
 
         self.controls = {
             "up": KEY_MAP[controls["up"]],
@@ -89,6 +92,13 @@ class Player:
             dx *= factor
             dy *= factor
 
+        self.is_moving = dx != 0 or dy != 0
+
+        if dx > 0:
+            self.facing = 1
+        elif dx < 0:
+            self.facing = -1
+
         # Déplacement X
         new_x = self.x + dx
         min_x = arena_rect.left + self.radius
@@ -108,12 +118,19 @@ class Player:
             self.y = new_y
 
     def draw(self, surface, name_font):
-        pygame.draw.circle(surface, self.color, (int(self.x), int(self.y)), self.radius)
-        pygame.draw.circle(surface, (255, 255, 255), (int(self.x), int(self.y)), self.radius, 2)
-
-        name_text = name_font.render(self.name, True, (255, 255, 255))
-        text_rect = name_text.get_rect(center=(int(self.x), int(self.y) - self.radius - 12))
-        surface.blit(name_text, text_rect)
+        draw_player_avatar(
+            surface,
+            name=self.name,
+            x=self.x,
+            y=self.y,
+            radius=self.radius,
+            accent_color=self.color,
+            name_font=name_font,
+            team_code=self.team_code,
+            facing=self.facing,
+            elapsed_ms=pygame.time.get_ticks(),
+            moving=self.is_moving,
+        )
 
     def collides_with_orb(self, orb):
         distance_sq = (self.x - orb.x) ** 2 + (self.y - orb.y) ** 2
