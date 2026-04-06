@@ -1,11 +1,14 @@
 import threading
 import customtkinter as ctk
 import time
+import json
+import os
 
 from network.client import NetworkClient
 from network.messages import ASSIGN_SLOT, LOBBY_STATE
 from network.messages import ASSIGN_SLOT, LOBBY_STATE, START
 from game.net_match_window import run_network_match
+from network.net_utils import get_local_lan_ip
 
 
 class NetworkLobbyView(ctk.CTkToplevel):
@@ -25,6 +28,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.client = None
         self.running = False
 
+        self.config_file = "client_lan_config.json"
+        self.detected_local_ip = get_local_lan_ip()
+
         self.my_slot = None
         self.my_team = None
         self.my_name = None
@@ -35,8 +41,24 @@ class NetworkLobbyView(ctk.CTkToplevel):
     def _build_ui(self):
         # === Connexion ===
         self.ip_entry = ctk.CTkEntry(self, placeholder_text="IP du serveur")
-        self.ip_entry.pack(pady=10)
-        self.ip_entry.insert(0, "127.0.0.1")
+        self.ip_entry.pack(pady=(10, 6))
+
+        default_ip = self._load_saved_server_ip()
+        self.ip_entry.insert(0, default_ip)
+
+        self.local_ip_label = ctk.CTkLabel(
+            self,
+            text=f"IP locale détectée : {self.detected_local_ip}"
+        )
+        self.local_ip_label.pack(pady=(0, 6))
+
+        self.use_local_ip_btn = ctk.CTkButton(
+            self,
+            text="Utiliser mon IP locale",
+            command=self._use_local_ip,
+            width=220
+        )
+        self.use_local_ip_btn.pack(pady=(0, 10))
 
         self.name_entry = ctk.CTkEntry(self, placeholder_text="Pseudo")
         self.name_entry.pack(pady=10)
@@ -61,6 +83,34 @@ class NetworkLobbyView(ctk.CTkToplevel):
         )
         self.ready_btn.pack(pady=10)
 
+    def _load_saved_server_ip(self) -> str:
+        try:
+            if not os.path.exists(self.config_file):
+                return self.detected_local_ip
+
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            ip = data.get("last_server_ip", "").strip()
+            if ip:
+                return ip
+
+        except Exception:
+            pass
+
+        return self.detected_local_ip
+
+    def _save_server_ip(self, ip: str):
+        try:
+            with open(self.config_file, "w", encoding="utf-8") as f:
+                json.dump({"last_server_ip": ip}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _use_local_ip(self):
+        self.ip_entry.delete(0, "end")
+        self.ip_entry.insert(0, self.detected_local_ip)
+
     # =========================
     # Connexion réseau
     # =========================
@@ -81,9 +131,11 @@ class NetworkLobbyView(ctk.CTkToplevel):
             return
 
         self.info_label.configure(text=f"Connecté en tant que {name}")
-        self.my_name = name
         self.connect_btn.configure(state="disabled")
         self.ready_btn.configure(state="normal")
+
+        self.my_name = name
+        self._save_server_ip(ip)
 
         self._start_network_thread()
 

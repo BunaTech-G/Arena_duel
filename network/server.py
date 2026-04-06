@@ -21,6 +21,7 @@ from network.messages import (
 )
 from network.protocol import send_message_binary, receive_message_binary
 from db.network_match_repository import save_network_match_result
+from network.net_utils import get_local_lan_ip
 
 MAX_PLAYERS = 6
 
@@ -520,7 +521,10 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
 
 def run_server(host: str, port: int):
     with ArenaTCPServer((host, port), ArenaRequestHandler) as server:
+        local_ip = get_local_lan_ip()
         print(f"[server] écoute sur {host}:{port}")
+        print(f"[server] IP LAN locale détectée : {local_ip}")
+        print(f"[server] Adresse à donner aux clients : {local_ip}:{port}")
         print("[server] Ctrl+C pour arrêter")
         server.serve_forever()
 
