@@ -8,7 +8,7 @@ from network.client import NetworkClient
 from network.messages import ASSIGN_SLOT, LOBBY_STATE
 from network.messages import ASSIGN_SLOT, LOBBY_STATE, START
 from game.net_match_window import run_network_match
-from game.audio import play_click
+from game.audio import play_click, init_audio
 from network.net_utils import get_local_lan_ip
 
 
@@ -245,6 +245,11 @@ class NetworkLobbyView(ctk.CTkToplevel):
         # on lance le match réseau
         run_network_match(self.client, self.my_slot, self.my_name, self.my_team)
 
+        try:
+            init_audio()
+        except Exception:
+            pass
+        
         # retour au lobby après le match
         self.deiconify()
         self.lift()
