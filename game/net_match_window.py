@@ -101,7 +101,7 @@ def run_network_match(client, my_slot, my_name, my_team):
 
         pygame.display.flip()
 
-    pygame.quit()
+    pygame.display.quit()
     return
 
 def draw_state(screen, state, my_slot, font, big_font):
