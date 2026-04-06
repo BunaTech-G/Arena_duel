@@ -1,4 +1,7 @@
 import customtkinter as ctk
+import pygame
+
+from game.audio import init_audio
 from ui.network_lobby import NetworkLobbyView
 
 ctk.set_appearance_mode("dark")
@@ -6,6 +9,18 @@ ctk.set_default_color_theme("blue")
 
 
 def run_main_lan():
+    # Initialisation audio
+    pygame.mixer.pre_init(44100, -16, 2, 512)
+    try:
+        pygame.init()
+    except Exception:
+        pass
+
+    try:
+        init_audio()
+    except Exception:
+        pass
+
     app = ctk.CTk()
     app.withdraw()
 

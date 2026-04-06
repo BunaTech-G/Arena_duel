@@ -8,7 +8,9 @@ from network.client import NetworkClient
 from network.messages import ASSIGN_SLOT, LOBBY_STATE
 from network.messages import ASSIGN_SLOT, LOBBY_STATE, START
 from game.net_match_window import run_network_match
+from game.audio import play_click
 from network.net_utils import get_local_lan_ip
+
 
 
 class NetworkLobbyView(ctk.CTkToplevel):
@@ -105,6 +107,11 @@ class NetworkLobbyView(ctk.CTkToplevel):
             pass
 
     def _use_loopback_ip(self):
+        try:
+            play_click()
+        except Exception:
+            pass
+
         self.ip_entry.delete(0, "end")
         self.ip_entry.insert(0, "127.0.0.1")
 
@@ -112,6 +119,11 @@ class NetworkLobbyView(ctk.CTkToplevel):
     # Connexion réseau
     # =========================
     def _connect(self):
+        try:
+            play_click()
+        except Exception:
+            pass
+
         ip = self.ip_entry.get().strip()
         name = self.name_entry.get().strip()
 
@@ -193,6 +205,11 @@ class NetworkLobbyView(ctk.CTkToplevel):
     # Ready
     # =========================
     def _toggle_ready(self):
+        try:
+            play_click()
+        except Exception:
+            pass
+
         self.ready_state = not self.ready_state
         self.client.send_ready(self.ready_state)
 
