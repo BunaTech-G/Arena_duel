@@ -1,12 +1,11 @@
 import customtkinter as ctk
 import pygame
+
 from db.database import test_connection
-from game.audio import init_audio
+from game.audio import init_audio, play_click
 from ui.player_select import PlayerSelectView
 from ui.history_view import HistoryView
-import pygame
-from game.audio import init_audio, play_click
-
+from ui.network_lobby import NetworkLobbyView
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -88,6 +87,15 @@ class LauncherApp(ctk.CTk):
         )
         history_btn.grid(row=5, column=0, pady=10, padx=20)
 
+        network_btn = ctk.CTkButton(
+            container,
+            text="Multijoueur LAN",
+            command=self._handle_network_lobby,
+            width=260,
+            height=42
+        )
+        network_btn.grid(row=6, column=0, pady=10, padx=20)
+
         quit_btn = ctk.CTkButton(
             container,
             text="Quitter",
@@ -97,7 +105,10 @@ class LauncherApp(ctk.CTk):
             fg_color="#B33939",
             hover_color="#922B2B"
         )
-        quit_btn.grid(row=6, column=0, pady=(10, 25), padx=20)
+        quit_btn.grid(row=7, column=0, pady=(10, 25), padx=20)
+
+        self.info_box = ctk.CTkTextbox(container, width=600, height=140)
+        self.info_box.grid(row=8, column=0, pady=(0, 25), padx=20, sticky="ew")
 
         self.info_box = ctk.CTkTextbox(container, width=600, height=140)
         self.info_box.grid(row=7, column=0, pady=(0, 25), padx=20, sticky="ew")
@@ -136,6 +147,12 @@ class LauncherApp(ctk.CTk):
     def _handle_history(self):
         play_click()
         window = HistoryView(self)
+        window.lift()
+        window.focus_force()
+
+    def _handle_network_lobby(self):
+        play_click()
+        window = NetworkLobbyView(self)
         window.lift()
         window.focus_force()
 
