@@ -1,6 +1,7 @@
 import pygame
 
 from network.messages import STATE, END
+from game.audio import play_pickup, play_win, play_draw
 
 
 TEAM_COLORS = {
@@ -9,7 +10,7 @@ TEAM_COLORS = {
 }
 
 
-def run_network_match(client, my_slot, my_name):
+def run_network_match(client, my_slot, my_name, my_team):
     pygame.init()
     screen = pygame.display.set_mode((1280, 720))
     pygame.display.set_caption(f"Arena Duel LAN - {my_name}")
@@ -21,6 +22,9 @@ def run_network_match(client, my_slot, my_name):
     latest_state = None
     end_message = None
     end_timer = 0
+
+    previous_my_score = None
+    end_sound_played = False
 
     running = True
 
@@ -54,9 +58,42 @@ def run_network_match(client, my_slot, my_name):
         screen.fill((22, 26, 32))
 
         if latest_state:
+            # détecter si mon score a augmenté
+            for p in latest_state.get("players", []):
+                if p["slot"] == my_slot:
+                    current_score = p["score"]
+
+                    if previous_my_score is None:
+                        previous_my_score = current_score
+                    elif current_score > previous_my_score:
+                        try:
+                            play_pickup()
+                        except Exception:
+                            pass
+                        previous_my_score = current_score
+                    else:
+                        previous_my_score = current_score
+
+                    break
+
             draw_state(screen, latest_state, my_slot, font, big_font)
 
         if end_message:
+            if not end_sound_played:
+                winner_text = end_message.get("winner_text", "")
+
+                try:
+                    if "nul" in winner_text.lower():
+                        play_draw()
+                    elif ("Équipe A" in winner_text and my_team == "A") or (
+                        "Équipe B" in winner_text and my_team == "B"
+                    ):
+                        play_win()
+                except Exception:
+                    pass
+
+                end_sound_played = True
+
             draw_end_overlay(screen, end_message, big_font)
             end_timer -= dt
             if end_timer <= 0:
