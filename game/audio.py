@@ -52,6 +52,10 @@ def init_audio():
     draw_sound = _safe_load_sound("draw.mp3", volume=0.65)
     click_sound = _safe_load_sound("click.mp3", volume=0.35)
 
+    print("[audio-debug] pickup_sound =", pickup_sound is not None)
+    print("[audio-debug] win_sound =", win_sound is not None)
+    print("[audio-debug] draw_sound =", draw_sound is not None)
+    print("[audio-debug] click_sound =", click_sound is not None)
 
 def play_pickup():
     if pickup_sound:
