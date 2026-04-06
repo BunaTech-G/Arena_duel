@@ -528,6 +528,19 @@ def run_server(host: str, port: int):
         print("[server] Ctrl+C pour arrêter")
         server.serve_forever()
 
+def start_server_in_background(host: str = "0.0.0.0", port: int = 5000):
+    server = ArenaTCPServer((host, port), ArenaRequestHandler)
+
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    local_ip = get_local_lan_ip()
+    print(f"[server] écoute sur {host}:{port}")
+    print(f"[server] IP LAN locale détectée : {local_ip}")
+    print(f"[server] Adresse à donner aux clients : {local_ip}:{port}")
+    print("[server] serveur lancé en arrière-plan")
+
+    return server, thread, local_ip
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Arena Duel - serveur LAN")
