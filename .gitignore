@@ -16,3 +16,16 @@ dist/
 .DS_Store
 Thumbs.db
 *.log
+
+# fichiers temporaires Windows / Python
+*.tmp
+*.bak
+
+# tests / coverage éventuels
+.coverage
+htmlcov/
+.pytest_cache/
+
+# fichiers SQLite éventuels si un jour tu testes localement
+*.sqlite3
+*.db
