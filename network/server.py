@@ -57,22 +57,23 @@ class LobbyState:
     
     def get_team_counts(self):
         counts = {"A": 0, "B": 0}
+
         for info in self.clients.values():
             team = info.get("team")
-            if team in counts:
-                counts[team] += 1
+            if team == "A":
+                counts["A"] += 1
+            elif team == "B":
+                counts["B"] += 1
+
         return counts
-    
+
     def get_next_balanced_team(self) -> str:
         counts = self.get_team_counts()
 
-        if counts["A"] < counts["B"]:
+        if counts["A"] <= counts["B"]:
             return "A"
-        elif counts["B"] < counts["A"]:
-            return "B"
         else:
-            # si égalité, on commence par A
-            return "A"
+            return "B"
 
     def add_client(self, name: str, handler):
         with self.lock:
@@ -95,8 +96,10 @@ class LobbyState:
                 "handler": handler,
                 "input": {"up": False, "down": False, "left": False, "right": False},
             }
+            print(f"[server-debug] counts={self.get_team_counts()} -> assigned_team={assigned_team} for {name}")
             self.clients[client_id] = info
             return info
+
 
     def remove_client(self, client_id: str):
         with self.lock:
