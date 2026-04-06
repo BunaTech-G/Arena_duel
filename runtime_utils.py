@@ -5,6 +5,9 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
 
+# override runtime temporaire (en mémoire)
+_RUNTIME_OVERRIDES = {}
+
 
 def resource_path(*parts) -> str:
     """
@@ -30,6 +33,21 @@ def runtime_file_path(filename: str) -> str:
     return str(PROJECT_DIR / filename)
 
 
+def set_runtime_override(key: str, value):
+    _RUNTIME_OVERRIDES[key] = value
+
+
+def clear_runtime_override(key: str = None):
+    if key is None:
+        _RUNTIME_OVERRIDES.clear()
+    else:
+        _RUNTIME_OVERRIDES.pop(key, None)
+
+
+def get_runtime_overrides() -> dict:
+    return dict(_RUNTIME_OVERRIDES)
+
+
 def load_runtime_config() -> dict:
     default_config = {
         "db_host": "localhost",
@@ -41,14 +59,15 @@ def load_runtime_config() -> dict:
     }
 
     path = Path(runtime_file_path("app_runtime.json"))
-    if not path.exists():
-        return default_config
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            default_config.update(data)
+        except Exception:
+            pass
 
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    # appliquer les overrides runtime en dernier
+    default_config.update(_RUNTIME_OVERRIDES)
 
-        default_config.update(data)
-        return default_config
-    except Exception:
-        return default_config
+    return default_config
