@@ -119,3 +119,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
     # =========================
     def _toggle_ready(self):
         self.client.send_ready(True)
+
+    def shutdown(self):
+            self.running = False
+            try:
+                if self.client:
+                    self.client.close()
+            except Exception:
+                pass
+            self.destroy()
