@@ -10,6 +10,7 @@ from network.messages import ASSIGN_SLOT, LOBBY_STATE, START
 from game.net_match_window import run_network_match
 from game.audio import play_click, init_audio
 from network.net_utils import get_local_lan_ip
+from runtime_utils import resource_path
 
 
 
@@ -18,6 +19,10 @@ class NetworkLobbyView(ctk.CTkToplevel):
         super().__init__(parent)
 
         self.title("Arena Duel - Lobby Réseau")
+        try:
+            self.iconbitmap(resource_path("assets", "icons", "app.ico"))
+        except Exception:
+            pass
         self.geometry("620x650")
         self.resizable(False, False)
 
@@ -249,7 +254,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             init_audio()
         except Exception:
             pass
-        
+
         # retour au lobby après le match
         self.deiconify()
         self.lift()

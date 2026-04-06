@@ -1,8 +1,10 @@
 from pathlib import Path
 import pygame
 
+from runtime_utils import resource_path
 
-SOUNDS_DIR = Path(__file__).resolve().parent.parent / "assets" / "sounds"
+
+SOUNDS_DIR = Path(resource_path("assets", "sounds"))
 
 _audio_ready = False
 
@@ -10,7 +12,6 @@ pickup_sound = None
 win_sound = None
 draw_sound = None
 click_sound = None
-
 
 def _safe_load_sound(filename, volume=1.0):
     global _audio_ready

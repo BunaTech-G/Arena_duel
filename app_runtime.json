@@ -1,0 +1,8 @@
+{
+  "db_host": "192.168.0.97",
+  "db_port": 3306,
+  "db_user": "root",
+  "db_password": "",
+  "db_name": "arena_duel_v2_db",
+  "tcp_port": 5000
+}

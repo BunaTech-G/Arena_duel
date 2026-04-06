@@ -8,6 +8,7 @@ from network.server import start_server_in_background
 from ui.player_select import PlayerSelectView
 from ui.history_view import HistoryView
 from ui.network_lobby import NetworkLobbyView
+from runtime_utils import resource_path
 
 
 ctk.set_appearance_mode("dark")
@@ -19,6 +20,10 @@ class LauncherApp(ctk.CTk):
         super().__init__()
 
         self.title("Arena Duel")
+        try:
+            self.iconbitmap(resource_path("assets", "icons", "app.ico"))
+        except Exception:
+            pass
         self.geometry("940x680")
         self.minsize(940, 680)
 
