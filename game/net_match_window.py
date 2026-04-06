@@ -25,7 +25,7 @@ def run_network_match(client, my_slot, my_name):
     running = True
 
     while running and client.running:
-        dt = clock.tick(60) / 1000.0
+        dt = clock.tick(50) / 1000.0 # FPS limit à 50 pour éviter de surcharger le CPU
 
         up = down = left = right = False
 
@@ -49,7 +49,7 @@ def run_network_match(client, my_slot, my_name):
 
             elif msg_type == END:
                 end_message = msg
-                end_timer = 3.0
+                end_timer = 1.2
 
         screen.fill((22, 26, 32))
 

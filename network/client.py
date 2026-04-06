@@ -2,6 +2,7 @@ import argparse
 import queue
 import socket
 import threading
+import time
 
 from network.messages import HELLO, READY, PING, INPUT
 from network.protocol import encode_message, decode_message
@@ -14,6 +15,10 @@ class NetworkClient:
         self.reader_thread = None
         self.incoming = queue.Queue()
         self.send_lock = threading.Lock()
+
+        self.last_input_state = None
+        self.last_input_send_time = 0.0
+
 
     def connect(self, host: str, port: int, name: str):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -80,15 +85,29 @@ class NetworkClient:
         self.send({"type": PING})
 
     def send_input(self, up: bool, down: bool, left: bool, right: bool):
-        self.send(
-            {
-                "type": INPUT,
-                "up": up,
-                "down": down,
-                "left": left,
-                "right": right,
-            }
-        )
+        now = time.time()
+
+        state = {
+            "up": up,
+            "down": down,
+            "left": left,
+            "right": right,
+        }
+
+        # envoyer seulement si l'état change
+        # ou au moins toutes les 100 ms pour garder la synchro propre
+        if state != self.last_input_state or (now - self.last_input_send_time) >= 0.1:
+            self.send(
+                {
+                    "type": INPUT,
+                    "up": up,
+                    "down": down,
+                    "left": left,
+                    "right": right,
+                }
+            )
+            self.last_input_state = state
+            self.last_input_send_time = now
 
     def poll_messages(self):
         messages = []
