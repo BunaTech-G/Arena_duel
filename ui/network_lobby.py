@@ -16,7 +16,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         super().__init__(parent)
 
         self.title("Arena Duel - Lobby Réseau")
-        self.geometry("600x500")
+        self.geometry("620x650")
         self.resizable(False, False)
 
         self.transient(parent)
