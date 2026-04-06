@@ -1,5 +1,13 @@
 import pygame
 
+from game.asset_pipeline import load_font
+from game.hud_panels import draw_player_summary_row, draw_team_summary_panel
+from game.match_text import (
+    format_scoreline,
+    format_winner_text,
+    get_team_label,
+    get_winner_team,
+)
 from game.settings import (
     WINDOW_WIDTH,
     WINDOW_HEIGHT,
@@ -10,39 +18,29 @@ from game.settings import (
     ORB_SPAWN_COUNT,
     MATCH_DURATION_SECONDS,
     HUD_TEXT_COLOR,
-    HUD_ACCENT_COLOR,
     HUD_PANEL_COLOR,
     HUD_BORDER_COLOR,
 )
 from game.player import Player
 from game.orb import Orb
-from game.arena import draw_background, draw_arena, get_arena_rect, get_obstacles
-from game.audio import init_audio, play_pickup, play_win, play_draw
+from game.arena import (
+    draw_background,
+    draw_arena,
+    get_arena_rect,
+    get_map_layout,
+    get_obstacles,
+    get_team_spawn_positions_for_layout,
+)
+from game.audio import init_audio, play_draw, play_pickup, play_win, start_match_music, stop_music
 
-def build_runtime_players(players_config, arena_rect):
+def build_runtime_players(players_config, layout):
     team_a = [p for p in players_config if p["team"] == "A"]
     team_b = [p for p in players_config if p["team"] == "B"]
 
     players = []
 
-    def spawn_positions(team_players, side):
-        count = len(team_players)
-        if count == 1:
-            y_positions = [arena_rect.centery]
-        elif count == 2:
-            y_positions = [arena_rect.centery - 80, arena_rect.centery + 80]
-        else:
-            y_positions = [arena_rect.centery - 120, arena_rect.centery, arena_rect.centery + 120]
-
-        if side == "left":
-            x = arena_rect.left + 100
-        else:
-            x = arena_rect.right - 100
-
-        return [(x, y) for y in y_positions]
-
-    team_a_positions = spawn_positions(team_a, "left")
-    team_b_positions = spawn_positions(team_b, "right")
+    team_a_positions = get_team_spawn_positions_for_layout(layout, "A", len(team_a))
+    team_b_positions = get_team_spawn_positions_for_layout(layout, "B", len(team_b))
 
     for idx, player_data in enumerate(team_a):
         slot_index = player_data["slot"] - 1
@@ -90,8 +88,6 @@ def get_team_scores(players):
 def draw_hud(surface, big_font, medium_font, small_font, players, remaining_time):
     team_a_score, team_b_score = get_team_scores(players)
 
-    title = big_font.render("ARENA DUEL", True, HUD_ACCENT_COLOR)
-
     team_a_panel = pygame.Rect(320, 12, 280, 58)
     team_b_panel = pygame.Rect(620, 12, 280, 58)
     time_panel = pygame.Rect(1020, 12, 180, 58)
@@ -100,28 +96,35 @@ def draw_hud(surface, big_font, medium_font, small_font, players, remaining_time
         pygame.draw.rect(surface, HUD_PANEL_COLOR, panel, border_radius=10)
         pygame.draw.rect(surface, HUD_BORDER_COLOR, panel, width=2, border_radius=10)
 
-    team_a_text = medium_font.render(f"Équipe A : {team_a_score}", True, HUD_TEXT_COLOR)
-    team_b_text = medium_font.render(f"Équipe B : {team_b_score}", True, HUD_TEXT_COLOR)
-    timer_text = medium_font.render(f"{remaining_time}s", True, HUD_TEXT_COLOR)
+    team_a_text = medium_font.render(f"{get_team_label('A', 'short')} : {team_a_score}", True, HUD_TEXT_COLOR)
+    team_b_text = medium_font.render(f"{get_team_label('B', 'short')} : {team_b_score}", True, HUD_TEXT_COLOR)
+    timer_text = medium_font.render(f"Sablier : {remaining_time}s", True, HUD_TEXT_COLOR)
 
-    surface.blit(title, (24, 18))
     surface.blit(team_a_text, (340, 26))
     surface.blit(team_b_text, (640, 26))
     surface.blit(timer_text, (1068, 26))
 
-    # petits scores individuels en bas du HUD
     team_a_players = [p for p in players if p.team_code == "A"]
     team_b_players = [p for p in players if p.team_code == "B"]
 
-    y_a = 82
-    for idx, p in enumerate(team_a_players):
-        txt = small_font.render(f"A - {p.name} : {p.score}", True, HUD_TEXT_COLOR)
-        surface.blit(txt, (28, y_a + idx * 22))
-
-    y_b = 82
-    for idx, p in enumerate(team_b_players):
-        txt = small_font.render(f"B - {p.name} : {p.score}", True, HUD_TEXT_COLOR)
-        surface.blit(txt, (1020, y_b + idx * 22))
+    draw_team_summary_panel(
+        surface,
+        small_font,
+        24,
+        82,
+        get_team_label("A"),
+        [{"name": p.name, "score": p.score, "accent_color": p.color} for p in team_a_players],
+        align="left",
+    )
+    draw_team_summary_panel(
+        surface,
+        small_font,
+        1008,
+        82,
+        get_team_label("B"),
+        [{"name": p.name, "score": p.score, "accent_color": p.color} for p in team_b_players],
+        align="right",
+    )
 
 
 def draw_end_overlay(surface, big_font, medium_font, small_font, winner_text, players):
@@ -144,35 +147,47 @@ def draw_end_overlay(surface, big_font, medium_font, small_font, winner_text, pl
     title_rect = title.get_rect(center=(WINDOW_WIDTH // 2, panel_y + 42))
     surface.blit(title, title_rect)
 
-    score_text = medium_font.render(
-        f"Équipe A : {team_a_score}   |   Équipe B : {team_b_score}",
-        True,
-        (190, 210, 255)
-    )
+    score_text = medium_font.render(format_scoreline(team_a_score, team_b_score), True, (190, 210, 255))
     score_rect = score_text.get_rect(center=(WINDOW_WIDTH // 2, panel_y + 88))
     surface.blit(score_text, score_rect)
 
     team_a_players = [p for p in players if p.team_code == "A"]
     team_b_players = [p for p in players if p.team_code == "B"]
 
-    team_a_title = medium_font.render("Équipe A", True, (255, 255, 255))
-    team_b_title = medium_font.render("Équipe B", True, (255, 255, 255))
+    team_a_title = medium_font.render(get_team_label("A"), True, (255, 255, 255))
+    team_b_title = medium_font.render(get_team_label("B"), True, (255, 255, 255))
 
     surface.blit(team_a_title, (panel_x + 80, panel_y + 130))
     surface.blit(team_b_title, (panel_x + 460, panel_y + 130))
 
     for idx, p in enumerate(team_a_players):
-        txt = small_font.render(f"{p.name} : {p.score}", True, (255, 255, 255))
-        surface.blit(txt, (panel_x + 80, panel_y + 170 + idx * 28))
+        draw_player_summary_row(
+            surface,
+            small_font,
+            panel_x + 80,
+            panel_y + 166 + idx * 64,
+            name=p.name,
+            score=p.score,
+            accent_color=p.color,
+            portrait_size=48,
+        )
 
     for idx, p in enumerate(team_b_players):
-        txt = small_font.render(f"{p.name} : {p.score}", True, (255, 255, 255))
-        surface.blit(txt, (panel_x + 460, panel_y + 170 + idx * 28))
+        draw_player_summary_row(
+            surface,
+            small_font,
+            panel_x + 460,
+            panel_y + 166 + idx * 64,
+            name=p.name,
+            score=p.score,
+            accent_color=p.color,
+            portrait_size=48,
+        )
 
     instructions = [
-        "Entrée = retour au menu",
-        "R = rejouer immédiatement",
-        "Échap = quitter la partie"
+        "Entrée · revenir au bastion",
+        "R · relancer la joute",
+        "Échap · quitter l'arène"
     ]
 
     for idx, line in enumerate(instructions):
@@ -191,11 +206,7 @@ def build_result(players, winner_text):
             "individual_score": p.score,
         })
 
-    winner_team = None
-    if team_a_score > team_b_score:
-        winner_team = "A"
-    elif team_b_score > team_a_score:
-        winner_team = "B"
+    winner_team = get_winner_team(team_a_score, team_b_score)
 
     return {
         "players_data": players_data,
@@ -210,21 +221,24 @@ def run_game(players_config):
     pygame.mixer.pre_init(44100, -16, 2, 512)
     pygame.init()
     init_audio()
-    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("Arena Duel - Game")
+    stop_music(fade_ms=0)
+    start_match_music()
+    layout = get_map_layout()
+    screen = pygame.display.set_mode(layout.window_size)
+    pygame.display.set_caption("Arena Duel - Joute locale")
     clock = pygame.time.Clock()
 
-    big_font = pygame.font.SysFont("Arial", 34, bold=True)
-    medium_font = pygame.font.SysFont("Arial", 24, bold=True)
-    small_font = pygame.font.SysFont("Arial", 18)
-    name_font = pygame.font.SysFont("Arial", 16, bold=True)
+    big_font = load_font("Cinzel-Bold.ttf", 34, fallback_name="Georgia", bold=True)
+    medium_font = load_font("Cinzel-Regular.ttf", 24, fallback_name="Georgia", bold=True)
+    small_font = load_font("CrimsonText-Regular.ttf", 18, fallback_name="Georgia")
+    name_font = load_font("CrimsonText-SemiBold.ttf", 16, fallback_name="Georgia", bold=True)
 
-    arena_rect = get_arena_rect()
-    obstacles = get_obstacles(arena_rect)
+    arena_rect = get_arena_rect(layout)
+    obstacles = get_obstacles(layout)
 
     while True:
-        players = build_runtime_players(players_config, arena_rect)
-        orbs = [Orb(arena_rect, obstacles) for _ in range(ORB_SPAWN_COUNT)]
+        players = build_runtime_players(players_config, layout)
+        orbs = [Orb(arena_rect, obstacles, layout=layout) for _ in range(ORB_SPAWN_COUNT)]
 
         running = True
         game_over = False
@@ -237,23 +251,28 @@ def run_game(players_config):
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
+                    stop_music(fade_ms=120)
                     pygame.quit()
                     return None
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE and not game_over:
+                        stop_music(fade_ms=120)
                         pygame.quit()
                         return None
 
                     if game_over:
                         if event.key == pygame.K_RETURN:
+                            stop_music(fade_ms=120)
                             pygame.quit()
                             return build_result(players, winner_text)
 
                         elif event.key == pygame.K_r:
+                            stop_music(fade_ms=120)
                             return run_game(players_config)
 
                         elif event.key == pygame.K_ESCAPE:
+                            stop_music(fade_ms=120)
                             pygame.quit()
                             return None
 
@@ -262,14 +281,10 @@ def run_game(players_config):
 
             if remaining_time <= 0 and not game_over:
                 game_over = True
+                stop_music(fade_ms=280)
                 team_a_score, team_b_score = get_team_scores(players)
 
-                if team_a_score > team_b_score:
-                    winner_text = "Victoire Équipe A"
-                elif team_b_score > team_a_score:
-                    winner_text = "Victoire Équipe B"
-                else:
-                    winner_text = "Égalité"
+                winner_text = format_winner_text(get_winner_team(team_a_score, team_b_score))
 
             keys = pygame.key.get_pressed()
 
@@ -295,8 +310,9 @@ def run_game(players_config):
 
                 final_sound_played = True
 
-            draw_background(screen)
-            draw_arena(screen, arena_rect, obstacles)
+            elapsed_ms = pygame.time.get_ticks()
+            draw_background(screen, layout)
+            draw_arena(screen, arena_rect, obstacles, layout=layout, elapsed_ms=elapsed_ms)
 
             for orb in orbs:
                 orb.draw(screen)

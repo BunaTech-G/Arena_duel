@@ -1,5 +1,6 @@
 import mariadb
 from db.database import get_connection
+from game.match_text import get_team_label
 
 
 def ensure_player_exists(username):
@@ -58,7 +59,7 @@ def save_match(player1_name, player2_name, team_a_score, team_b_score, duration_
 
     conn = get_connection()
     if not conn:
-        return False, "Connexion base impossible."
+        return False, "Le sanctuaire des chroniques est indisponible."
 
     cur = conn.cursor()
 
@@ -161,10 +162,10 @@ def save_team_match(players_data, team_a_score, team_b_score, duration_seconds):
 
         conn.commit()
         conn.close()
-        return True, "Match équipe enregistré."
+        return True, "La chronique de la joute a été archivée."
     except mariadb.Error as e:
         conn.close()
-        return False, f"Erreur MariaDB : {e}"
+        return False, f"MariaDB n'a pas pu archiver la joute : {e}"
 
 
 def get_match_history():
@@ -238,11 +239,11 @@ def get_match_history():
         team_b_players = ", ".join(data["team_b_players"])
 
         if data["winner_team"] == "A":
-            winner_display = "Équipe A"
+            winner_display = get_team_label("A")
         elif data["winner_team"] == "B":
-            winner_display = "Équipe B"
+            winner_display = get_team_label("B")
         else:
-            winner_display = "Égalité"
+            winner_display = None
 
         result.append(
             (
@@ -260,3 +261,16 @@ def get_match_history():
     # Tri final : plus récent d'abord
     result.sort(key=lambda x: x[7], reverse=True)
     return result
+
+
+def get_serializable_match_history():
+    rows = get_match_history()
+    serialized_rows = []
+
+    for row in rows:
+        row_data = list(row)
+        if len(row_data) >= 8 and row_data[7] is not None:
+            row_data[7] = str(row_data[7])
+        serialized_rows.append(row_data)
+
+    return serialized_rows

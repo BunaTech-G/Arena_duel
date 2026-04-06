@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "project": {
+    "name": "Arena Duel",
+    "direction": "fantasy arena with cute skeleton mascots",
+    "status": "pipeline_ready"
+  },
+  "directories": {
+    "icons": "assets/icons",
+    "fonts": "assets/fonts",
+    "sounds": "assets/sounds",
+    "ui": "assets/ui",
+    "maps": "assets/maps",
+    "sprites": "assets/sprites",
+    "portraits": "assets/portraits",
+    "backgrounds": "assets/backgrounds",
+    "prompts": "assets/prompts"
+  },
+  "manifests": {
+    "backgrounds": "assets/backgrounds/manifest.json"
+  },
+  "branding": {
+    "current_icon": "assets/icons/app.png",
+    "target_icon": "assets/icons/icon_skeleton_mascot.png",
+    "title_treatment": "ornate fantasy with readable contrast"
+  },
+  "maps": [
+    {
+      "id": "forgotten_sanctum",
+      "label": "Forgotten Sanctum",
+      "config": "assets/maps/forgotten_sanctum/layout.json",
+      "status": "placeholder_data_ready"
+    }
+  ],
+  "sprites": [
+    {
+      "id": "skeleton_mascot",
+      "label": "Skeleton Mascot",
+      "manifest": "assets/sprites/skeleton_mascot/manifest.json",
+      "status": "placeholder_manifest_ready"
+    }
+  ],
+  "ui_assets": [
+    "assets/ui/panel_frame_corner.png",
+    "assets/ui/button_glow_gold.png",
+    "assets/ui/button_glow_cyan.png",
+    "assets/ui/banner_filigree_top.png"
+  ],
+  "background_assets": [
+    "assets/backgrounds/launcher_sanctum_bg.png",
+    "assets/backgrounds/arena_forgotten_sanctum_floor.png"
+  ],
+  "portrait_assets": [
+    "assets/portraits/skeleton_mascot_portrait.png"
+  ],
+  "replacement_backlog": [
+    "final skeleton mascot icon",
+    "top-down fantasy ruins arena floor",
+    "idle and walk sprite frames",
+    "ornamental UI decorations",
+    "combat portraits"
+  ],
+  "working_preview_assets": [
+    "assets/backgrounds/launcher_sanctum_bg.png",
+    "assets/backgrounds/arena_forgotten_sanctum_floor.png",
+    "assets/portraits/skeleton_mascot_portrait.png",
+    "assets/sprites/skeleton_mascot/idle_0.png",
+    "assets/sprites/skeleton_mascot/walk_0.png"
+  ]
+}

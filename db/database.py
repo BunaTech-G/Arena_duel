@@ -10,7 +10,8 @@ def get_connection():
         port=cfg["db_port"],
         user=cfg["db_user"],
         password=cfg["db_password"],
-        database=cfg["db_name"]
+        database=cfg["db_name"],
+        connect_timeout=cfg.get("db_connect_timeout", 3),
     )
 
 

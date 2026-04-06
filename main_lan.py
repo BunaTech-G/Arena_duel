@@ -1,11 +1,11 @@
 import customtkinter as ctk
 import pygame
 
-from game.audio import init_audio
+from game.audio import init_audio, start_menu_music, stop_music
 from ui.network_lobby import NetworkLobbyView
+from ui.theme import apply_theme_settings
 
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
+apply_theme_settings()
 
 
 def run_main_lan():
@@ -20,6 +20,10 @@ def run_main_lan():
         init_audio()
     except Exception:
         pass
+    try:
+        start_menu_music()
+    except Exception:
+        pass
 
     app = ctk.CTk()
     app.withdraw()
@@ -29,6 +33,10 @@ def run_main_lan():
     def close_all():
         try:
             window.shutdown()
+        except Exception:
+            pass
+        try:
+            stop_music(fade_ms=150)
         except Exception:
             pass
         app.destroy()

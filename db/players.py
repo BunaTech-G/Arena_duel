@@ -30,11 +30,11 @@ def create_player(username):
     username = (username or "").strip()
 
     if not username:
-        return False, "Le pseudo est vide."
+        return False, "Choisis un nom avant d'enrôler un combattant."
 
     conn = get_connection()
     if not conn:
-        return False, "Connexion base impossible."
+        return False, "Le sanctuaire des chroniques est indisponible."
 
     cur = conn.cursor()
 
@@ -42,10 +42,10 @@ def create_player(username):
         cur.execute("INSERT INTO players (username) VALUES (?)", (username,))
         conn.commit()
         conn.close()
-        return True, f"Joueur '{username}' créé."
+        return True, f"Le combattant '{username}' rejoint le registre du bastion."
     except mariadb.IntegrityError:
         conn.close()
-        return False, "Ce pseudo existe déjà."
+        return False, "Ce nom de combattant figure déjà dans le registre."
     except mariadb.Error as e:
         conn.close()
-        return False, f"Erreur MariaDB : {e}"
+        return False, f"MariaDB a refusé l'enrôlement : {e}"

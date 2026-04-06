@@ -4,7 +4,7 @@ import socket
 import threading
 import time
 
-from network.messages import HELLO, READY, PING, INPUT
+from network.messages import HELLO, READY, PING, INPUT, REQUEST_HISTORY, ERROR, DISCONNECTED
 from network.protocol import encode_message, decode_message
 
 
@@ -15,6 +15,7 @@ class NetworkClient:
         self.reader_thread = None
         self.incoming = queue.Queue()
         self.send_lock = threading.Lock()
+        self.disconnect_notified = False
 
         self.last_input_state = None
         self.last_input_send_time = 0.0
@@ -24,11 +25,46 @@ class NetworkClient:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.connect((host, port))
         self.running = True
+        self.disconnect_notified = False
+        self.last_input_state = None
+        self.last_input_send_time = 0.0
 
-        self.send({"type": HELLO, "name": name})
+        if not self.send({"type": HELLO, "name": name}):
+            self.close()
+            raise ConnectionError("Impossible d'initialiser la session réseau.")
 
         self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self.reader_thread.start()
+
+    def _close_socket(self):
+        sock = self.sock
+        self.sock = None
+
+        if sock is None:
+            return
+
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+    def _notify_disconnect(self, message: str):
+        if self.disconnect_notified:
+            return
+
+        self.disconnect_notified = True
+        self.running = False
+        self.incoming.put(
+            {
+                "type": DISCONNECTED,
+                "message": message,
+            }
+        )
 
     def _reader_loop(self):
         buffer = b""
@@ -57,32 +93,43 @@ class NetworkClient:
         except Exception as e:
             self.incoming.put(
                 {
-                    "type": "ERROR",
+                    "type": ERROR,
                     "message": f"Lecture réseau impossible: {e}",
                 }
             )
         finally:
             self.running = False
-            self.incoming.put(
-                {
-                    "type": "DISCONNECTED",
-                    "message": "Connexion fermée.",
-                }
-            )
+            self._close_socket()
+            self._notify_disconnect("Connexion fermée.")
 
     def send(self, message: dict):
         if not self.sock or not self.running:
-            return
+            return False
 
         data = encode_message(message)
-        with self.send_lock:
-            self.sock.sendall(data)
+        try:
+            with self.send_lock:
+                self.sock.sendall(data)
+            return True
+        except Exception as e:
+            self.incoming.put(
+                {
+                    "type": ERROR,
+                    "message": f"Envoi réseau impossible: {e}",
+                }
+            )
+            self._close_socket()
+            self._notify_disconnect("Connexion perdue pendant l'envoi des données.")
+            return False
 
     def send_ready(self, ready: bool):
         self.send({"type": READY, "ready": ready})
 
     def send_ping(self):
         self.send({"type": PING})
+
+    def send_request_history(self):
+        return self.send({"type": REQUEST_HISTORY})
 
     def send_input(self, up: bool, down: bool, left: bool, right: bool):
         now = time.time()
@@ -120,11 +167,7 @@ class NetworkClient:
 
     def close(self):
         self.running = False
-        try:
-            if self.sock:
-                self.sock.close()
-        except Exception:
-            pass
+        self._close_socket()
 
 
 def run_cli_client(host: str, port: int, name: str):

@@ -6,6 +6,15 @@ import threading
 import time
 import uuid
 
+from game.arena_layout import (
+    DEFAULT_MAP_ID,
+    get_team_spawn_positions,
+    load_arena_layout,
+    random_free_point,
+    resolve_movement,
+)
+from game.match_text import format_winner_text, get_winner_team
+from game.settings import MATCH_DURATION_SECONDS, ORB_RADIUS, ORB_SPAWN_COUNT, PLAYER_RADIUS
 from network.messages import (
     HELLO,
     ASSIGN_SLOT,
@@ -18,21 +27,20 @@ from network.messages import (
     START,
     STATE,
     END,
+    REQUEST_HISTORY,
+    HISTORY_DATA,
 )
 from network.protocol import send_message_binary, receive_message_binary
 from db.network_match_repository import save_network_match_result
+from db.matches import get_serializable_match_history
 from network.net_utils import get_local_lan_ip
 
 MAX_PLAYERS = 6
 
-ARENA_W = 1280
-ARENA_H = 720
-PLAYER_RADIUS = 18
 PLAYER_SPEED = 260
-ORB_RADIUS = 10
-ORB_COUNT = 12
+ORB_COUNT = ORB_SPAWN_COUNT
 
-MATCH_SECONDS = 60
+MATCH_SECONDS = MATCH_DURATION_SECONDS
 TICK_RATE = 20
 
 
@@ -165,6 +173,9 @@ class LobbyState:
 
 class GameState:
     def __init__(self, lobby_snapshot: dict):
+        self.map_id = DEFAULT_MAP_ID
+        self.layout = load_arena_layout(self.map_id)
+        self.obstacle_rects = self.layout.collision_rects()
         self.started_at = time.time()
         self.ends_at = self.started_at + MATCH_SECONDS
         self.team_a_score = 0
@@ -176,40 +187,30 @@ class GameState:
         self._spawn_orbs()
 
     def _spawn_players(self, lobby_snapshot: dict):
-        team_spawns = {
-            "A": [(120, 180), (120, 360), (120, 540)],
-            "B": [(1160, 180), (1160, 360), (1160, 540)],
-        }
-
-        team_indexes = {"A": 0, "B": 0}
-
-        # tri par slot pour garder un ordre stable
         sorted_players = sorted(
             lobby_snapshot.items(),
             key=lambda item: item[1]["slot"]
         )
 
+        players_by_team = {"A": [], "B": []}
         for client_id, info in sorted_players:
-            team = info["team"]
-            index = team_indexes.get(team, 0)
+            players_by_team.setdefault(info["team"], []).append((client_id, info))
 
-            spawn_list = team_spawns.get(team, [(100, 100)])
-            if index >= len(spawn_list):
-                index = len(spawn_list) - 1
+        for team_code, team_players in players_by_team.items():
+            spawn_positions = get_team_spawn_positions(self.layout, team_code, len(team_players))
+            for index, (client_id, info) in enumerate(team_players):
+                x, y = spawn_positions[index]
 
-            x, y = spawn_list[index]
-            team_indexes[team] += 1
-
-            self.players[client_id] = {
-                "client_id": client_id,
-                "slot": info["slot"],
-                "name": info["name"],
-                "team": info["team"],
-                "x": float(x),
-                "y": float(y),
-                "score": 0,
-                "disconnected": False,
-            }
+                self.players[client_id] = {
+                    "client_id": client_id,
+                    "slot": info["slot"],
+                    "name": info["name"],
+                    "team": info["team"],
+                    "x": float(x),
+                    "y": float(y),
+                    "score": 0,
+                    "disconnected": False,
+                }
 
     def _spawn_orbs(self):
         self.orbs.clear()
@@ -217,10 +218,8 @@ class GameState:
             self.orbs.append(self._random_orb())
 
     def _random_orb(self):
-        return {
-            "x": random.randint(200, ARENA_W - 200),
-            "y": random.randint(80, ARENA_H - 80),
-        }
+        x, y = random_free_point(self.layout, ORB_RADIUS, self.obstacle_rects, padding=20)
+        return {"x": x, "y": y}
 
     def update(self, dt: float, lobby_snapshot: dict):
         for client_id, player in self.players.items():
@@ -245,11 +244,15 @@ class GameState:
                 dx /= length
                 dy /= length
 
-            player["x"] += dx * PLAYER_SPEED * dt
-            player["y"] += dy * PLAYER_SPEED * dt
-
-            player["x"] = clamp(player["x"], PLAYER_RADIUS, ARENA_W - PLAYER_RADIUS)
-            player["y"] = clamp(player["y"], PLAYER_RADIUS, ARENA_H - PLAYER_RADIUS)
+            player["x"], player["y"] = resolve_movement(
+                self.layout,
+                player["x"],
+                player["y"],
+                dx * PLAYER_SPEED * dt,
+                dy * PLAYER_SPEED * dt,
+                PLAYER_RADIUS,
+                self.obstacle_rects,
+            )
 
         self._handle_orbs()
 
@@ -264,8 +267,9 @@ class GameState:
                     else:
                         self.team_b_score += 1
 
-                    orb["x"] = random.randint(200, ARENA_W - 200)
-                    orb["y"] = random.randint(80, ARENA_H - 80)
+                    replacement = self._random_orb()
+                    orb["x"] = replacement["x"]
+                    orb["y"] = replacement["y"]
 
     def export_state(self):
         remaining = max(0, int(self.ends_at - time.time()))
@@ -286,8 +290,11 @@ class GameState:
 
         return {
             "type": STATE,
-            "arena_w": ARENA_W,
-            "arena_h": ARENA_H,
+            "map_id": self.map_id,
+            "arena_w": self.layout.width,
+            "arena_h": self.layout.height,
+            "arena_rect": list(self.layout.playable_rect),
+            "obstacles": [list(rect) for rect in self.obstacle_rects],
             "remaining_time": remaining,
             "team_a_score": self.team_a_score,
             "team_b_score": self.team_b_score,
@@ -299,28 +306,33 @@ class GameState:
         return time.time() >= self.ends_at
 
     def build_end_message(self):
-        if self.team_a_score > self.team_b_score:
-            winner = "Victoire Équipe A"
-        elif self.team_b_score > self.team_a_score:
-            winner = "Victoire Équipe B"
-        else:
-            winner = "Match nul"
+        winner_team = get_winner_team(self.team_a_score, self.team_b_score)
+        players = []
+
+        for p in self.players.values():
+            players.append(
+                {
+                    "slot": p["slot"],
+                    "name": p["name"],
+                    "team": p["team"],
+                    "score": p["score"],
+                }
+            )
+
+        players.sort(key=lambda item: item["slot"])
 
         return {
             "type": END,
-            "winner_text": winner,
+            "winner_team": winner_team,
+            "winner_text": format_winner_text(winner_team),
             "team_a_score": self.team_a_score,
             "team_b_score": self.team_b_score,
+            "players": players,
         }
     
     
     def build_persistable_result(self):
-        if self.team_a_score > self.team_b_score:
-            winner_team = "A"
-        elif self.team_b_score > self.team_a_score:
-            winner_team = "B"
-        else:
-            winner_team = "DRAW"
+        winner_team = get_winner_team(self.team_a_score, self.team_b_score)
 
         players = []
         for p in self.players.values():
@@ -396,16 +408,24 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             self.broadcast(self.game_state.export_state())
 
             if self.game_state.is_finished():
-                end_message = self.game_state.build_end_message()
-                self.broadcast(end_message)
-
                 # sauvegarde DB du match réseau
+                match_id = None
+                save_error = None
                 try:
                     match_result = self.game_state.build_persistable_result()
                     match_id = save_network_match_result(match_result)
                     print(f"[server] match LAN sauvegardé en base (match_id={match_id})")
                 except Exception as e:
+                    save_error = str(e)
                     print(f"[server] erreur sauvegarde match LAN: {e}")
+
+                end_message = self.game_state.build_end_message()
+                end_message["history_saved"] = save_error is None
+                end_message["match_id"] = match_id
+                if save_error:
+                    end_message["history_error"] = save_error
+
+                self.broadcast(end_message)
 
                 with self.game_lock:
                     self.match_running = False
@@ -503,6 +523,20 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
 
             elif msg_type == PING:
                 self.safe_send({"type": PONG})
+
+            elif msg_type == REQUEST_HISTORY:
+                try:
+                    rows = get_serializable_match_history()
+                    self.safe_send({"type": HISTORY_DATA, "ok": True, "rows": rows})
+                except Exception as e:
+                    self.safe_send(
+                        {
+                            "type": HISTORY_DATA,
+                            "ok": False,
+                            "rows": [],
+                            "message": f"Historique indisponible: {e}",
+                        }
+                    )
 
             else:
                 self.safe_send(
