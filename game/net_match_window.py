@@ -123,4 +123,3 @@ def draw_end_overlay(screen, end_message, big_font):
 
     screen.blit(txt1, (1280 // 2 - txt1.get_width() // 2, 300))
     screen.blit(txt2, (1280 // 2 - txt2.get_width() // 2, 360))
-``
