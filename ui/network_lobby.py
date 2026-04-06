@@ -1,5 +1,6 @@
 import threading
 import customtkinter as ctk
+import time
 
 from network.client import NetworkClient
 from network.messages import ASSIGN_SLOT, LOBBY_STATE
@@ -91,8 +92,13 @@ class NetworkLobbyView(ctk.CTkToplevel):
     # =========================
     def _network_loop(self):
         while self.running:
+            if not self.client:
+                break
+
             for msg in self.client.poll_messages():
                 self.after(0, lambda m=msg: self._handle_message(m))
+
+            time.sleep(0.02)  # 20 ms -> boucle plus légère
 
     def _handle_message(self, msg: dict):
         msg_type = msg.get("type")
@@ -114,7 +120,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         elif msg_type == START:
             self.info_label.configure(text="Match en cours...")
             self.ready_btn.configure(state="disabled")
-            self.after(150, self._launch_match)
+            self.after(50, self._launch_match)
 
     def _start_network_thread(self):
         self.running = True

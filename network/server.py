@@ -349,6 +349,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
     def game_loop(self):
         dt = 1.0 / TICK_RATE
+        next_tick = time.time()
 
         while self.match_running:
             snapshot = self.lobby.get_snapshot()
@@ -375,15 +376,18 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                     self.match_running = False
                     self.game_state = None
 
-                # remettre les joueurs en not ready après le match
                 for cid in list(snapshot.keys()):
                     self.lobby.set_ready(cid, False)
 
                 self.broadcast_lobby_state()
                 break
 
-            time.sleep(dt)
-
+            next_tick += dt
+            sleep_time = next_tick - time.time()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                next_tick = time.time()
 
 class ArenaRequestHandler(socketserver.StreamRequestHandler):
     def setup(self):
