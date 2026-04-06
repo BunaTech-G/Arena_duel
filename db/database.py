@@ -1,13 +1,16 @@
 import mariadb
+from runtime_utils import load_runtime_config
 
 
 def get_connection():
+    cfg = load_runtime_config()
+
     return mariadb.connect(
-        host="localhost",
-        port=3306,
-        user="root",
-        password="",
-        database="arena_duel_v2_db"
+        host=cfg["db_host"],
+        port=cfg["db_port"],
+        user=cfg["db_user"],
+        password=cfg["db_password"],
+        database=cfg["db_name"]
     )
 
 

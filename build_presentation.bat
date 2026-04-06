@@ -16,13 +16,18 @@ if exist dist rmdir /s /q dist
 
 .\.venv\Scripts\python.exe -m PyInstaller ^
   --noconfirm ^
+  --clean ^
   --onedir ^
   --windowed ^
   --name ArenaDuel ^
+  --icon assets\icons\app.ico ^
+  --collect-data customtkinter ^
+  --add-data "assets;assets" ^
+  --add-data "app_runtime.json;." ^
   main.py
 
 echo.
 echo [OK] Build terminé.
-echo Le dossier final est : dist\ArenaDuel
+echo Dossier final : dist\ArenaDuel
 echo.
 pause

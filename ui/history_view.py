@@ -3,7 +3,7 @@ from collections import Counter
 
 from db.matches import get_match_history
 from game.audio import play_click
-
+from runtime_utils import resource_path
 
 class MatchCard(ctk.CTkFrame):
     def __init__(self, master, match_data):
@@ -69,6 +69,10 @@ class HistoryView(ctk.CTkToplevel):
         self.title("Historique des parties")
         self.geometry("980x640")
         self.minsize(980, 640)
+        try:
+            self.iconbitmap(resource_path("assets", "icons", "app.ico"))
+        except Exception:
+            pass
 
         # IMPORTANT : forcer l'ouverture au premier plan
         self.transient(parent)

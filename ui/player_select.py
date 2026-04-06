@@ -5,6 +5,7 @@ from db.players import get_all_players, create_player
 from db.matches import save_team_match
 from ui.history_view import HistoryView
 from game.audio import play_click
+from runtime_utils import resource_path
 
 
 class PlayerSlotRow(ctk.CTkFrame):
@@ -78,6 +79,10 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.title("Sélection des joueurs - Mode équipes")
         self.geometry("1080x720")
         self.minsize(1080, 720)
+        try:
+            self.iconbitmap(resource_path("assets", "icons", "app.ico"))
+        except Exception:
+            pass
 
         self.transient(parent)
         self.lift()

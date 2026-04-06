@@ -2,6 +2,8 @@ import pygame
 
 from network.messages import STATE, END
 from game.audio import play_pickup, play_win, play_draw
+from pathlib import Path
+from runtime_utils import resource_path
 
 
 TEAM_COLORS = {
@@ -14,6 +16,13 @@ def run_network_match(client, my_slot, my_name, my_team):
     pygame.init()
     screen = pygame.display.set_mode((1280, 720))
     pygame.display.set_caption(f"Arena Duel LAN - {my_name}")
+    try:
+        icon_path = resource_path("assets", "icons", "app.png")
+        if Path(icon_path).exists():
+            icon_surface = pygame.image.load(icon_path)
+            pygame.display.set_icon(icon_surface)
+    except Exception:
+        pass
     clock = pygame.time.Clock()
 
     font = pygame.font.SysFont("Arial", 20)
