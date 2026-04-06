@@ -3,6 +3,8 @@ import customtkinter as ctk
 
 from network.client import NetworkClient
 from network.messages import ASSIGN_SLOT, LOBBY_STATE
+from network.messages import ASSIGN_SLOT, LOBBY_STATE, START
+from game.net_match_window import run_network_match
 
 
 class NetworkLobbyView(ctk.CTkToplevel):
@@ -21,6 +23,11 @@ class NetworkLobbyView(ctk.CTkToplevel):
         
         self.client = None
         self.running = False
+
+        self.my_slot = None
+        self.my_team = None
+        self.my_name = None
+        self.ready_state = False
 
         self._build_ui()
 
@@ -73,6 +80,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             return
 
         self.info_label.configure(text=f"Connecté en tant que {name}")
+        self.my_name = name
         self.connect_btn.configure(state="disabled")
         self.ready_btn.configure(state="normal")
 
@@ -93,12 +101,20 @@ class NetworkLobbyView(ctk.CTkToplevel):
         if msg_type == ASSIGN_SLOT:
             slot = msg["slot"]
             team = msg["team"]
+
+            self.my_slot = slot
+            self.my_team = team
+
             self.info_label.configure(
                 text=f"Slot {slot} | Équipe {team}"
             )
 
         elif msg_type == LOBBY_STATE:
             self._update_lobby(msg["players"])
+
+        elif msg_type == START:
+            self.info_label.configure(text="Match en cours...")
+            self.after(150, self._launch_match)
 
     # =========================
     # Lobby UI
@@ -118,7 +134,24 @@ class NetworkLobbyView(ctk.CTkToplevel):
     # Ready
     # =========================
     def _toggle_ready(self):
-        self.client.send_ready(True)
+        self.ready_state = not self.ready_state
+        self.client.send_ready(self.ready_state)
+
+        if self.ready_state:
+            self.ready_btn.configure(text="Je ne suis plus prêt")
+        else:
+            self.ready_btn.configure(text="Je suis prêt")
+
+    def _launch_match(self):
+        if not self.client or self.my_slot is None or not self.my_name:
+            return
+
+        self.running = False
+        self.withdraw()
+        self.update()
+
+        run_network_match(self.client, self.my_slot, self.my_name)
+        self.shutdown()
 
     def shutdown(self):
             self.running = False

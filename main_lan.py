@@ -7,7 +7,7 @@ ctk.set_default_color_theme("blue")
 
 def run_main_lan():
     app = ctk.CTk()
-    app.withdraw()  # on cache la racine principale
+    app.withdraw()
 
     window = NetworkLobbyView(app)
 
