@@ -230,7 +230,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.update()
 
         # on lance le match réseau
-        run_network_match(self.client, self.my_slot, self.my_name)
+        run_network_match(self.client, self.my_slot, self.my_name, self.my_team)
 
         # retour au lobby après le match
         self.deiconify()
