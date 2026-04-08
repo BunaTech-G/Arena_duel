@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "ui_placeholders": {
+    "ability_ring": "ability_ring.svg",
+    "icon_timer": "icon_timer.svg",
+    "icon_score": "icon_score.svg",
+    "portrait_placeholder": "portrait_placeholder.svg"
+  },
+  "notes": "Placeholders SVG pour prototype HUD. Remplacer par assets finaux plus tard."
+}

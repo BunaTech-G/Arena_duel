@@ -1,7 +1,9 @@
+from pathlib import Path
+
 import pygame
 
 from game.asset_pipeline import load_font
-from game.hud_panels import draw_team_summary_panel
+from game.hud_panels import draw_match_hud, draw_team_summary_panel
 from game.arena import (
     draw_arena,
     draw_background,
@@ -13,38 +15,67 @@ from game.arena import (
     get_team_color,
 )
 from game.arena_layout import DEFAULT_MAP_ID
-from game.match_text import format_scoreline, format_winner_text, get_team_label, get_winner_team
+from game.match_text import (
+    format_scoreline,
+    format_winner_text,
+    get_team_label,
+    get_winner_team,
+)
 from game.settings import PLAYER_RADIUS, ORB_RADIUS
 from network.messages import STATE, END, ERROR, DISCONNECTED
-from game.audio import init_audio, play_draw, play_lose, play_pickup, play_win, start_match_music, stop_music
-from pathlib import Path
+from game.audio import init_audio, play_draw, play_lose, play_win, stop_music
 from runtime_utils import resource_path
 
 
+PG_QUIT = getattr(pygame, "QUIT")
+PG_K_Z = getattr(pygame, "K_z")
+PG_K_W = getattr(pygame, "K_w")
+PG_K_UP = getattr(pygame, "K_UP")
+PG_K_S = getattr(pygame, "K_s")
+PG_K_DOWN = getattr(pygame, "K_DOWN")
+PG_K_Q = getattr(pygame, "K_q")
+PG_K_A = getattr(pygame, "K_a")
+PG_K_LEFT = getattr(pygame, "K_LEFT")
+PG_K_D = getattr(pygame, "K_d")
+PG_K_RIGHT = getattr(pygame, "K_RIGHT")
+PG_SRCALPHA = getattr(pygame, "SRCALPHA")
+pg_init = getattr(pygame, "init")
+
+
 def run_network_match(client, my_slot, my_name, my_team):
-    pygame.init()
-    try:
-        init_audio()
-        stop_music(fade_ms=0)
-        start_match_music()
-    except Exception:
-        pass
+    pg_init()
+    init_audio()
+    stop_music(fade_ms=0)
     active_layout = get_map_layout(DEFAULT_MAP_ID)
     screen = pygame.display.set_mode(active_layout.window_size)
     pygame.display.set_caption(f"Arena Duel - Joute partagee · {my_name}")
-    try:
-        icon_path = resource_path("assets", "icons", "app.png")
-        if Path(icon_path).exists():
+    icon_path = resource_path("assets", "icons", "app.png")
+    if Path(icon_path).exists():
+        try:
             icon_surface = pygame.image.load(icon_path)
             pygame.display.set_icon(icon_surface)
-    except Exception:
-        pass
+        except OSError:
+            pass
     clock = pygame.time.Clock()
 
     font = load_font("CrimsonText-Regular.ttf", 20, fallback_name="Georgia")
-    medium_font = load_font("Cinzel-Regular.ttf", 24, fallback_name="Georgia", bold=True)
-    small_font = load_font("CrimsonText-Regular.ttf", 18, fallback_name="Georgia")
-    big_font = load_font("Cinzel-Bold.ttf", 36, fallback_name="Georgia", bold=True)
+    medium_font = load_font(
+        "Cinzel-Regular.ttf",
+        24,
+        fallback_name="Georgia",
+        bold=True,
+    )
+    small_font = load_font(
+        "CrimsonText-Regular.ttf",
+        18,
+        fallback_name="Georgia",
+    )
+    big_font = load_font(
+        "Cinzel-Bold.ttf",
+        36,
+        fallback_name="Georgia",
+        bold=True,
+    )
 
     latest_state = None
     end_message = None
@@ -53,7 +84,6 @@ def run_network_match(client, my_slot, my_name, my_team):
     disconnect_message = None
     last_error_message = None
 
-    previous_my_score = None
     previous_positions = {}
     latest_movement = {}
     end_sound_played = False
@@ -61,22 +91,22 @@ def run_network_match(client, my_slot, my_name, my_team):
     running = True
 
     while running and client.running:
-        dt = clock.tick(50) / 1000.0 # FPS limit à 50 pour éviter de surcharger le CPU
+        dt = clock.tick(50) / 1000.0
 
         up = down = left = right = False
 
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:
+            if event.type == PG_QUIT:
                 disconnect_message = "Match fermé par le joueur."
                 stop_music(fade_ms=120)
                 client.close()
                 running = False
 
         keys = pygame.key.get_pressed()
-        up = keys[pygame.K_z] or keys[pygame.K_w] or keys[pygame.K_UP]
-        down = keys[pygame.K_s] or keys[pygame.K_DOWN]
-        left = keys[pygame.K_q] or keys[pygame.K_a] or keys[pygame.K_LEFT]
-        right = keys[pygame.K_d] or keys[pygame.K_RIGHT]
+        up = keys[PG_K_Z] or keys[PG_K_W] or keys[PG_K_UP]
+        down = keys[PG_K_S] or keys[PG_K_DOWN]
+        left = keys[PG_K_Q] or keys[PG_K_A] or keys[PG_K_LEFT]
+        right = keys[PG_K_D] or keys[PG_K_RIGHT]
 
         client.send_input(up, down, left, right)
 
@@ -87,16 +117,24 @@ def run_network_match(client, my_slot, my_name, my_team):
                 latest_movement = {}
                 for player_state in msg.get("players", []):
                     previous_pos = previous_positions.get(player_state["slot"])
-                    latest_movement[player_state["slot"]] = previous_pos is not None and (
-                        abs(player_state["x"] - previous_pos[0]) > 0.5
-                        or abs(player_state["y"] - previous_pos[1]) > 0.5
+                    latest_movement[player_state["slot"]] = (
+                        previous_pos is not None
+                        and (
+                            abs(player_state["x"] - previous_pos[0]) > 0.5
+                            or abs(player_state["y"] - previous_pos[1]) > 0.5
+                        )
                     )
                 previous_positions = {
-                    player_state["slot"]: (player_state["x"], player_state["y"])
+                    player_state["slot"]: (
+                        player_state["x"],
+                        player_state["y"],
+                    )
                     for player_state in msg.get("players", [])
                 }
                 latest_state = msg
-                active_layout = get_map_layout(msg.get("map_id", DEFAULT_MAP_ID))
+                active_layout = get_map_layout(
+                    msg.get("map_id", DEFAULT_MAP_ID)
+                )
 
             elif msg_type == END:
                 end_message = msg
@@ -104,10 +142,16 @@ def run_network_match(client, my_slot, my_name, my_team):
                 stop_music(fade_ms=280)
 
             elif msg_type == ERROR:
-                last_error_message = msg.get("message", "Le hall a signale une alerte.")
+                last_error_message = msg.get(
+                    "message",
+                    "Le hall a signale une alerte.",
+                )
 
             elif msg_type == DISCONNECTED:
-                disconnect_message = msg.get("message", "Le lien au hall s'est rompu.")
+                disconnect_message = msg.get(
+                    "message",
+                    "Le lien au hall s'est rompu.",
+                )
                 stop_music(fade_ms=120)
                 running = False
 
@@ -117,25 +161,17 @@ def run_network_match(client, my_slot, my_name, my_team):
         draw_background(screen, active_layout)
 
         if latest_state:
-            # détecter si mon score a augmenté
-            for p in latest_state.get("players", []):
-                if p["slot"] == my_slot:
-                    current_score = p["score"]
-
-                    if previous_my_score is None:
-                        previous_my_score = current_score
-                    elif current_score > previous_my_score:
-                        try:
-                            play_pickup()
-                        except Exception:
-                            pass
-                        previous_my_score = current_score
-                    else:
-                        previous_my_score = current_score
-
-                    break
-
-            draw_state(screen, latest_state, my_slot, font, medium_font, small_font, active_layout, latest_movement)
+            draw_state(
+                screen,
+                latest_state,
+                my_slot,
+                font,
+                big_font,
+                medium_font,
+                small_font,
+                active_layout,
+                latest_movement,
+            )
 
         if end_message:
             if not end_sound_played:
@@ -146,19 +182,22 @@ def run_network_match(client, my_slot, my_name, my_team):
                         end_message.get("team_b_score", 0),
                     )
 
-                try:
-                    if winner_team is None:
-                        play_draw()
-                    elif winner_team == my_team:
-                        play_win()
-                    else:
-                        play_lose()
-                except Exception:
-                    pass
+                if winner_team is None:
+                    play_draw()
+                elif winner_team == my_team:
+                    play_win()
+                else:
+                    play_lose()
 
                 end_sound_played = True
 
-            draw_end_overlay(screen, end_message, big_font, medium_font, small_font)
+            draw_end_overlay(
+                screen,
+                end_message,
+                big_font,
+                medium_font,
+                small_font,
+            )
             end_timer -= dt
             if end_timer <= 0:
                 running = False
@@ -179,38 +218,46 @@ def run_network_match(client, my_slot, my_name, my_team):
         "completed": False,
         "end_message": None,
         "deferred_messages": deferred_messages,
-        "disconnect_message": disconnect_message or last_error_message or "Le lien au hall s'est rompu.",
+        "disconnect_message": (
+            disconnect_message
+            or last_error_message
+            or "Le lien au hall s'est rompu."
+        ),
     }
 
-def draw_state(screen, state, my_slot, font, medium_font, small_font, layout, movement_flags=None):
+
+def draw_state(
+    screen,
+    state,
+    my_slot,
+    font,
+    big_font,
+    _medium_font,
+    small_font,
+    layout,
+    movement_flags=None,
+):
     movement_flags = movement_flags or {}
     arena_rect = get_arena_rect(layout)
     obstacles = get_obstacles(layout)
-    draw_arena(screen, arena_rect, obstacles, layout=layout, elapsed_ms=pygame.time.get_ticks())
+    draw_arena(
+        screen,
+        arena_rect,
+        obstacles,
+        layout=layout,
+        elapsed_ms=pygame.time.get_ticks(),
+    )
 
     team_a = state.get("team_a_score", 0)
     team_b = state.get("team_b_score", 0)
     remaining = state.get("remaining_time", 0)
 
-    team_a_panel = pygame.Rect(320, 12, 280, 58)
-    team_b_panel = pygame.Rect(620, 12, 280, 58)
-    time_panel = pygame.Rect(1020, 12, 180, 58)
-
-    for panel in (team_a_panel, team_b_panel, time_panel):
-        pygame.draw.rect(screen, (30, 34, 42), panel, border_radius=10)
-        pygame.draw.rect(screen, (90, 110, 150), panel, width=2, border_radius=10)
-
-    team_a_text = medium_font.render(f"{get_team_label('A', 'short')} : {team_a}", True, (240, 240, 240))
-    team_b_text = medium_font.render(f"{get_team_label('B', 'short')} : {team_b}", True, (240, 240, 240))
-    timer_text = medium_font.render(f"Sablier : {remaining}s", True, (240, 240, 240))
-
-    screen.blit(team_a_text, (340, 26))
-    screen.blit(team_b_text, (640, 26))
-    screen.blit(timer_text, (1068, 26))
-
     team_a_rows = []
     team_b_rows = []
-    for p in sorted(state.get("players", []), key=lambda item: item.get("slot", 0)):
+    for p in sorted(
+        state.get("players", []),
+        key=lambda item: item.get("slot", 0),
+    ):
         row = {
             "name": p["name"],
             "score": p["score"],
@@ -221,17 +268,34 @@ def draw_state(screen, state, my_slot, font, medium_font, small_font, layout, mo
         else:
             team_b_rows.append(row)
 
-    draw_team_summary_panel(screen, small_font, 24, 82, get_team_label("A"), team_a_rows, align="left")
-    draw_team_summary_panel(screen, small_font, 1008, 82, get_team_label("B"), team_b_rows, align="right")
+    draw_match_hud(
+        screen,
+        big_font,
+        small_font,
+        layout,
+        team_a_title=get_team_label("A"),
+        team_b_title=get_team_label("B"),
+        team_a_score=team_a,
+        team_b_score=team_b,
+        remaining_time=remaining,
+        team_a_rows=team_a_rows,
+        team_b_rows=team_b_rows,
+    )
 
     for orb in state.get("orbs", []):
-        draw_orb_visual(screen, orb["x"], orb["y"], ORB_RADIUS, elapsed_ms=pygame.time.get_ticks())
+        draw_orb_visual(
+            screen,
+            orb["x"],
+            orb["y"],
+            ORB_RADIUS,
+            elapsed_ms=pygame.time.get_ticks(),
+        )
 
     for p in state.get("players", []):
         accent_color = get_team_color(p["team"], max(0, p["slot"] - 1))
         draw_player_avatar(
             screen,
-            name=f"{p['name']} · {p['score']}",
+            name=p["name"],
             x=p["x"],
             y=p["y"],
             radius=PLAYER_RADIUS,
@@ -248,17 +312,26 @@ def draw_state(screen, state, my_slot, font, medium_font, small_font, layout, mo
 def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
     width, height = screen.get_size()
 
-    overlay = pygame.Surface((width, height), pygame.SRCALPHA)
+    overlay = pygame.Surface((width, height), PG_SRCALPHA)
     overlay.fill((0, 0, 0, 182))
     screen.blit(overlay, (0, 0))
 
     winner_team = end_message.get("winner_team")
     if winner_team is None:
-        winner_team = get_winner_team(end_message.get("team_a_score", 0), end_message.get("team_b_score", 0))
+        winner_team = get_winner_team(
+            end_message.get("team_a_score", 0),
+            end_message.get("team_b_score", 0),
+        )
 
     winner = end_message.get("winner_text") or format_winner_text(winner_team)
-    score_text = format_scoreline(end_message.get("team_a_score", 0), end_message.get("team_b_score", 0))
-    players = sorted(end_message.get("players", []), key=lambda item: item.get("slot", 0))
+    score_text = format_scoreline(
+        end_message.get("team_a_score", 0),
+        end_message.get("team_b_score", 0),
+    )
+    players = sorted(
+        end_message.get("players", []),
+        key=lambda item: item.get("slot", 0),
+    )
 
     panel_width = 860
     panel_height = 360
@@ -267,7 +340,13 @@ def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
 
     panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
     pygame.draw.rect(screen, (34, 38, 46), panel_rect, border_radius=18)
-    pygame.draw.rect(screen, (108, 130, 178), panel_rect, width=3, border_radius=18)
+    pygame.draw.rect(
+        screen,
+        (108, 130, 178),
+        panel_rect,
+        width=3,
+        border_radius=18,
+    )
 
     txt1 = big_font.render(winner, True, (255, 255, 255))
     txt2 = medium_font.render(score_text, True, (190, 210, 255))
@@ -281,15 +360,34 @@ def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
         row = {
             "name": player.get("name", "Combattant"),
             "score": player.get("score", 0),
-            "accent_color": get_team_color(player.get("team", "A"), max(0, player.get("slot", 1) - 1)),
+            "accent_color": get_team_color(
+                player.get("team", "A"),
+                max(0, player.get("slot", 1) - 1),
+            ),
         }
         if player.get("team") == "A":
             team_a_rows.append(row)
         else:
             team_b_rows.append(row)
 
-    draw_team_summary_panel(screen, small_font, panel_x + 54, panel_y + 128, get_team_label("A"), team_a_rows, align="left")
-    draw_team_summary_panel(screen, small_font, panel_x + 558, panel_y + 128, get_team_label("B"), team_b_rows, align="right")
+    draw_team_summary_panel(
+        screen,
+        small_font,
+        panel_x + 54,
+        panel_y + 128,
+        get_team_label("A"),
+        team_a_rows,
+        align="left",
+    )
+    draw_team_summary_panel(
+        screen,
+        small_font,
+        panel_x + 558,
+        panel_y + 128,
+        get_team_label("B"),
+        team_b_rows,
+        align="right",
+    )
 
     if end_message.get("history_saved", False):
         match_id = end_message.get("match_id")
@@ -307,7 +405,17 @@ def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
         history_color = (255, 188, 166)
 
     status_text = small_font.render(history_text, True, history_color)
-    return_text = small_font.render("Retour au hall dans un instant...", True, (220, 220, 220))
+    return_text = small_font.render(
+        "Retour au hall dans un instant...",
+        True,
+        (220, 220, 220),
+    )
 
-    screen.blit(status_text, (width // 2 - status_text.get_width() // 2, panel_y + 316))
-    screen.blit(return_text, (width // 2 - return_text.get_width() // 2, panel_y + 336))
+    screen.blit(
+        status_text,
+        (width // 2 - status_text.get_width() // 2, panel_y + 316),
+    )
+    screen.blit(
+        return_text,
+        (width // 2 - return_text.get_width() // 2, panel_y + 336),
+    )

@@ -212,6 +212,32 @@ def load_sprite_portrait(
     )
 
 
+def load_ui_asset(
+    name: str,
+    size: tuple[int, int] | None = None,
+    allow_placeholder: bool = True,
+) -> pygame.Surface | None:
+    """Charge un asset PNG depuis assets/ui/<name>.png.
+
+    Cherche d'abord <name>.png puis <name> tel quel.
+    Si non trouvé, retourne un placeholder stylisé si allow_placeholder=True.
+    Les SVG ne peuvent pas être chargés par Pygame — exportez-les en PNG.
+    """
+    for candidate in (f"{name}.png", name):
+        path = asset_path("ui", candidate)
+        if path.exists():
+            return _load_image_from_path(
+                path,
+                size=size,
+                fallback_label=name,
+                allow_placeholder=allow_placeholder,
+            )
+
+    if not allow_placeholder:
+        return None
+    return make_placeholder_surface(size or (64, 64), label=name[:12])
+
+
 def describe_asset_tree() -> dict:
     manifest = load_asset_manifest()
     return {

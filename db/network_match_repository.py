@@ -1,3 +1,5 @@
+import mariadb
+
 from db.database import get_connection
 
 
@@ -25,6 +27,11 @@ def _get_or_create_player_id(cursor, player_name: str) -> int:
 
 def save_network_match_result(match_result: dict) -> int:
     conn = get_connection()
+    if not conn:
+        raise RuntimeError(
+            "Le sanctuaire des chroniques LAN est indisponible."
+        )
+
     cursor = conn.cursor()
 
     try:
@@ -35,7 +42,13 @@ def save_network_match_result(match_result: dict) -> int:
 
         cursor.execute(
             """
-            INSERT INTO matches (team_a_score, team_b_score, winner_team, duration_seconds, played_at)
+            INSERT INTO matches (
+                team_a_score,
+                team_b_score,
+                winner_team,
+                duration_seconds,
+                played_at
+            )
             VALUES (?, ?, ?, ?, NOW())
             """,
             (team_a_score, team_b_score, winner_team, duration_seconds),
@@ -51,7 +64,12 @@ def save_network_match_result(match_result: dict) -> int:
 
             cursor.execute(
                 """
-                INSERT INTO match_players (match_id, player_id, team_code, individual_score)
+                INSERT INTO match_players (
+                    match_id,
+                    player_id,
+                    team_code,
+                    individual_score
+                )
                 VALUES (?, ?, ?, ?)
                 """,
                 (match_id, player_id, team_code, individual_score),
@@ -60,7 +78,7 @@ def save_network_match_result(match_result: dict) -> int:
         conn.commit()
         return match_id
 
-    except Exception:
+    except mariadb.Error:
         conn.rollback()
         raise
 

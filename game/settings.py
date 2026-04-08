@@ -48,6 +48,30 @@ ORB_SPAWN_COUNT = 10
 ORB_SCORE_VALUE = 1
 
 MATCH_DURATION_SECONDS = 60
+MATCH_DURATION_OPTIONS = (30, 60, 90, 120)
+
+
+def coerce_match_duration(value, default: int = MATCH_DURATION_SECONDS) -> int:
+    try:
+        duration_seconds = int(value)
+    except (TypeError, ValueError):
+        duration_seconds = default
+
+    if duration_seconds in MATCH_DURATION_OPTIONS:
+        return duration_seconds
+    return default
+
+
+def format_match_duration_label(duration_seconds: int) -> str:
+    duration_seconds = coerce_match_duration(duration_seconds)
+    if duration_seconds < 60:
+        return f"{duration_seconds} s"
+
+    minutes, seconds = divmod(duration_seconds, 60)
+    if seconds == 0:
+        return f"{minutes} min"
+    return f"{minutes} min {seconds:02d}s"
+
 
 HUD_TEXT_COLOR = (240, 240, 240)
 HUD_ACCENT_COLOR = (130, 220, 255)
