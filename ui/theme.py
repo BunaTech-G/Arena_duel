@@ -1,5 +1,6 @@
 import customtkinter as ctk
 from pathlib import Path
+from tkinter import TclError
 
 from PIL import Image, ImageDraw
 
@@ -98,7 +99,11 @@ BUTTON_VARIANTS = {
 
 
 BADGE_VARIANTS = {
-    "neutral": (PALETTE["neutral_dim"], PALETTE["neutral"], PALETTE["text_muted"]),
+    "neutral": (
+        PALETTE["neutral_dim"],
+        PALETTE["neutral"],
+        PALETTE["text_muted"],
+    ),
     "info": (PALETTE["cyan_dim"], PALETTE["cyan"], PALETTE["text"]),
     "success": (PALETTE["success_dim"], PALETTE["success"], PALETTE["text"]),
     "warning": (PALETTE["warning_dim"], PALETTE["warning"], PALETTE["text"]),
@@ -141,7 +146,16 @@ def set_textbox_content(textbox, text):
     textbox.configure(state="disabled")
 
 
-def create_button(master, text, command, variant="primary", width=220, height=46, font=None, **kwargs):
+def create_button(
+    master,
+    text,
+    command,
+    variant="primary",
+    width=220,
+    height=46,
+    font=None,
+    **kwargs,
+):
     style = BUTTON_VARIANTS[variant]
     return ctk.CTkButton(
         master,
@@ -160,8 +174,44 @@ def create_button(master, text, command, variant="primary", width=220, height=46
     )
 
 
+def create_option_menu(
+    master,
+    values,
+    command=None,
+    variable=None,
+    width=220,
+    height=42,
+    font=None,
+    dropdown_font=None,
+    **kwargs,
+):
+    return ctk.CTkOptionMenu(
+        master,
+        values=values,
+        command=command,
+        variable=variable,
+        width=width,
+        height=height,
+        corner_radius=14,
+        fg_color=PALETTE["panel_soft"],
+        button_color=PALETTE["surface"],
+        button_hover_color=PALETTE["border_strong"],
+        text_color=PALETTE["text"],
+        dropdown_fg_color=PALETTE["panel"],
+        dropdown_hover_color=PALETTE["surface"],
+        dropdown_text_color=PALETTE["text"],
+        font=font or TYPOGRAPHY["body_bold"],
+        dropdown_font=dropdown_font or TYPOGRAPHY["body"],
+        anchor="w",
+        dynamic_resizing=False,
+        **kwargs,
+    )
+
+
 def create_badge(master, text, tone="neutral"):
-    fg_color, border_color, text_color = BADGE_VARIANTS[tone]
+    badge_colors = BADGE_VARIANTS[tone]
+    fg_color = badge_colors[0]
+    text_color = badge_colors[2]
     return ctk.CTkLabel(
         master,
         text=text,
@@ -184,11 +234,16 @@ def _parse_geometry_size(geometry: str) -> tuple[int | None, int | None]:
         size_token = geometry.split("+", 1)[0]
         width_text, height_text = size_token.split("x", 1)
         return int(width_text), int(height_text)
-    except Exception:
+    except ValueError:
         return None, None
 
 
-def enable_large_window(window, min_width: int, min_height: int, start_zoomed: bool = True):
+def enable_large_window(
+    window,
+    min_width: int,
+    min_height: int,
+    start_zoomed: bool = True,
+):
     screen_width = max(1, int(window.winfo_screenwidth()))
     screen_height = max(1, int(window.winfo_screenheight()))
     preferred_width, preferred_height = _parse_geometry_size(window.geometry())
@@ -201,10 +256,13 @@ def enable_large_window(window, min_width: int, min_height: int, start_zoomed: b
     target_y = max(16, (screen_height - target_height) // 2 - 20)
 
     window.geometry(f"{target_width}x{target_height}+{target_x}+{target_y}")
-    window.minsize(min(min_width, usable_width), min(min_height, usable_height))
+    window.minsize(
+        min(min_width, usable_width),
+        min(min_height, usable_height),
+    )
     try:
         window.resizable(True, True)
-    except Exception:
+    except TclError:
         pass
 
     should_zoom = (
@@ -221,15 +279,15 @@ def enable_large_window(window, min_width: int, min_height: int, start_zoomed: b
     def _zoom():
         try:
             window.state("zoomed")
-        except Exception:
+        except TclError:
             try:
                 window.attributes("-zoomed", True)
-            except Exception:
+            except TclError:
                 pass
 
     try:
         window.after(40, _zoom)
-    except Exception:
+    except TclError:
         pass
 
 
@@ -238,23 +296,93 @@ def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     return tuple(int(value[index:index + 2], 16) for index in (0, 2, 4))
 
 
-def make_ui_placeholder_image(size: tuple[int, int], label: str = "asset") -> Image.Image:
+def make_ui_placeholder_image(
+    size: tuple[int, int],
+    label: str = "asset",
+) -> Image.Image:
     width, height = size
-    image = Image.new("RGBA", size, _hex_to_rgb(PALETTE["panel_soft"]) + (255,))
+    image = Image.new(
+        "RGBA",
+        size,
+        _hex_to_rgb(PALETTE["panel_soft"]) + (255,),
+    )
     draw = ImageDraw.Draw(image)
     border = _hex_to_rgb(PALETTE["border_strong"]) + (255,)
     accent = _hex_to_rgb(PALETTE["gold"]) + (255,)
-    draw.rounded_rectangle((2, 2, width - 3, height - 3), radius=16, outline=border, width=3)
+    draw.rounded_rectangle(
+        (2, 2, width - 3, height - 3),
+        radius=16,
+        outline=border,
+        width=3,
+    )
     draw.line((14, 14, width - 14, height - 14), fill=accent, width=2)
     draw.line((width - 14, 14, 14, height - 14), fill=accent, width=2)
-    draw.text((16, max(12, height - 30)), label[:20], fill=_hex_to_rgb(PALETTE["text"]) + (255,))
+    draw.text(
+        (16, max(12, height - 30)),
+        label[:20],
+        fill=_hex_to_rgb(PALETTE["text"]) + (255,),
+    )
     return image
 
 
-def load_ctk_image(*parts: str, size: tuple[int, int], fallback_label: str | None = None) -> ctk.CTkImage:
+def load_ctk_image(
+    *parts: str,
+    size: tuple[int, int],
+    fallback_label: str | None = None,
+) -> ctk.CTkImage:
     image_path = Path(resource_path(*parts))
     try:
         image = Image.open(image_path).convert("RGBA")
-    except Exception:
-        image = make_ui_placeholder_image(size, fallback_label or image_path.stem or "asset")
+    except (FileNotFoundError, OSError):
+        image = make_ui_placeholder_image(
+            size,
+            fallback_label or image_path.stem or "asset",
+        )
     return ctk.CTkImage(light_image=image, dark_image=image, size=size)
+
+
+# --- Tokens HUD / layout utilitaires (Pygame) ---
+
+# Dimensions des composants HUD
+UI = {
+    "button_min_size": 44,
+    "button_radius": 8,
+    "hud_timer_size": 56,
+    "hud_icon_size": 56,
+    "portrait_size": 64,
+    "gutter": 12,
+}
+
+
+def _srgb_channel_to_linear(c: float) -> float:
+    if c <= 0.03928:
+        return c / 12.92
+    return ((c + 0.055) / 1.055) ** 2.4
+
+
+def luminance(hex_color: str) -> float:
+    """Luminance relative WCAG (0..1) d'une couleur hex."""
+    r, g, b = _hex_to_rgb(hex_color)
+    rs, gs, bs = r / 255.0, g / 255.0, b / 255.0
+    rl, gl, bl = (
+        _srgb_channel_to_linear(rs),
+        _srgb_channel_to_linear(gs),
+        _srgb_channel_to_linear(bs),
+    )
+    return 0.2126 * rl + 0.7152 * gl + 0.0722 * bl
+
+
+def contrast_ratio(hex_a: str, hex_b: str) -> float:
+    """Ratio de contraste WCAG entre deux couleurs."""
+    la, lb = luminance(hex_a), luminance(hex_b)
+    lighter, darker = max(la, lb), min(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def readable_text_color(bg_hex: str) -> str:
+    """Retourne la couleur de texte la plus lisible sur bg_hex."""
+    white = PALETTE["text"]
+    dark = PALETTE["bg"]
+    if contrast_ratio(bg_hex, white) >= contrast_ratio(bg_hex, dark):
+        return white
+    return dark

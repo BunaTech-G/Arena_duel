@@ -1,6 +1,5 @@
 import argparse
 import math
-import random
 import socketserver
 import threading
 import time
@@ -14,7 +13,13 @@ from game.arena_layout import (
     resolve_movement,
 )
 from game.match_text import format_winner_text, get_winner_team
-from game.settings import MATCH_DURATION_SECONDS, ORB_RADIUS, ORB_SPAWN_COUNT, PLAYER_RADIUS
+from game.settings import (
+    MATCH_DURATION_SECONDS,
+    ORB_RADIUS,
+    ORB_SPAWN_COUNT,
+    PLAYER_RADIUS,
+    coerce_match_duration,
+)
 from network.messages import (
     HELLO,
     ASSIGN_SLOT,
@@ -29,6 +34,7 @@ from network.messages import (
     END,
     REQUEST_HISTORY,
     HISTORY_DATA,
+    SET_MATCH_DURATION,
 )
 from network.protocol import send_message_binary, receive_message_binary
 from db.network_match_repository import save_network_match_result
@@ -40,9 +46,7 @@ MAX_PLAYERS = 6
 PLAYER_SPEED = 260
 ORB_COUNT = ORB_SPAWN_COUNT
 
-MATCH_SECONDS = MATCH_DURATION_SECONDS
 TICK_RATE = 20
-
 
 
 def clamp(value, minimum, maximum):
@@ -53,6 +57,8 @@ class LobbyState:
     def __init__(self):
         self.lock = threading.Lock()
         self.clients = {}  # client_id -> info
+        self.host_client_id = None
+        self.match_duration_seconds = MATCH_DURATION_SECONDS
 
     def get_used_slots(self):
         return {info["slot"] for info in self.clients.values()}
@@ -63,7 +69,7 @@ class LobbyState:
             if slot not in used:
                 return slot
         return None
-    
+
     def get_team_counts(self):
         counts = {"A": 0, "B": 0}
 
@@ -84,7 +90,7 @@ class LobbyState:
         else:
             return "B"
 
-    def add_client(self, name: str, handler):
+    def add_client(self, name: str, handler, is_host: bool = False):
         with self.lock:
             if len(self.clients) >= MAX_PLAYERS:
                 return None
@@ -101,18 +107,48 @@ class LobbyState:
                 "name": name,
                 "slot": slot,
                 "team": assigned_team,
+                "host": bool(is_host),
                 "ready": False,
                 "handler": handler,
-                "input": {"up": False, "down": False, "left": False, "right": False},
+                "input": {
+                    "up": False,
+                    "down": False,
+                    "left": False,
+                    "right": False,
+                },
             }
             self.clients[client_id] = info
+            if is_host:
+                self.host_client_id = client_id
             return info
-
 
     def remove_client(self, client_id: str):
         with self.lock:
             if client_id in self.clients:
+                if self.host_client_id == client_id:
+                    self.host_client_id = None
                 del self.clients[client_id]
+
+    def get_match_duration(self) -> int:
+        with self.lock:
+            return self.match_duration_seconds
+
+    def set_match_duration(
+        self,
+        client_id: str,
+        duration_seconds: int,
+    ) -> bool:
+        with self.lock:
+            if (
+                self.host_client_id is not None
+                and client_id != self.host_client_id
+            ):
+                return False
+
+            self.match_duration_seconds = coerce_match_duration(
+                duration_seconds
+            )
+            return True
 
     def set_ready(self, client_id: str, ready: bool):
         with self.lock:
@@ -172,12 +208,19 @@ class LobbyState:
 
 
 class GameState:
-    def __init__(self, lobby_snapshot: dict):
+    def __init__(
+        self,
+        lobby_snapshot: dict,
+        match_duration_seconds: int = MATCH_DURATION_SECONDS,
+    ):
         self.map_id = DEFAULT_MAP_ID
         self.layout = load_arena_layout(self.map_id)
         self.obstacle_rects = self.layout.collision_rects()
+        self.match_duration_seconds = coerce_match_duration(
+            match_duration_seconds
+        )
         self.started_at = time.time()
-        self.ends_at = self.started_at + MATCH_SECONDS
+        self.ends_at = self.started_at + self.match_duration_seconds
         self.team_a_score = 0
         self.team_b_score = 0
 
@@ -189,15 +232,21 @@ class GameState:
     def _spawn_players(self, lobby_snapshot: dict):
         sorted_players = sorted(
             lobby_snapshot.items(),
-            key=lambda item: item[1]["slot"]
+            key=lambda item: item[1]["slot"],
         )
 
         players_by_team = {"A": [], "B": []}
         for client_id, info in sorted_players:
-            players_by_team.setdefault(info["team"], []).append((client_id, info))
+            players_by_team.setdefault(info["team"], []).append(
+                (client_id, info)
+            )
 
         for team_code, team_players in players_by_team.items():
-            spawn_positions = get_team_spawn_positions(self.layout, team_code, len(team_players))
+            spawn_positions = get_team_spawn_positions(
+                self.layout,
+                team_code,
+                len(team_players),
+            )
             for index, (client_id, info) in enumerate(team_players):
                 x, y = spawn_positions[index]
 
@@ -218,7 +267,12 @@ class GameState:
             self.orbs.append(self._random_orb())
 
     def _random_orb(self):
-        x, y = random_free_point(self.layout, ORB_RADIUS, self.obstacle_rects, padding=20)
+        x, y = random_free_point(
+            self.layout,
+            ORB_RADIUS,
+            self.obstacle_rects,
+            padding=20,
+        )
         return {"x": x, "y": y}
 
     def update(self, dt: float, lobby_snapshot: dict):
@@ -259,7 +313,10 @@ class GameState:
     def _handle_orbs(self):
         for player in self.players.values():
             for orb in self.orbs:
-                dist = math.hypot(player["x"] - orb["x"], player["y"] - orb["y"])
+                dist = math.hypot(
+                    player["x"] - orb["x"],
+                    player["y"] - orb["y"],
+                )
                 if dist <= PLAYER_RADIUS + ORB_RADIUS:
                     player["score"] += 1
                     if player["team"] == "A":
@@ -295,6 +352,7 @@ class GameState:
             "arena_h": self.layout.height,
             "arena_rect": list(self.layout.playable_rect),
             "obstacles": [list(rect) for rect in self.obstacle_rects],
+            "duration_seconds": self.match_duration_seconds,
             "remaining_time": remaining,
             "team_a_score": self.team_a_score,
             "team_b_score": self.team_b_score,
@@ -327,10 +385,10 @@ class GameState:
             "winner_text": format_winner_text(winner_team),
             "team_a_score": self.team_a_score,
             "team_b_score": self.team_b_score,
+            "duration_seconds": self.match_duration_seconds,
             "players": players,
         }
-    
-    
+
     def build_persistable_result(self):
         winner_team = get_winner_team(self.team_a_score, self.team_b_score)
 
@@ -348,10 +406,9 @@ class GameState:
             "team_a_score": self.team_a_score,
             "team_b_score": self.team_b_score,
             "winner_team": winner_team,
-            "duration_seconds": MATCH_SECONDS,
+            "duration_seconds": self.match_duration_seconds,
             "players": players,
         }
-
 
 
 class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -375,6 +432,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         payload = {
             "type": LOBBY_STATE,
             "players": self.lobby.export_public_state(),
+            "match_duration_seconds": self.lobby.get_match_duration(),
         }
         self.broadcast(payload)
 
@@ -386,12 +444,18 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 return
 
             snapshot = self.lobby.get_snapshot()
-            self.game_state = GameState(snapshot)
+            self.game_state = GameState(
+                snapshot,
+                self.lobby.get_match_duration(),
+            )
             self.match_running = True
 
             self.broadcast({"type": START})
 
-            self.game_thread = threading.Thread(target=self.game_loop, daemon=True)
+            self.game_thread = threading.Thread(
+                target=self.game_loop,
+                daemon=True,
+            )
             self.game_thread.start()
 
     def game_loop(self):
@@ -414,10 +478,13 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 try:
                     match_result = self.game_state.build_persistable_result()
                     match_id = save_network_match_result(match_result)
-                    print(f"[server] match LAN sauvegardé en base (match_id={match_id})")
-                except Exception as e:
-                    save_error = str(e)
-                    print(f"[server] erreur sauvegarde match LAN: {e}")
+                    print(
+                        "[server] match LAN sauvegardé en base "
+                        f"(match_id={match_id})"
+                    )
+                except RuntimeError as error:
+                    save_error = str(error)
+                    print(f"[server] erreur sauvegarde match LAN: {error}")
 
                 end_message = self.game_state.build_end_message()
                 end_message["history_saved"] = save_error is None
@@ -444,7 +511,10 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             else:
                 next_tick = time.time()
 
+
 class ArenaRequestHandler(socketserver.StreamRequestHandler):
+    client_info = None
+
     def setup(self):
         super().setup()
         self.client_info = None
@@ -454,18 +524,25 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
         try:
             with self.send_lock:
                 send_message_binary(self.wfile, message)
-        except Exception:
+        except (BrokenPipeError, ConnectionError, OSError):
             pass
 
     def handle_hello(self, message: dict):
         name = str(message.get("name", "")).strip()
+        is_host = bool(message.get("host", False))
         if not name:
             self.safe_send({"type": ERROR, "message": "Nom vide refusé."})
             return False
 
-        info = self.server.lobby.add_client(name=name, handler=self)
+        info = self.server.lobby.add_client(
+            name=name,
+            handler=self,
+            is_host=is_host,
+        )
         if info is None:
-            self.safe_send({"type": ERROR, "message": "Serveur plein (6 joueurs max)."})
+            self.safe_send(
+                {"type": ERROR, "message": "Serveur plein (6 joueurs max)."}
+            )
             return False
 
         self.client_info = info
@@ -490,7 +567,10 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
 
         if hello.get("type") != HELLO:
             self.safe_send(
-                {"type": ERROR, "message": "Le premier message doit être HELLO."}
+                {
+                    "type": ERROR,
+                    "message": "Le premier message doit être HELLO.",
+                }
             )
             return
 
@@ -506,7 +586,10 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
 
             if msg_type == READY:
                 ready = bool(message.get("ready", False))
-                self.server.lobby.set_ready(self.client_info["client_id"], ready)
+                self.server.lobby.set_ready(
+                    self.client_info["client_id"],
+                    ready,
+                )
                 self.server.broadcast_lobby_state()
                 self.server.try_start_match()
 
@@ -525,18 +608,31 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                 self.safe_send({"type": PONG})
 
             elif msg_type == REQUEST_HISTORY:
-                try:
-                    rows = get_serializable_match_history()
-                    self.safe_send({"type": HISTORY_DATA, "ok": True, "rows": rows})
-                except Exception as e:
+                rows = get_serializable_match_history()
+                self.safe_send(
+                    {"type": HISTORY_DATA, "ok": True, "rows": rows}
+                )
+
+            elif msg_type == SET_MATCH_DURATION:
+                requested_duration = message.get(
+                    "duration_seconds",
+                    MATCH_DURATION_SECONDS,
+                )
+                if not self.server.lobby.set_match_duration(
+                    self.client_info["client_id"],
+                    requested_duration,
+                ):
                     self.safe_send(
                         {
-                            "type": HISTORY_DATA,
-                            "ok": False,
-                            "rows": [],
-                            "message": f"Historique indisponible: {e}",
+                            "type": ERROR,
+                            "message": (
+                                "Seul le gardien du hall peut régler la durée "
+                                "de la joute."
+                            ),
                         }
                     )
+                else:
+                    self.server.broadcast_lobby_state()
 
             else:
                 self.safe_send(
@@ -544,12 +640,9 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                 )
 
     def finish(self):
-        try:
-            if self.client_info is not None:
-                self.server.lobby.remove_client(self.client_info["client_id"])
-                self.server.broadcast_lobby_state()
-        except Exception:
-            pass
+        if self.client_info is not None:
+            self.server.lobby.remove_client(self.client_info["client_id"])
+            self.server.broadcast_lobby_state()
         super().finish()
 
 
@@ -561,6 +654,7 @@ def run_server(host: str, port: int):
         print(f"[server] Adresse à donner aux clients : {local_ip}:{port}")
         print("[server] Ctrl+C pour arrêter")
         server.serve_forever()
+
 
 def start_server_in_background(host: str = "0.0.0.0", port: int = 5000):
     server = ArenaTCPServer((host, port), ArenaRequestHandler)
@@ -576,9 +670,14 @@ def start_server_in_background(host: str = "0.0.0.0", port: int = 5000):
 
     return server, thread, local_ip
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Arena Duel - serveur LAN")
-    parser.add_argument("--host", default="0.0.0.0", help="IP d'écoute du serveur")
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="IP d'écoute du serveur",
+    )
     parser.add_argument("--port", type=int, default=5000, help="Port TCP")
     args = parser.parse_args()
 

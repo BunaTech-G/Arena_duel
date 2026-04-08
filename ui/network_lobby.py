@@ -1,12 +1,11 @@
-import threading
-import customtkinter as ctk
-import time
 import json
 import os
+import threading
+import time
+from tkinter import TclError
 
-from network.client import NetworkClient
-from network.messages import ASSIGN_SLOT, LOBBY_STATE, START, ERROR, DISCONNECTED, HISTORY_DATA
-from game.net_match_window import run_network_match
+import customtkinter as ctk
+
 from game.audio import (
     init_audio,
     play_alert,
@@ -17,39 +16,69 @@ from game.audio import (
     start_menu_music,
     stop_music,
 )
-from game.match_text import format_compact_scoreline, format_roster_entry, format_team_assignment
+from game.match_text import (
+    format_compact_scoreline,
+    format_team_assignment,
+)
+from game.net_match_window import run_network_match
+from game.settings import (
+    MATCH_DURATION_OPTIONS,
+    MATCH_DURATION_SECONDS,
+    format_match_duration_label,
+)
+from network.client import NetworkClient
+from network.messages import (
+    ASSIGN_SLOT,
+    DISCONNECTED,
+    ERROR,
+    HISTORY_DATA,
+    LOBBY_STATE,
+    START,
+)
 from network.net_utils import get_local_lan_ip
-from runtime_utils import resource_path, load_runtime_config
+from runtime_utils import load_runtime_config, resource_path
 from ui.history_view import HistoryView
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
+    create_badge,
+    create_button,
+    create_option_menu,
     enable_large_window,
     load_ctk_image,
-    style_window,
     style_frame,
-    style_textbox,
-    create_button,
-    create_badge,
+    style_window,
     update_badge,
 )
 
 
-
 class NetworkLobbyView(ctk.CTkToplevel):
-    def __init__(self, parent, default_server_ip=None, server_port=None, host_mode=False):
+    def __init__(
+        self,
+        parent,
+        default_server_ip=None,
+        server_port=None,
+        host_mode=False,
+    ):
         super().__init__(parent)
         style_window(self)
 
         runtime_config = load_runtime_config()
+        self.duration_values = [
+            str(duration) for duration in MATCH_DURATION_OPTIONS
+        ]
+        self.match_duration_var = ctk.StringVar(
+            value=str(MATCH_DURATION_SECONDS)
+        )
 
         self.title("Arena Duel - Hall des bastions")
         try:
             self.iconbitmap(resource_path("assets", "icons", "app.ico"))
-        except Exception:
+        except (OSError, TclError):
             pass
-        self.geometry("1240x820")
-        enable_large_window(self, 1080, 760)
+
+        self.geometry("1320x860")
+        enable_large_window(self, 1120, 780)
 
         self.transient(parent)
         self.lift()
@@ -57,11 +86,13 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.attributes("-topmost", True)
         self.after(200, lambda: self.attributes("-topmost", False))
         self.protocol("WM_DELETE_WINDOW", self.shutdown)
-        
+
         self.client = None
         self.running = False
         self.history_request_pending = False
-        self.server_port = int(server_port or runtime_config.get("tcp_port", 5000))
+        self.server_port = int(
+            server_port or runtime_config.get("tcp_port", 5000)
+        )
 
         self.config_file = "client_lan_config.json"
         self.detected_local_ip = get_local_lan_ip()
@@ -82,43 +113,79 @@ class NetworkLobbyView(ctk.CTkToplevel):
             fallback_label="mascot",
         )
 
-        self.config_file = "client_lan_config.json"
-        self.detected_local_ip = get_local_lan_ip()
-
         self.my_slot = None
         self.my_team = None
         self.my_name = None
         self.ready_state = False
         self.match_running = False
 
+        self.mode_badge = None
+        self.mode_label = None
+        self.local_ip_label = None
+        self.invite_value_label = None
+        self.invite_caption_label = None
+        self.ip_entry = None
+        self.name_entry = None
+        self.copy_invite_btn = None
+        self.use_local_ip_btn = None
+        self.connect_btn = None
+        self.ready_btn = None
+        self.history_btn = None
+        self.duration_menu = None
+        self.duration_status_label = None
+        self.roster_badge = None
+        self.roster_total_value = None
+        self.roster_ready_value = None
+        self.roster_balance_value = None
+        self.roster_list_frame = None
+        self.info_label = None
+
         self._build_ui()
         self._refresh_mode_label()
-        try:
-            start_menu_music()
-        except Exception:
-            pass
+
+        start_menu_music()
+
         if self.host_mode:
             self.info_label.configure(
                 text=(
-                    "Le bastion est pret. Copie l'invitation du hall puis inscris ton nom de combattant pour ouvrir la joute."
+                    "Le bastion est pret. Copie l'invitation du hall, "
+                    "choisis la duree, puis inscris ton nom de combattant."
                 )
             )
         else:
             self.info_label.configure(
-                text="Saisis l'invitation transmise par le gardien du hall et ton nom de combattant pour rejoindre la joute."
+                text=(
+                    "Saisis l'invitation du gardien et ton nom de "
+                    "combattant pour rejoindre la joute partagee."
+                )
             )
 
     def _build_ui(self):
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=7)
+        self.grid_columnconfigure(1, weight=5)
+        self.grid_rowconfigure(1, weight=1)
 
-        viewport = ctk.CTkScrollableFrame(self, corner_radius=0, fg_color="transparent")
-        viewport.grid(row=0, column=0, sticky="nsew")
-        viewport.grid_columnconfigure(0, weight=1)
+        self._build_header()
+        self._build_connection_panel()
+        self._build_roster_panel()
+        self._clear_roster_display()
+        self._apply_match_duration(MATCH_DURATION_SECONDS)
 
-        header = ctk.CTkFrame(viewport, corner_radius=20)
-        style_frame(header, tone="panel", border_color=PALETTE["cyan_dim"])
-        header.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
+    def _build_header(self):
+        header = ctk.CTkFrame(self, corner_radius=20)
+        style_frame(
+            header,
+            tone="panel",
+            border_color=PALETTE["cyan_dim"],
+        )
+        header.grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            padx=20,
+            pady=(20, 10),
+            sticky="ew",
+        )
         header.grid_columnconfigure(0, weight=1)
         header.grid_columnconfigure(1, weight=0)
 
@@ -131,14 +198,24 @@ class NetworkLobbyView(ctk.CTkToplevel):
         title.grid(row=0, column=0, padx=18, pady=(16, 6), sticky="w")
 
         self.mode_badge = create_badge(header, "Hall", tone="info")
-        self.mode_badge.grid(row=0, column=0, padx=18, pady=(16, 6), sticky="e")
+        self.mode_badge.grid(
+            row=0,
+            column=0,
+            padx=18,
+            pady=(16, 6),
+            sticky="e",
+        )
 
         subtitle = ctk.CTkLabel(
             header,
-            text="Rassemble les combattants, veille sur l'appel du bastion et ouvre la joute des que chacun a leve son etendard.",
+            text=(
+                "Le hall presente l'invitation, le roster, l'etat pret "
+                "et la duree de la joute dans une vraie composition "
+                "desktop, sans longue colonne scrolllee."
+            ),
             font=TYPOGRAPHY["body"],
             text_color=PALETTE["text_muted"],
-            wraplength=760,
+            wraplength=720,
             justify="left",
         )
         subtitle.grid(row=1, column=0, padx=18, pady=(0, 12), sticky="w")
@@ -153,17 +230,49 @@ class NetworkLobbyView(ctk.CTkToplevel):
             padx=14,
             pady=8,
         )
-        self.mode_label.grid(row=2, column=0, padx=18, pady=(0, 16), sticky="w")
+        self.mode_label.grid(
+            row=2,
+            column=0,
+            padx=18,
+            pady=(0, 16),
+            sticky="w",
+        )
 
         preview_card = ctk.CTkFrame(header, corner_radius=18)
-        style_frame(preview_card, tone="panel_soft", border_color=PALETTE["cyan_dim"])
-        preview_card.grid(row=0, column=1, rowspan=3, padx=(10, 18), pady=16, sticky="nsew")
+        style_frame(
+            preview_card,
+            tone="panel_soft",
+            border_color=PALETTE["cyan_dim"],
+        )
+        preview_card.grid(
+            row=0,
+            column=1,
+            rowspan=3,
+            padx=(10, 18),
+            pady=16,
+            sticky="nsew",
+        )
         preview_card.grid_columnconfigure(1, weight=1)
 
-        preview_image = ctk.CTkLabel(preview_card, text="", image=self.lobby_preview_image)
-        preview_image.grid(row=0, column=0, columnspan=2, padx=12, pady=(12, 10), sticky="ew")
+        preview_image = ctk.CTkLabel(
+            preview_card,
+            text="",
+            image=self.lobby_preview_image,
+        )
+        preview_image.grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            padx=12,
+            pady=(12, 10),
+            sticky="ew",
+        )
 
-        portrait = ctk.CTkLabel(preview_card, text="", image=self.lobby_portrait_image)
+        portrait = ctk.CTkLabel(
+            preview_card,
+            text="",
+            image=self.lobby_portrait_image,
+        )
         portrait.grid(row=1, column=0, padx=(12, 10), pady=(0, 12), sticky="w")
 
         preview_title = ctk.CTkLabel(
@@ -172,33 +281,52 @@ class NetworkLobbyView(ctk.CTkToplevel):
             font=TYPOGRAPHY["body_bold"],
             text_color=PALETTE["text"],
         )
-        preview_title.grid(row=1, column=1, padx=(0, 12), pady=(2, 0), sticky="sw")
+        preview_title.grid(
+            row=1,
+            column=1,
+            padx=(0, 12),
+            pady=(2, 0),
+            sticky="sw",
+        )
 
         preview_hint = ctk.CTkLabel(
             preview_card,
-            text="Tableau vivant du sanctum\net du hall",
+            text="Invitation, roster et duree\nregroupes proprement",
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_muted"],
             justify="left",
         )
-        preview_hint.grid(row=1, column=1, padx=(0, 12), pady=(0, 12), sticky="nw")
+        preview_hint.grid(
+            row=1,
+            column=1,
+            padx=(0, 12),
+            pady=(0, 12),
+            sticky="nw",
+        )
 
-        connection_panel = ctk.CTkFrame(viewport, corner_radius=18)
-        style_frame(connection_panel, tone="panel", border_color=PALETTE["border"])
-        connection_panel.grid(row=1, column=0, padx=20, pady=(0, 10), sticky="ew")
-        connection_panel.grid_columnconfigure(0, weight=1)
-        connection_panel.grid_columnconfigure(1, weight=1)
+    def _build_connection_panel(self):
+        panel = ctk.CTkFrame(self, corner_radius=18)
+        style_frame(panel, tone="panel", border_color=PALETTE["border"])
+        panel.grid(
+            row=1,
+            column=0,
+            padx=(20, 10),
+            pady=(0, 20),
+            sticky="nsew",
+        )
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_columnconfigure(1, weight=1)
 
-        connection_title = ctk.CTkLabel(
-            connection_panel,
+        title = ctk.CTkLabel(
+            panel,
             text="Entree du hall",
             font=TYPOGRAPHY["section"],
             text_color=PALETTE["text"],
         )
-        connection_title.grid(row=0, column=0, padx=18, pady=(16, 6), sticky="w")
+        title.grid(row=0, column=0, padx=18, pady=(16, 6), sticky="w")
 
         self.local_ip_label = ctk.CTkLabel(
-            connection_panel,
+            panel,
             text=(
                 "Invitation du bastion prete a etre partagee"
                 if self.host_mode
@@ -206,13 +334,80 @@ class NetworkLobbyView(ctk.CTkToplevel):
             ),
             font=TYPOGRAPHY["body"],
             text_color=PALETTE["text_soft"],
-            wraplength=380,
+            wraplength=300,
             justify="right",
         )
-        self.local_ip_label.grid(row=0, column=1, padx=18, pady=(16, 6), sticky="e")
+        self.local_ip_label.grid(
+            row=0,
+            column=1,
+            padx=18,
+            pady=(16, 6),
+            sticky="e",
+        )
+
+        invite_panel = ctk.CTkFrame(panel, corner_radius=16)
+        style_frame(
+            invite_panel,
+            tone="panel_soft",
+            border_color=(
+                PALETTE["cyan_dim"]
+                if self.host_mode
+                else PALETTE["border_strong"]
+            ),
+        )
+        invite_panel.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            padx=18,
+            pady=(0, 10),
+            sticky="ew",
+        )
+        invite_panel.grid_columnconfigure(0, weight=1)
+
+        invite_title = ctk.CTkLabel(
+            invite_panel,
+            text=(
+                "Invitation a partager"
+                if self.host_mode
+                else "Invitation actuellement ciblee"
+            ),
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_soft"],
+        )
+        invite_title.grid(row=0, column=0, padx=16, pady=(14, 4), sticky="w")
+
+        self.invite_value_label = ctk.CTkLabel(
+            invite_panel,
+            text="-",
+            font=TYPOGRAPHY["section"],
+            text_color=PALETTE["text"],
+        )
+        self.invite_value_label.grid(
+            row=1,
+            column=0,
+            padx=16,
+            pady=(0, 4),
+            sticky="w",
+        )
+
+        self.invite_caption_label = ctk.CTkLabel(
+            invite_panel,
+            text="",
+            font=TYPOGRAPHY["small"],
+            text_color=PALETTE["text_soft"],
+            justify="left",
+        )
+        self.invite_caption_label.grid(
+            row=2,
+            column=0,
+            padx=16,
+            pady=(0, 14),
+            sticky="w",
+        )
 
         self.ip_entry = ctk.CTkEntry(
-            connection_panel,
+            panel,
             placeholder_text="Invitation du bastion",
             height=42,
             font=TYPOGRAPHY["body"],
@@ -220,16 +415,24 @@ class NetworkLobbyView(ctk.CTkToplevel):
             border_color=PALETTE["border"],
             text_color=PALETTE["text"],
         )
-        self.ip_entry.grid(row=1, column=0, padx=(18, 8), pady=(0, 10), sticky="ew")
+        self.ip_entry.grid(
+            row=2,
+            column=0,
+            padx=(18, 8),
+            pady=(0, 10),
+            sticky="ew",
+        )
 
         default_ip = self._load_saved_server_ip()
         if default_ip:
             self.ip_entry.insert(0, default_ip)
         elif self.host_mode:
             self.ip_entry.insert(0, self.detected_local_ip)
+        self.ip_entry.bind("<KeyRelease>", self._handle_ip_entry_change)
+        self._sync_invitation_spotlight(self.ip_entry.get().strip())
 
         self.name_entry = ctk.CTkEntry(
-            connection_panel,
+            panel,
             placeholder_text="Nom de combattant",
             height=42,
             font=TYPOGRAPHY["body"],
@@ -237,15 +440,27 @@ class NetworkLobbyView(ctk.CTkToplevel):
             border_color=PALETTE["border"],
             text_color=PALETTE["text"],
         )
-        self.name_entry.grid(row=1, column=1, padx=(8, 18), pady=(0, 10), sticky="ew")
+        self.name_entry.grid(
+            row=2,
+            column=1,
+            padx=(8, 18),
+            pady=(0, 10),
+            sticky="ew",
+        )
 
-        action_row = ctk.CTkFrame(connection_panel, fg_color="transparent")
-        action_row.grid(row=2, column=0, columnspan=2, padx=18, pady=(0, 16), sticky="ew")
-        for column in range(5):
+        action_row = ctk.CTkFrame(panel, fg_color="transparent")
+        action_row.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            padx=18,
+            pady=(0, 8),
+            sticky="ew",
+        )
+        for column in range(3):
             action_row.grid_columnconfigure(column, weight=1)
 
         action_column = 0
-
         if self.host_mode:
             self.copy_invite_btn = create_button(
                 action_row,
@@ -255,7 +470,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 font=TYPOGRAPHY["button_small"],
                 height=40,
             )
-            self.copy_invite_btn.grid(row=0, column=action_column, padx=(0, 8), sticky="ew")
+            self.copy_invite_btn.grid(
+                row=0,
+                column=action_column,
+                padx=(0, 8),
+                sticky="ew",
+            )
             action_column += 1
         else:
             self.copy_invite_btn = None
@@ -268,9 +488,15 @@ class NetworkLobbyView(ctk.CTkToplevel):
             font=TYPOGRAPHY["button_small"],
             height=40,
         )
-        self.use_local_ip_btn.grid(row=0, column=action_column, padx=(0, 8), sticky="ew")
+        self.use_local_ip_btn.grid(
+            row=0,
+            column=action_column,
+            padx=(0, 8),
+            sticky="ew",
+        )
         action_column += 1
 
+        connect_pad = (8, 0) if action_column else (0, 0)
         self.connect_btn = create_button(
             action_row,
             "Rejoindre le hall",
@@ -278,34 +504,137 @@ class NetworkLobbyView(ctk.CTkToplevel):
             variant="accent",
             height=40,
         )
-        self.connect_btn.grid(row=0, column=action_column, padx=8, sticky="ew")
-        action_column += 1
+        self.connect_btn.grid(
+            row=0,
+            column=action_column,
+            padx=connect_pad,
+            sticky="ew",
+        )
+
+        action_row_secondary = ctk.CTkFrame(panel, fg_color="transparent")
+        action_row_secondary.grid(
+            row=4,
+            column=0,
+            columnspan=2,
+            padx=18,
+            pady=(0, 12),
+            sticky="ew",
+        )
+        action_row_secondary.grid_columnconfigure((0, 1), weight=1)
 
         self.ready_btn = create_button(
-            action_row,
-            "Se déclarer prêt",
+            action_row_secondary,
+            "Se declarer pret",
             self._toggle_ready,
             variant="success",
             height=40,
             state="disabled",
         )
-        self.ready_btn.grid(row=0, column=action_column, padx=8, sticky="ew")
-        action_column += 1
+        self.ready_btn.grid(
+            row=0,
+            column=0,
+            padx=(0, 8),
+            sticky="ew",
+        )
 
         self.history_btn = create_button(
-            action_row,
+            action_row_secondary,
             "Consulter les chroniques",
             self._request_history,
             variant="secondary",
             height=40,
             state="disabled",
         )
-        self.history_btn.grid(row=0, column=action_column, padx=(8, 0), sticky="ew")
+        self.history_btn.grid(
+            row=0,
+            column=1,
+            padx=(8, 0),
+            sticky="ew",
+        )
 
-        lobby_panel = ctk.CTkFrame(viewport, corner_radius=18)
+        self._build_duration_panel(panel)
+
+    def _build_duration_panel(self, master):
+        duration_panel = ctk.CTkFrame(master, corner_radius=16)
+        style_frame(
+            duration_panel,
+            tone="panel_soft",
+            border_color=PALETTE["border"],
+        )
+        duration_panel.grid(
+            row=5,
+            column=0,
+            columnspan=2,
+            padx=18,
+            pady=(0, 18),
+            sticky="ew",
+        )
+        duration_panel.grid_columnconfigure((0, 1), weight=1)
+
+        duration_title = ctk.CTkLabel(
+            duration_panel,
+            text="Duree de la joute",
+            font=TYPOGRAPHY["section"],
+            text_color=PALETTE["text"],
+        )
+        duration_title.grid(row=0, column=0, padx=16, pady=(14, 6), sticky="w")
+
+        duration_hint = ctk.CTkLabel(
+            duration_panel,
+            text=(
+                "Reglage du gardien"
+                if self.host_mode
+                else "Annonce du gardien"
+            ),
+            font=TYPOGRAPHY["small"],
+            text_color=PALETTE["text_soft"],
+        )
+        duration_hint.grid(row=0, column=1, padx=16, pady=(14, 6), sticky="e")
+
+        self.duration_menu = create_option_menu(
+            duration_panel,
+            values=self.duration_values,
+            variable=self.match_duration_var,
+            command=self._handle_duration_change,
+            width=160,
+            height=42,
+            state="normal" if self.host_mode else "disabled",
+        )
+        self.duration_menu.grid(
+            row=1,
+            column=0,
+            padx=16,
+            pady=(0, 14),
+            sticky="w",
+        )
+
+        duration_text = format_match_duration_label(MATCH_DURATION_SECONDS)
+        self.duration_status_label = ctk.CTkLabel(
+            duration_panel,
+            text=f"Duree courante : {duration_text}",
+            font=TYPOGRAPHY["body_bold"],
+            text_color=PALETTE["text"],
+        )
+        self.duration_status_label.grid(
+            row=1,
+            column=1,
+            padx=16,
+            pady=(0, 14),
+            sticky="e",
+        )
+
+    def _build_roster_panel(self):
+        lobby_panel = ctk.CTkFrame(self, corner_radius=18)
         style_frame(lobby_panel, tone="panel", border_color=PALETTE["border"])
-        lobby_panel.grid(row=2, column=0, padx=20, pady=(0, 10), sticky="ew")
+        lobby_panel.grid(
+            row=1,
+            column=1,
+            padx=(10, 20),
+            pady=(0, 20),
+            sticky="nsew",
+        )
         lobby_panel.grid_columnconfigure(0, weight=1)
+        lobby_panel.grid_rowconfigure(2, weight=1)
 
         lobby_title = ctk.CTkLabel(
             lobby_panel,
@@ -315,14 +644,76 @@ class NetworkLobbyView(ctk.CTkToplevel):
         )
         lobby_title.grid(row=0, column=0, padx=18, pady=(16, 8), sticky="w")
 
-        self.lobby_box = ctk.CTkTextbox(lobby_panel, height=220)
-        self.lobby_box.grid(row=1, column=0, padx=18, pady=(0, 16), sticky="nsew")
-        style_textbox(self.lobby_box)
-        self.lobby_box.configure(state="disabled")
+        self.roster_badge = create_badge(
+            lobby_panel,
+            "Hall vide",
+            tone="neutral",
+        )
+        self.roster_badge.grid(
+            row=0,
+            column=0,
+            padx=18,
+            pady=(16, 8),
+            sticky="e",
+        )
 
-        info_panel = ctk.CTkFrame(viewport, corner_radius=18)
-        style_frame(info_panel, tone="panel_soft", border_color=PALETTE["border"])
-        info_panel.grid(row=3, column=0, padx=20, pady=(0, 20), sticky="ew")
+        summary_frame = ctk.CTkFrame(lobby_panel, corner_radius=16)
+        style_frame(
+            summary_frame,
+            tone="panel_soft",
+            border_color=PALETTE["border"],
+        )
+        summary_frame.grid(row=1, column=0, padx=18, pady=(0, 12), sticky="ew")
+        summary_frame.grid_columnconfigure((0, 1, 2), weight=1)
+
+        self.roster_total_value = self._build_roster_stat_card(
+            summary_frame,
+            0,
+            "Combattants",
+            "0",
+        )
+        self.roster_ready_value = self._build_roster_stat_card(
+            summary_frame,
+            1,
+            "Prets",
+            "0",
+        )
+        self.roster_balance_value = self._build_roster_stat_card(
+            summary_frame,
+            2,
+            "Bastions",
+            "-",
+        )
+
+        self.roster_list_frame = ctk.CTkScrollableFrame(
+            lobby_panel,
+            corner_radius=14,
+            fg_color=PALETTE["panel_soft"],
+            border_width=1,
+            border_color=PALETTE["border"],
+        )
+        self.roster_list_frame.grid(
+            row=1,
+            column=0,
+            padx=18,
+            pady=(0, 16),
+            sticky="nsew",
+        )
+        self.roster_list_frame.grid_columnconfigure(0, weight=1)
+
+        info_panel = ctk.CTkFrame(lobby_panel, corner_radius=18)
+        style_frame(
+            info_panel,
+            tone="panel_soft",
+            border_color=PALETTE["border"],
+        )
+        info_panel.grid(
+            row=3,
+            column=0,
+            padx=18,
+            pady=(0, 18),
+            sticky="ew",
+        )
         info_panel.grid_columnconfigure(0, weight=1)
 
         info_title = ctk.CTkLabel(
@@ -338,15 +729,53 @@ class NetworkLobbyView(ctk.CTkToplevel):
             text="",
             font=TYPOGRAPHY["body"],
             text_color=PALETTE["text_muted"],
-            wraplength=920,
+            wraplength=420,
             justify="left",
         )
-        self.info_label.grid(row=1, column=0, padx=18, pady=(0, 16), sticky="w")
+        self.info_label.grid(
+            row=1,
+            column=0,
+            padx=18,
+            pady=(0, 16),
+            sticky="w",
+        )
+
+    def _build_roster_stat_card(
+        self,
+        master,
+        column,
+        label_text: str,
+        value_text: str,
+    ):
+        card = ctk.CTkFrame(master, corner_radius=14)
+        style_frame(card, tone="panel", border_color=PALETTE["border"])
+        card.grid(row=0, column=column, padx=8, pady=8, sticky="ew")
+        card.grid_columnconfigure(0, weight=1)
+
+        label = ctk.CTkLabel(
+            card,
+            text=label_text,
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_soft"],
+        )
+        label.grid(row=0, column=0, padx=14, pady=(12, 2), sticky="w")
+
+        value = ctk.CTkLabel(
+            card,
+            text=value_text,
+            font=TYPOGRAPHY["stat"],
+            text_color=PALETTE["text"],
+        )
+        value.grid(row=1, column=0, padx=14, pady=(0, 12), sticky="w")
+        return value
 
     def _refresh_mode_label(self):
         if self.host_mode:
             if self.client and self.client.running:
-                text = "Hall tenu par le gardien · joute prete · chroniques gardees ici"
+                text = (
+                    "Hall tenu par le gardien · joute prete · chroniques "
+                    "gardees ici"
+                )
                 update_badge(self.mode_badge, "Gardien", "gold")
             else:
                 text = "Bastion pret · hall en veille"
@@ -375,26 +804,17 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.ip_entry.configure(state="normal")
         self.name_entry.configure(state="normal")
         self.use_local_ip_btn.configure(state="normal")
-
-        self.lobby_box.configure(state="normal")
-        self.lobby_box.delete("1.0", "end")
-        self.lobby_box.configure(state="disabled")
+        self._clear_roster_display()
         self._refresh_mode_label()
 
     def _handle_disconnect(self, message: str):
-        try:
-            play_alert()
-        except Exception:
-            pass
+        play_alert()
 
         self.running = False
         self.history_request_pending = False
 
         if self.client:
-            try:
-                self.client.close()
-            except Exception:
-                pass
+            self.client.close()
 
         self.client = None
         self.deiconify()
@@ -417,65 +837,89 @@ class NetworkLobbyView(ctk.CTkToplevel):
             ip = data.get("last_server_ip", "").strip()
             return ip
 
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return ""
 
     def _save_server_ip(self, ip: str):
         try:
             with open(self.config_file, "w", encoding="utf-8") as f:
-                json.dump({"last_server_ip": ip}, f, ensure_ascii=False, indent=2)
-        except Exception:
+                json.dump(
+                    {"last_server_ip": ip},
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+        except OSError:
             pass
 
     def _use_loopback_ip(self):
-        try:
-            play_click()
-        except Exception:
-            pass
+        play_click()
 
         self.ip_entry.delete(0, "end")
         self.ip_entry.insert(0, "127.0.0.1")
+        self._sync_invitation_spotlight("127.0.0.1")
 
     def _copy_bastion_address(self):
-        try:
-            play_click()
-        except Exception:
-            pass
+        play_click()
 
         try:
             self.clipboard_clear()
             self.clipboard_append(self.detected_local_ip)
-            self.info_label.configure(text="Invitation du bastion copiee dans le presse-papiers.")
-        except Exception:
-            self.info_label.configure(text=f"Partage cette invitation du bastion : {self.detected_local_ip}")
+            self.info_label.configure(
+                text="Invitation du bastion copiee dans le presse-papiers."
+            )
+        except (RuntimeError, TclError):
+            self.info_label.configure(
+                text=(
+                    "Partage cette invitation du bastion : "
+                    f"{self.detected_local_ip}"
+                )
+            )
 
     # =========================
     # Connexion réseau
     # =========================
     def _connect(self):
-        try:
-            play_transition()
-        except Exception:
-            pass
+        play_transition()
 
         ip = self.ip_entry.get().strip()
         name = self.name_entry.get().strip()
 
         if not ip or not name:
             play_error()
-            self.info_label.configure(text="Renseigne l'invitation du bastion et un nom de combattant avant d'ouvrir le hall.")
+            self.info_label.configure(
+                text=(
+                    "Renseigne l'invitation du bastion et un nom de "
+                    "combattant avant d'ouvrir le hall."
+                )
+            )
             return
 
         self.client = NetworkClient()
 
         try:
-            self.client.connect(ip, self.server_port, name)
-        except Exception as e:
+            self.client.connect(
+                ip,
+                self.server_port,
+                name,
+                is_host=self.host_mode,
+            )
+        except (ConnectionError, OSError) as error:
             play_alert()
-            self.info_label.configure(text=f"Impossible de rejoindre le hall du bastion : {e}")
+            self.info_label.configure(
+                text=(
+                    "Impossible de rejoindre le hall du bastion : "
+                    f"{error}"
+                )
+            )
             return
 
-        self.info_label.configure(text=f"Lien scelle pour {name}. Le hall prepare ton entree dans la joute.")
+        self.info_label.configure(
+            text=(
+                f"Lien scelle pour {name}. Le hall prepare ton entree "
+                "dans la joute."
+            )
+        )
         self.connect_btn.configure(state="disabled")
         self.ready_btn.configure(state="normal")
         self.history_btn.configure(state="normal")
@@ -487,18 +931,24 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self._save_server_ip(ip)
 
         self._start_network_thread()
+        if self.host_mode:
+            self.client.send_match_duration(
+                self._get_selected_match_duration()
+            )
         self._refresh_mode_label()
 
         if self.host_mode:
             self.info_label.configure(
                 text=(
-                    f"{name} veille sur le bastion. Les chroniques du hall seront gardees sur ce poste."
+                    f"{name} veille sur le bastion. Les chroniques du hall "
+                    "seront gardees sur ce poste."
                 )
             )
         else:
             self.info_label.configure(
                 text=(
-                    f"{name} a rejoint le hall. Les chroniques seront lues depuis le bastion rejoint."
+                    f"{name} a rejoint le hall. Les chroniques seront lues "
+                    "depuis le bastion rejoint."
                 )
             )
 
@@ -513,7 +963,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             for msg in self.client.poll_messages():
                 try:
                     self.after(0, lambda m=msg: self._handle_message(m))
-                except Exception:
+                except (RuntimeError, TclError):
                     self.running = False
                     break
 
@@ -532,12 +982,17 @@ class NetworkLobbyView(ctk.CTkToplevel):
             self.info_label.configure(text=format_team_assignment(slot, team))
 
         elif msg_type == LOBBY_STATE:
-            self._update_lobby(msg["players"])
+            self._update_lobby(
+                msg["players"],
+                msg.get("match_duration_seconds", MATCH_DURATION_SECONDS),
+            )
 
         elif msg_type == START:
             if self.match_running:
                 return
-            self.info_label.configure(text="Tous les combattants sont prêts. La joute s'ouvre...")
+            self.info_label.configure(
+                text="Tous les combattants sont prêts. La joute s'ouvre..."
+            )
             self.ready_btn.configure(state="disabled")
             self.history_btn.configure(state="disabled")
             self.after(50, self._launch_match)
@@ -549,13 +1004,26 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
             if not msg.get("ok", False):
                 play_error()
-                self.info_label.configure(text=msg.get("message", "Les chroniques du hall sont indisponibles pour le moment."))
+                self.info_label.configure(
+                    text=msg.get(
+                        "message",
+                        (
+                            "Les chroniques du hall sont indisponibles "
+                            "pour le moment."
+                        ),
+                    )
+                )
                 return
 
             source_label = "Chroniques du hall local" if self.host_mode else (
                 "Chroniques du hall rejoint"
             )
-            self.info_label.configure(text=f"{len(msg.get('rows', []))} chronique(s) recue(s) depuis le hall.")
+            self.info_label.configure(
+                text=(
+                    f"{len(msg.get('rows', []))} chronique(s) recue(s) "
+                    "depuis le hall."
+                )
+            )
             HistoryView(
                 self,
                 history_rows=msg.get("rows", []),
@@ -565,7 +1033,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         elif msg_type == ERROR:
             play_error()
-            self.info_label.configure(text=msg.get("message", "Le hall a signale une erreur."))
+            self.info_label.configure(
+                text=msg.get("message", "Le hall a signale une erreur.")
+            )
 
         elif msg_type == DISCONNECTED:
             self._handle_disconnect(msg.get("message", "Connexion fermée."))
@@ -577,24 +1047,213 @@ class NetworkLobbyView(ctk.CTkToplevel):
     # =========================
     # Lobby UI
     # =========================
-    def _update_lobby(self, players):
-        self.lobby_box.configure(state="normal")
-        self.lobby_box.delete("1.0", "end")
+    def _handle_ip_entry_change(self, _event=None):
+        self._sync_invitation_spotlight(self.ip_entry.get().strip())
 
-        for p in players:
-            line = format_roster_entry(p["slot"], p["name"], p["team"], p["ready"])
-            self.lobby_box.insert("end", line + "\n")
+    def _sync_invitation_spotlight(self, ip_value: str):
+        active_value = ip_value.strip()
+        if not active_value:
+            active_value = (
+                self.detected_local_ip if self.host_mode else "En attente"
+            )
 
-        self.lobby_box.configure(state="disabled")
+        if self.host_mode:
+            caption = "Adresse actuellement diffusee ou utilisee sur ce poste."
+        else:
+            caption = "Adresse actuellement preparee pour rejoindre le hall."
+
+        self.invite_value_label.configure(text=active_value)
+        self.invite_caption_label.configure(text=caption)
+
+    def _clear_roster_display(self):
+        self.roster_total_value.configure(text="0")
+        self.roster_ready_value.configure(text="0")
+        self.roster_balance_value.configure(text="-")
+        update_badge(self.roster_badge, "Hall vide", "neutral")
+        self._render_roster_cards([])
+
+    def _render_roster_cards(self, players):
+        for widget in self.roster_list_frame.winfo_children():
+            widget.destroy()
+
+        if not players:
+            empty_state = ctk.CTkLabel(
+                self.roster_list_frame,
+                text=(
+                    "Aucun combattant n'a encore rejoint le hall.\n\n"
+                    "L'invitation, le serment pret et la duree choisie "
+                    "apparaitront ici."
+                ),
+                font=TYPOGRAPHY["body"],
+                text_color=PALETTE["text_soft"],
+                justify="left",
+                anchor="w",
+            )
+            empty_state.grid(row=0, column=0, padx=16, pady=18, sticky="ew")
+            return
+
+        for index, player in enumerate(players):
+            team_tone = "gold" if player["team"] == "A" else "info"
+            border_color = (
+                PALETTE["gold_dim"]
+                if player["team"] == "A"
+                else PALETTE["cyan_dim"]
+            )
+
+            player_card = ctk.CTkFrame(
+                self.roster_list_frame,
+                corner_radius=14,
+            )
+            style_frame(player_card, tone="panel", border_color=border_color)
+            player_card.grid(
+                row=index,
+                column=0,
+                padx=12,
+                pady=(12 if index == 0 else 0, 10),
+                sticky="ew",
+            )
+            player_card.grid_columnconfigure(1, weight=1)
+
+            slot_badge = create_badge(
+                player_card,
+                f"Poste {player['slot']}",
+                tone=team_tone,
+            )
+            slot_badge.grid(
+                row=0,
+                column=0,
+                padx=(14, 10),
+                pady=(12, 4),
+                sticky="w",
+            )
+
+            name_label = ctk.CTkLabel(
+                player_card,
+                text=player["name"],
+                font=TYPOGRAPHY["body_bold"],
+                text_color=PALETTE["text"],
+            )
+            name_label.grid(
+                row=0,
+                column=1,
+                padx=(0, 12),
+                pady=(12, 4),
+                sticky="w",
+            )
+
+            team_badge = create_badge(
+                player_card,
+                f"Bastion {player['team']}",
+                tone=team_tone,
+            )
+            team_badge.grid(
+                row=0,
+                column=2,
+                padx=(8, 8),
+                pady=(12, 4),
+                sticky="e",
+            )
+
+            ready_badge = create_badge(
+                player_card,
+                "Pret" if player["ready"] else "En veille",
+                tone="success" if player["ready"] else "warning",
+            )
+            ready_badge.grid(
+                row=0,
+                column=3,
+                padx=(0, 14),
+                pady=(12, 4),
+                sticky="e",
+            )
+
+            detail_text = (
+                "Ton poste dans la joute."
+                if player["slot"] == self.my_slot
+                else "Compagnon du hall en attente du depart."
+            )
+            detail_label = ctk.CTkLabel(
+                player_card,
+                text=detail_text,
+                font=TYPOGRAPHY["small"],
+                text_color=PALETTE["text_soft"],
+                justify="left",
+            )
+            detail_label.grid(
+                row=1,
+                column=1,
+                columnspan=3,
+                padx=(0, 14),
+                pady=(0, 12),
+                sticky="w",
+            )
+
+    def _update_lobby(self, players, match_duration_seconds=None):
+        if match_duration_seconds is not None:
+            self._apply_match_duration(match_duration_seconds)
+
+        total_players = len(players)
+        ready_players = sum(1 for player in players if player.get("ready"))
+        team_a_count = sum(
+            1 for player in players if player.get("team") == "A"
+        )
+        team_b_count = sum(
+            1 for player in players if player.get("team") == "B"
+        )
+
+        self.roster_total_value.configure(text=str(total_players))
+        self.roster_ready_value.configure(
+            text=f"{ready_players}/{total_players}" if total_players else "0"
+        )
+        self.roster_balance_value.configure(
+            text=f"{team_a_count}/{team_b_count}" if total_players else "-"
+        )
+
+        badge_tone = "neutral"
+        if total_players:
+            badge_tone = (
+                "success"
+                if total_players >= 2 and ready_players == total_players
+                else "warning"
+            )
+        update_badge(
+            self.roster_badge,
+            f"{total_players} combattant{'s' if total_players != 1 else ''}",
+            badge_tone,
+        )
+        self._render_roster_cards(players)
+
+    def _handle_duration_change(self, _choice=None):
+        duration_seconds = self._get_selected_match_duration()
+        self._apply_match_duration(duration_seconds)
+
+        if self.host_mode and self.client and self.client.running:
+            if not self.client.send_match_duration(duration_seconds):
+                play_error()
+                self.info_label.configure(
+                    text="Impossible de transmettre la nouvelle durée au hall."
+                )
+
+    def _apply_match_duration(self, duration_seconds: int):
+        value = str(int(duration_seconds))
+        self.match_duration_var.set(value)
+        self.duration_menu.set(value)
+        duration_text = format_match_duration_label(int(duration_seconds))
+        self.duration_status_label.configure(
+            text=f"Durée courante : {duration_text}"
+        )
+
+    def _get_selected_match_duration(self) -> int:
+        try:
+            return int(self.match_duration_var.get().strip())
+        except ValueError:
+            return MATCH_DURATION_SECONDS
 
     # =========================
     # Ready
     # =========================
     def _toggle_ready(self):
-        try:
-            play_select()
-        except Exception:
-            pass
+        play_select()
 
         self.ready_state = not self.ready_state
         self.client.send_ready(self.ready_state)
@@ -605,14 +1264,13 @@ class NetworkLobbyView(ctk.CTkToplevel):
             self.ready_btn.configure(text="Se déclarer prêt")
 
     def _request_history(self):
-        try:
-            play_transition()
-        except Exception:
-            pass
+        play_transition()
 
         if not self.client or not self.client.running:
             play_error()
-            self.info_label.configure(text="Rejoins d'abord le hall pour consulter les chroniques.")
+            self.info_label.configure(
+                text="Rejoins d'abord le hall pour consulter les chroniques."
+            )
             return
 
         if self.history_request_pending:
@@ -627,17 +1285,25 @@ class NetworkLobbyView(ctk.CTkToplevel):
             if self.client and self.client.running:
                 self.history_btn.configure(state="normal")
             play_error()
-            self.info_label.configure(text="Impossible d'appeler les chroniques du hall.")
+            self.info_label.configure(
+                text="Impossible d'appeler les chroniques du hall."
+            )
 
     def _format_post_match_status(self, end_message: dict) -> str:
         team_a_score = end_message.get("team_a_score", 0)
         team_b_score = end_message.get("team_b_score", 0)
-        base_text = f"Joute close · {format_compact_scoreline(team_a_score, team_b_score)}"
+        base_text = (
+            f"Joute close · "
+            f"{format_compact_scoreline(team_a_score, team_b_score)}"
+        )
 
         if end_message.get("history_saved", False):
             match_id = end_message.get("match_id")
             if match_id is not None:
-                return f"{base_text} · chronique du hall archivee (joute #{match_id})"
+                return (
+                    f"{base_text} · chronique du hall archivee "
+                    f"(joute #{match_id})"
+                )
             return f"{base_text} · chronique du hall archivee"
 
         history_error = end_message.get("history_error", "Erreur inconnue")
@@ -657,16 +1323,15 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.update()
 
         # on lance le match réseau
-        match_summary = run_network_match(self.client, self.my_slot, self.my_name, self.my_team)
+        match_summary = run_network_match(
+            self.client,
+            self.my_slot,
+            self.my_name,
+            self.my_team,
+        )
 
-        try:
-            init_audio()
-        except Exception:
-            pass
-        try:
-            start_menu_music()
-        except Exception:
-            pass
+        init_audio()
+        start_menu_music()
 
         # retour au lobby après le match
         self.deiconify()
@@ -680,18 +1345,25 @@ class NetworkLobbyView(ctk.CTkToplevel):
             self._handle_message(msg)
 
         if not match_summary.get("completed"):
-            self._handle_disconnect(match_summary.get("disconnect_message", "Connexion interrompue pendant le match."))
+            self._handle_disconnect(
+                match_summary.get(
+                    "disconnect_message",
+                    "Connexion interrompue pendant le match.",
+                )
+            )
             return
 
         # reset visuel du ready
         self.ready_state = False
-        self.ready_btn.configure(
-            text="Se déclarer prêt",
-            state="normal"
-        )
+        self.ready_btn.configure(text="Se déclarer prêt", state="normal")
         self.history_btn.configure(state="normal")
 
-        self.info_label.configure(self._format_post_match_status(match_summary.get("end_message", {})))
+        status_text = self._format_post_match_status(
+            match_summary.get("end_message", {})
+        )
+        self.info_label.configure(
+            status_text
+        )
 
         # relance la boucle réseau lobby
         if self.client and self.client.running:
@@ -701,9 +1373,6 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
     def shutdown(self):
         self.running = False
-        try:
-            if self.client:
-                self.client.close()
-        except Exception:
-            pass
+        if self.client:
+            self.client.close()
         self.destroy()

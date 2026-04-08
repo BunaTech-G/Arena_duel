@@ -1,10 +1,20 @@
 import argparse
+import json
 import queue
 import socket
 import threading
 import time
 
-from network.messages import HELLO, READY, PING, INPUT, REQUEST_HISTORY, ERROR, DISCONNECTED
+from network.messages import (
+    DISCONNECTED,
+    ERROR,
+    HELLO,
+    INPUT,
+    PING,
+    READY,
+    REQUEST_HISTORY,
+    SET_MATCH_DURATION,
+)
 from network.protocol import encode_message, decode_message
 
 
@@ -20,8 +30,7 @@ class NetworkClient:
         self.last_input_state = None
         self.last_input_send_time = 0.0
 
-
-    def connect(self, host: str, port: int, name: str):
+    def connect(self, host: str, port: int, name: str, is_host: bool = False):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.connect((host, port))
         self.running = True
@@ -29,11 +38,16 @@ class NetworkClient:
         self.last_input_state = None
         self.last_input_send_time = 0.0
 
-        if not self.send({"type": HELLO, "name": name}):
+        if not self.send({"type": HELLO, "name": name, "host": is_host}):
             self.close()
-            raise ConnectionError("Impossible d'initialiser la session réseau.")
+            raise ConnectionError(
+                "Impossible d'initialiser la session réseau."
+            )
 
-        self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self.reader_thread = threading.Thread(
+            target=self._reader_loop,
+            daemon=True,
+        )
         self.reader_thread.start()
 
     def _close_socket(self):
@@ -45,12 +59,12 @@ class NetworkClient:
 
         try:
             sock.shutdown(socket.SHUT_RDWR)
-        except Exception:
+        except OSError:
             pass
 
         try:
             sock.close()
-        except Exception:
+        except OSError:
             pass
 
     def _notify_disconnect(self, message: str):
@@ -83,18 +97,23 @@ class NetworkClient:
                             message = decode_message(line + b"\n")
                             if message is not None:
                                 self.incoming.put(message)
-                        except Exception as e:
+                        except (
+                            json.JSONDecodeError,
+                            UnicodeDecodeError,
+                        ) as error:
                             self.incoming.put(
                                 {
                                     "type": "ERROR",
-                                    "message": f"Décodage impossible: {e}",
+                                    "message": (
+                                        f"Décodage impossible: {error}"
+                                    ),
                                 }
                             )
-        except Exception as e:
+        except OSError as error:
             self.incoming.put(
                 {
                     "type": ERROR,
-                    "message": f"Lecture réseau impossible: {e}",
+                    "message": f"Lecture réseau impossible: {error}",
                 }
             )
         finally:
@@ -111,15 +130,17 @@ class NetworkClient:
             with self.send_lock:
                 self.sock.sendall(data)
             return True
-        except Exception as e:
+        except OSError as error:
             self.incoming.put(
                 {
                     "type": ERROR,
-                    "message": f"Envoi réseau impossible: {e}",
+                    "message": f"Envoi réseau impossible: {error}",
                 }
             )
             self._close_socket()
-            self._notify_disconnect("Connexion perdue pendant l'envoi des données.")
+            self._notify_disconnect(
+                "Connexion perdue pendant l'envoi des données."
+            )
             return False
 
     def send_ready(self, ready: bool):
@@ -130,6 +151,14 @@ class NetworkClient:
 
     def send_request_history(self):
         return self.send({"type": REQUEST_HISTORY})
+
+    def send_match_duration(self, duration_seconds: int):
+        return self.send(
+            {
+                "type": SET_MATCH_DURATION,
+                "duration_seconds": duration_seconds,
+            }
+        )
 
     def send_input(self, up: bool, down: bool, left: bool, right: bool):
         now = time.time()
@@ -143,7 +172,10 @@ class NetworkClient:
 
         # envoyer seulement si l'état change
         # ou au moins toutes les 100 ms pour garder la synchro propre
-        if state != self.last_input_state or (now - self.last_input_send_time) >= 0.1:
+        if (
+            state != self.last_input_state
+            or (now - self.last_input_send_time) >= 0.1
+        ):
             self.send(
                 {
                     "type": INPUT,
