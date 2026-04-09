@@ -603,7 +603,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
         try:
             with self.send_lock:
                 send_message_binary(self.wfile, message)
-        except (BrokenPipeError, ConnectionError, OSError):
+        except (BrokenPipeError, ConnectionError, OSError, ValueError):
             pass
 
     def handle_hello(self, message: dict):

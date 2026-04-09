@@ -361,7 +361,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self.name_entry = ctk.CTkEntry(
             panel,
-            placeholder_text="Nom de combattant",
+            placeholder_text="Enroler un nouveau combattant",
             height=42,
             font=TYPOGRAPHY["body"],
             fg_color=PALETTE["panel_soft"],
@@ -760,7 +760,8 @@ class NetworkLobbyView(ctk.CTkToplevel):
             if self.detected_local_ip:
                 return (
                     "Le bastion est pret. Partage l'invitation LAN, "
-                    "choisis la duree puis inscris ton nom de combattant.\n\n"
+                    "choisis la duree puis enroler aussi le gardien "
+                    "dans le hall avant le depart.\n\n"
                     "Invitation LAN actuelle : "
                     f"{self._get_shareable_invitation_text()}"
                 )
@@ -773,9 +774,50 @@ class NetworkLobbyView(ctk.CTkToplevel):
             )
 
         return (
-            "Saisis l'invitation LAN du gardien et ton nom de combattant "
-            "pour rejoindre la joute partagee. "
+            "Saisis l'invitation LAN du gardien puis enroler ton "
+            "combattant avant de te declarer pret. "
             "Le mode local sur ce PC reste separe."
+        )
+
+    def _build_lobby_status_text(self, players) -> str:
+        total_players = len(players)
+        ready_players = sum(1 for player in players if player.get("ready"))
+
+        if total_players == 0:
+            if self.host_mode:
+                return (
+                    "Le hall attend encore le gardien. Entre un nom puis "
+                    "clique sur Entrer dans le hall pour enroler le premier "
+                    "combattant."
+                )
+            return (
+                "Le hall n'a encore enrôle aucun combattant sur ce poste. "
+                "Entre ton nom pour rejoindre la joute."
+            )
+
+        if total_players == 1:
+            if self.host_mode:
+                return (
+                    "Le gardien est enrôle. Il faut encore au moins un autre "
+                    "combattant puis tous les serments pret pour "
+                    "lancer la joute."
+                )
+            return (
+                "Un seul combattant est enrôle dans le hall. Il faut au moins "
+                "deux combattants prets pour lancer la joute."
+            )
+
+        if ready_players < total_players:
+            return (
+                f"{ready_players}/{total_players} combattant(s) sont prets. "
+                "La joute partira quand tous les combattants enrôles "
+                "auront leve leur serment."
+            )
+
+        return (
+            "Tous les combattants enrôles sont prets "
+            f"({total_players}/{total_players}). "
+            "Le hall declenche la joute."
         )
 
     def _get_shareable_invitation_text(self) -> str:
@@ -1268,6 +1310,10 @@ class NetworkLobbyView(ctk.CTkToplevel):
             badge_tone,
         )
         self._render_roster_cards(players)
+        if not self.match_running:
+            self.info_label.configure(
+                text=self._build_lobby_status_text(players)
+            )
 
     def _handle_duration_change(self, _choice=None):
         duration_seconds = self._get_selected_match_duration()
