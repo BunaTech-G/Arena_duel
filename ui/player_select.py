@@ -830,7 +830,7 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         create_title = ctk.CTkLabel(
             register_frame,
-            text="Enrôler un combattant",
+            text="Enrôler un nouveau combattant",
             font=TYPOGRAPHY["section"],
             text_color=PALETTE["text"],
         )
@@ -851,7 +851,7 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         self.new_player_entry = ctk.CTkEntry(
             register_frame,
-            placeholder_text="Nom du combattant à inscrire",
+            placeholder_text="Nom du nouveau combattant",
             height=42,
             font=TYPOGRAPHY["body"],
             fg_color=PALETTE["panel_soft"],
@@ -869,7 +869,7 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         add_btn = create_button(
             register_frame,
-            "Enrôler ce combattant",
+            "Enrôler ce nouveau combattant",
             self._handle_add_player,
             variant="accent",
             height=42,
@@ -998,7 +998,7 @@ class PlayerSelectView(ctk.CTkToplevel):
                 text=(
                     "Aucun combattant n'est encore inscrit dans le "
                     "registre.\n\n"
-                    "Enrole un premier nom pour reveiller la forge."
+                    "Enrôle un nouveau combattant pour réveiller la forge."
                 ),
                 font=TYPOGRAPHY["body"],
                 text_color=PALETTE["text_soft"],

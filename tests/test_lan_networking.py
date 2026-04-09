@@ -21,6 +21,7 @@ if "mariadb" not in sys.modules:
 
 NetworkClient = importlib.import_module("network.client").NetworkClient
 ASSIGN_SLOT = importlib.import_module("network.messages").ASSIGN_SLOT
+START = importlib.import_module("network.messages").START
 get_lan_address_info = importlib.import_module(
     "network.net_utils"
 ).get_lan_address_info
@@ -147,6 +148,68 @@ class LanNetworkingTests(unittest.TestCase):
             port,
         )
         self.servers.append(restarted_server)
+
+    def test_two_ready_players_receive_start(self):
+        port = _reserve_free_port()
+        server, _thread, _address_info = start_server_in_background(
+            "127.0.0.1",
+            port,
+        )
+        self.servers.append(server)
+
+        host_client = NetworkClient()
+        guest_client = NetworkClient()
+        self.clients.extend([host_client, guest_client])
+
+        host_client.connect(
+            "127.0.0.1",
+            port,
+            "Gardien",
+            is_host=True,
+            timeout_seconds=1,
+        )
+        guest_client.connect(
+            "127.0.0.1",
+            port,
+            "Invite",
+            timeout_seconds=1,
+        )
+
+        deadline = time.time() + 2
+        assigned_slots = set()
+        while time.time() < deadline and len(assigned_slots) < 2:
+            messages = (
+                host_client.poll_messages() + guest_client.poll_messages()
+            )
+            for message in messages:
+                if message.get("type") == ASSIGN_SLOT:
+                    assigned_slots.add(message.get("client_id"))
+            if len(assigned_slots) < 2:
+                time.sleep(0.05)
+
+        self.assertEqual(len(assigned_slots), 2)
+
+        host_client.send_ready(True)
+        guest_client.send_ready(True)
+
+        deadline = time.time() + 3
+        start_seen = False
+        while time.time() < deadline and not start_seen:
+            messages = (
+                host_client.poll_messages() + guest_client.poll_messages()
+            )
+            for message in messages:
+                if message.get("type") == START:
+                    start_seen = True
+                    break
+            if not start_seen:
+                time.sleep(0.05)
+
+        self.assertTrue(start_seen)
+
+        with server.game_lock:
+            server.match_running = False
+            server.game_state = None
 
 
 if __name__ == "__main__":
