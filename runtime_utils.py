@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,13 @@ def resource_path(*parts) -> str:
     - ou dans le build PyInstaller
     """
     if getattr(sys, "frozen", False):
-        base_path = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+        base_path = Path(
+            getattr(
+                sys,
+                "_MEIPASS",
+                Path(sys.executable).resolve().parent,
+            )
+        )
     else:
         base_path = PROJECT_DIR
 
@@ -31,6 +38,37 @@ def runtime_file_path(filename: str) -> str:
     if getattr(sys, "frozen", False):
         return str(Path(sys.executable).resolve().parent / filename)
     return str(PROJECT_DIR / filename)
+
+
+def runtime_user_dir() -> Path:
+    """
+    Retourne un dossier utilisateur inscriptible pour l'etat runtime.
+    Ce dossier reste stable meme quand l'application est installee ailleurs.
+    """
+    if sys.platform.startswith("win"):
+        base_dir = Path(
+            os.environ.get("APPDATA")
+            or (Path.home() / "AppData" / "Roaming")
+        )
+    else:
+        base_dir = Path(
+            os.environ.get("XDG_STATE_HOME")
+            or os.environ.get("XDG_CONFIG_HOME")
+            or (Path.home() / ".config")
+        )
+
+    target_dir = base_dir / "ArenaDuel"
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir
+    except OSError:
+        fallback_dir = Path.home() / ".arena_duel"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_dir
+
+
+def runtime_user_file_path(filename: str) -> str:
+    return str(runtime_user_dir() / filename)
 
 
 def set_runtime_override(key: str, value):
@@ -56,7 +94,9 @@ def load_runtime_config() -> dict:
         "db_password": "",
         "db_name": "arena_duel_v2_db",
         "db_connect_timeout": 3,
+        "lan_bind_host": "0.0.0.0",
         "tcp_port": 5000,
+        "lan_connect_timeout_seconds": 4,
     }
 
     path = Path(runtime_file_path("app_runtime.json"))
@@ -65,7 +105,7 @@ def load_runtime_config() -> dict:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             default_config.update(data)
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             pass
 
     # appliquer les overrides runtime en dernier
