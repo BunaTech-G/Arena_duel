@@ -12,6 +12,10 @@
     "forgotten_sanctum_floor": {
       "file": "arena_forgotten_sanctum_floor.png",
       "label": "Forgotten Sanctum Floor"
+    },
+    "arena_darkstone": {
+      "file": "arena_darkstone_bg.png",
+      "label": "Arena Darkstone Ambient"
     }
   }
 }

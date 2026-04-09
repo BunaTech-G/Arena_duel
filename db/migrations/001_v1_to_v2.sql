@@ -1,19 +1,10 @@
-CREATE DATABASE IF NOT EXISTS arena_duel_v2_db
-CHARACTER SET utf8mb4
-COLLATE utf8mb4_unicode_ci;
-
 USE arena_duel_v2_db;
 
-CREATE TABLE IF NOT EXISTS players (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(50) NOT NULL UNIQUE,
-    status_code VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
-    last_seen_at DATETIME NULL,
-    archived_at DATETIME NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    KEY idx_players_status (status_code)
-);
+ALTER TABLE players
+    ADD COLUMN IF NOT EXISTS status_code VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+    ADD COLUMN IF NOT EXISTS last_seen_at DATETIME NULL,
+    ADD COLUMN IF NOT EXISTS archived_at DATETIME NULL,
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS arenas (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -23,8 +14,7 @@ CREATE TABLE IF NOT EXISTS arenas (
     layout_version VARCHAR(64) NOT NULL DEFAULT '1',
     active TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    KEY idx_arenas_active (active)
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
 INSERT INTO arenas (
@@ -76,9 +66,7 @@ CREATE TABLE IF NOT EXISTS lobby_sessions (
     CONSTRAINT fk_lobby_sessions_host
         FOREIGN KEY (host_player_id) REFERENCES players(id),
     CONSTRAINT fk_lobby_sessions_arena
-        FOREIGN KEY (arena_id) REFERENCES arenas(id),
-    KEY idx_lobby_sessions_status (status_code),
-    KEY idx_lobby_sessions_opened_at (opened_at)
+        FOREIGN KEY (arena_id) REFERENCES arenas(id)
 );
 
 CREATE TABLE IF NOT EXISTS lobby_members (
@@ -95,68 +83,59 @@ CREATE TABLE IF NOT EXISTS lobby_members (
     CONSTRAINT fk_lobby_members_session
         FOREIGN KEY (lobby_session_id) REFERENCES lobby_sessions(id),
     CONSTRAINT fk_lobby_members_player
-        FOREIGN KEY (player_id) REFERENCES players(id),
-    UNIQUE KEY uq_lobby_members_slot (lobby_session_id, slot_number),
-    KEY idx_lobby_members_player (player_id),
-    KEY idx_lobby_members_ready (ready_flag)
+        FOREIGN KEY (player_id) REFERENCES players(id)
 );
 
-CREATE TABLE IF NOT EXISTS matches (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    mode_code VARCHAR(24) NOT NULL DEFAULT 'LOCAL_HUMAN',
-    source_code VARCHAR(24) NOT NULL DEFAULT 'LOCAL',
-    status_code VARCHAR(24) NOT NULL DEFAULT 'COMPLETED',
-    arena_id INT NULL,
-    arena_code_snapshot VARCHAR(64) NULL,
-    lobby_session_id INT NULL,
-    created_by_player_id INT NULL,
-    team_a_score INT NOT NULL DEFAULT 0,
-    team_b_score INT NOT NULL DEFAULT 0,
-    winner_team CHAR(1) NULL,
-    duration_seconds INT NOT NULL DEFAULT 60,
-    started_at DATETIME NULL,
-    finished_at DATETIME NULL,
-    played_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    CONSTRAINT fk_matches_arena
-        FOREIGN KEY (arena_id) REFERENCES arenas(id),
-    CONSTRAINT fk_matches_lobby_session
-        FOREIGN KEY (lobby_session_id) REFERENCES lobby_sessions(id),
-    CONSTRAINT fk_matches_created_by_player
-        FOREIGN KEY (created_by_player_id) REFERENCES players(id),
-    KEY idx_matches_played_at (played_at),
-    KEY idx_matches_mode (mode_code),
-    KEY idx_matches_source (source_code),
-    KEY idx_matches_status (status_code),
-    KEY idx_matches_arena (arena_id),
-    KEY idx_matches_lobby_session (lobby_session_id)
-);
+ALTER TABLE matches
+    ADD COLUMN IF NOT EXISTS mode_code VARCHAR(24) NOT NULL DEFAULT 'LEGACY',
+    ADD COLUMN IF NOT EXISTS source_code VARCHAR(24) NOT NULL DEFAULT 'LEGACY',
+    ADD COLUMN IF NOT EXISTS status_code VARCHAR(24) NOT NULL DEFAULT 'COMPLETED',
+    ADD COLUMN IF NOT EXISTS arena_id INT NULL,
+    ADD COLUMN IF NOT EXISTS arena_code_snapshot VARCHAR(64) NULL,
+    ADD COLUMN IF NOT EXISTS lobby_session_id INT NULL,
+    ADD COLUMN IF NOT EXISTS created_by_player_id INT NULL,
+    ADD COLUMN IF NOT EXISTS started_at DATETIME NULL,
+    ADD COLUMN IF NOT EXISTS finished_at DATETIME NULL,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
 
-CREATE TABLE IF NOT EXISTS match_players (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    match_id INT NOT NULL,
-    player_id INT NULL,
-    display_name_snapshot VARCHAR(50) NOT NULL,
-    team_code CHAR(1) NOT NULL,
-    slot_number INT NULL,
-    control_mode VARCHAR(24) NULL,
-    is_ai TINYINT(1) NOT NULL DEFAULT 0,
-    ai_difficulty_code VARCHAR(24) NULL,
-    ai_profile_code VARCHAR(24) NULL,
-    ready_at_start TINYINT(1) NULL,
-    individual_score INT NOT NULL DEFAULT 0,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_match_players_match
-        FOREIGN KEY (match_id) REFERENCES matches(id),
-    CONSTRAINT fk_match_players_player
-        FOREIGN KEY (player_id) REFERENCES players(id),
-    KEY idx_match_players_match (match_id),
-    KEY idx_match_players_player (player_id),
-    KEY idx_match_players_team (team_code),
-    KEY idx_match_players_slot (slot_number),
-    KEY idx_match_players_ai (is_ai)
-);
+UPDATE matches
+SET
+    arena_code_snapshot = COALESCE(arena_code_snapshot, 'forgotten_sanctum'),
+    finished_at = COALESCE(finished_at, played_at),
+    mode_code = CASE
+        WHEN mode_code IS NULL OR mode_code = '' THEN 'LEGACY'
+        ELSE mode_code
+    END,
+    source_code = CASE
+        WHEN source_code IS NULL OR source_code = '' THEN 'LEGACY'
+        ELSE source_code
+    END,
+    status_code = CASE
+        WHEN status_code IS NULL OR status_code = '' THEN 'COMPLETED'
+        ELSE status_code
+    END;
+
+ALTER TABLE match_players
+    MODIFY COLUMN player_id INT NULL,
+    ADD COLUMN IF NOT EXISTS display_name_snapshot VARCHAR(50) NULL,
+    ADD COLUMN IF NOT EXISTS slot_number INT NULL,
+    ADD COLUMN IF NOT EXISTS control_mode VARCHAR(24) NULL,
+    ADD COLUMN IF NOT EXISTS is_ai TINYINT(1) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS ai_difficulty_code VARCHAR(24) NULL,
+    ADD COLUMN IF NOT EXISTS ai_profile_code VARCHAR(24) NULL,
+    ADD COLUMN IF NOT EXISTS ready_at_start TINYINT(1) NULL,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+UPDATE match_players mp
+JOIN players p ON p.id = mp.player_id
+SET
+    mp.display_name_snapshot = COALESCE(mp.display_name_snapshot, p.username),
+    mp.control_mode = COALESCE(mp.control_mode, 'human'),
+    mp.is_ai = CASE
+        WHEN p.username LIKE '[IA] %' THEN 1
+        ELSE mp.is_ai
+    END;
 
 DROP VIEW IF EXISTS v_match_history_cards;
 

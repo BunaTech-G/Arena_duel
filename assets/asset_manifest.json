@@ -21,6 +21,11 @@
   },
   "branding": {
     "current_icon": "assets/icons/app.png",
+    "icon_ico_tkinter": "assets/icons/app.ico",
+    "icon_ico_build": "assets/images/arena_duel.ico",
+    "icon_preview": "assets/icons/icon_preview_256.png",
+    "icon_design": "shield-crossed-swords — bleu nuit + or, généré par tools/gen_icon.py",
+    "icon_sizes_ico": [16, 24, 32, 48, 64, 128, 256],
     "target_icon": "assets/icons/icon_skeleton_mascot.png",
     "title_treatment": "ornate fantasy with readable contrast"
   },

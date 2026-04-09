@@ -3,14 +3,48 @@
   "label": "Forgotten Sanctum",
   "theme": "fantasy_ruins_light_undead",
   "arena": {
-    "window_size": [1280, 720],
-    "hud_height": 80,
+    "window_size": [
+      1280,
+      980
+    ],
+    "hud_height": 250,
     "margin": 60,
-    "playable_rect": [60, 80, 1160, 580]
+    "playable_rect": [
+      60,
+      250,
+      1160,
+      700
+    ]
   },
   "spawn_groups": {
-    "A": [[160, 220], [160, 360], [160, 500]],
-    "B": [[1120, 220], [1120, 360], [1120, 500]]
+    "A": [
+      [
+        165,
+        412
+      ],
+      [
+        165,
+        600
+      ],
+      [
+        165,
+        788
+      ]
+    ],
+    "B": [
+      [
+        1115,
+        412
+      ],
+      [
+        1115,
+        600
+      ],
+      [
+        1115,
+        788
+      ]
+    ]
   },
   "lanes": [
     "north_arc",
@@ -21,37 +55,67 @@
     {
       "id": "north_dais",
       "kind": "ruin_wall",
-      "rect": [520, 148, 220, 42],
+      "rect": [
+        520,
+        342,
+        220,
+        42
+      ],
       "collision": true
     },
     {
       "id": "south_dais",
       "kind": "ruin_wall",
-      "rect": [520, 530, 220, 42],
+      "rect": [
+        520,
+        856,
+        220,
+        42
+      ],
       "collision": true
     },
     {
       "id": "west_pillar_cluster",
       "kind": "pillar_cluster",
-      "rect": [248, 310, 118, 96],
+      "rect": [
+        248,
+        560,
+        118,
+        96
+      ],
       "collision": true
     },
     {
       "id": "east_pillar_cluster",
       "kind": "pillar_cluster",
-      "rect": [914, 310, 118, 96],
+      "rect": [
+        914,
+        560,
+        118,
+        96
+      ],
       "collision": true
     },
     {
       "id": "mid_left_grave",
       "kind": "grave_marker",
-      "rect": [448, 286, 64, 132],
+      "rect": [
+        448,
+        527,
+        64,
+        132
+      ],
       "collision": true
     },
     {
       "id": "mid_right_grave",
       "kind": "grave_marker",
-      "rect": [768, 286, 64, 132],
+      "rect": [
+        768,
+        527,
+        64,
+        132
+      ],
       "collision": true
     }
   ],
@@ -59,19 +123,27 @@
     {
       "id": "central_rune_ring",
       "kind": "rune_circle",
-      "rect": [474, 244, 312, 152],
+      "rect": [
+        474,
+        471,
+        312,
+        152
+      ],
       "collision": false
     },
     {
       "id": "north_banner_shadow",
       "kind": "banner_shadow",
-      "rect": [482, 112, 296, 46],
+      "rect": [
+        482,
+        293,
+        296,
+        46
+      ],
       "collision": false
     }
   ],
   "notes": [
-    "Map designed for quick readability with three simple lanes.",
-    "Obstacles break direct movement without fully blocking cross-map travel.",
-    "All art can be replaced later without changing collision data format."
+    "Map designed for quick readability with three simple lanes."
   ]
 }

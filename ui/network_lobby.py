@@ -45,7 +45,6 @@ from ui.theme import (
     create_button,
     create_option_menu,
     enable_large_window,
-    load_ctk_image,
     style_frame,
     style_window,
     update_badge,
@@ -72,10 +71,8 @@ class NetworkLobbyView(ctk.CTkToplevel):
         )
 
         self.title("Arena Duel - Hall des bastions")
-        try:
-            self.iconbitmap(resource_path("assets", "icons", "app.ico"))
-        except (OSError, TclError):
-            pass
+        _ico = resource_path("assets", "icons", "app.ico")
+        self.after(200, lambda: self._apply_icon(_ico))
 
         self.geometry("1320x860")
         enable_large_window(self, 1120, 780)
@@ -98,20 +95,6 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.detected_local_ip = get_local_lan_ip()
         self.default_server_ip = default_server_ip
         self.host_mode = host_mode
-        self.lobby_preview_image = load_ctk_image(
-            "assets",
-            "backgrounds",
-            "launcher_sanctum_bg.png",
-            size=(240, 126),
-            fallback_label="sanctum",
-        )
-        self.lobby_portrait_image = load_ctk_image(
-            "assets",
-            "portraits",
-            "skeleton_mascot_portrait.png",
-            size=(62, 62),
-            fallback_label="mascot",
-        )
 
         self.my_slot = None
         self.my_team = None
@@ -159,6 +142,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
                     "combattant pour rejoindre la joute partagee."
                 )
             )
+
+    def _apply_icon(self, path: str):
+        try:
+            self.iconbitmap(path)
+        except (OSError, TclError):
+            pass
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=7)
@@ -236,72 +225,6 @@ class NetworkLobbyView(ctk.CTkToplevel):
             padx=18,
             pady=(0, 16),
             sticky="w",
-        )
-
-        preview_card = ctk.CTkFrame(header, corner_radius=18)
-        style_frame(
-            preview_card,
-            tone="panel_soft",
-            border_color=PALETTE["cyan_dim"],
-        )
-        preview_card.grid(
-            row=0,
-            column=1,
-            rowspan=3,
-            padx=(10, 18),
-            pady=16,
-            sticky="nsew",
-        )
-        preview_card.grid_columnconfigure(1, weight=1)
-
-        preview_image = ctk.CTkLabel(
-            preview_card,
-            text="",
-            image=self.lobby_preview_image,
-        )
-        preview_image.grid(
-            row=0,
-            column=0,
-            columnspan=2,
-            padx=12,
-            pady=(12, 10),
-            sticky="ew",
-        )
-
-        portrait = ctk.CTkLabel(
-            preview_card,
-            text="",
-            image=self.lobby_portrait_image,
-        )
-        portrait.grid(row=1, column=0, padx=(12, 10), pady=(0, 12), sticky="w")
-
-        preview_title = ctk.CTkLabel(
-            preview_card,
-            text="Veille du sanctum",
-            font=TYPOGRAPHY["body_bold"],
-            text_color=PALETTE["text"],
-        )
-        preview_title.grid(
-            row=1,
-            column=1,
-            padx=(0, 12),
-            pady=(2, 0),
-            sticky="sw",
-        )
-
-        preview_hint = ctk.CTkLabel(
-            preview_card,
-            text="Invitation, roster et duree\nregroupes proprement",
-            font=TYPOGRAPHY["small"],
-            text_color=PALETTE["text_muted"],
-            justify="left",
-        )
-        preview_hint.grid(
-            row=1,
-            column=1,
-            padx=(0, 12),
-            pady=(0, 12),
-            sticky="nw",
         )
 
     def _build_connection_panel(self):
@@ -693,7 +616,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             border_color=PALETTE["border"],
         )
         self.roster_list_frame.grid(
-            row=1,
+            row=2,
             column=0,
             padx=18,
             pady=(0, 16),

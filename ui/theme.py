@@ -329,10 +329,14 @@ def load_ctk_image(
     *parts: str,
     size: tuple[int, int],
     fallback_label: str | None = None,
+    brightness: float = 1.0,
 ) -> ctk.CTkImage:
+    from PIL import ImageEnhance
     image_path = Path(resource_path(*parts))
     try:
         image = Image.open(image_path).convert("RGBA")
+        if brightness != 1.0:
+            image = ImageEnhance.Brightness(image).enhance(brightness)
     except (FileNotFoundError, OSError):
         image = make_ui_placeholder_image(
             size,
