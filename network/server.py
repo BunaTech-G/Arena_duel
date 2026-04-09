@@ -4,6 +4,7 @@ import socketserver
 import threading
 import time
 import uuid
+from datetime import datetime
 
 from game.arena_layout import (
     DEFAULT_MAP_ID,
@@ -37,6 +38,12 @@ from network.messages import (
     SET_MATCH_DURATION,
 )
 from network.protocol import send_message_binary, receive_message_binary
+from db.lobby_repository import (
+    build_lobby_invite_code,
+    close_lobby_session,
+    open_lobby_session,
+    sync_lobby_session,
+)
 from db.network_match_repository import save_network_match_result
 from db.matches import get_serializable_match_history
 from network.net_utils import get_local_lan_ip
@@ -200,6 +207,15 @@ class LobbyState:
         with self.lock:
             return [info["handler"] for info in self.clients.values()]
 
+    def get_host_name(self):
+        with self.lock:
+            if self.host_client_id is None:
+                return None
+            info = self.clients.get(self.host_client_id)
+            if not info:
+                return None
+            return info.get("name")
+
     def can_start_match(self):
         with self.lock:
             if len(self.clients) < 2:
@@ -212,10 +228,12 @@ class GameState:
         self,
         lobby_snapshot: dict,
         match_duration_seconds: int = MATCH_DURATION_SECONDS,
+        lobby_session_id: int | None = None,
     ):
         self.map_id = DEFAULT_MAP_ID
         self.layout = load_arena_layout(self.map_id)
         self.obstacle_rects = self.layout.collision_rects()
+        self.lobby_session_id = lobby_session_id
         self.match_duration_seconds = coerce_match_duration(
             match_duration_seconds
         )
@@ -255,6 +273,7 @@ class GameState:
                     "slot": info["slot"],
                     "name": info["name"],
                     "team": info["team"],
+                    "ready_at_start": bool(info.get("ready", False)),
                     "x": float(x),
                     "y": float(y),
                     "score": 0,
@@ -399,14 +418,24 @@ class GameState:
                     "name": p["name"],
                     "team": p["team"],
                     "score": p["score"],
+                    "slot_number": p["slot"],
+                    "control_mode": "human",
+                    "is_ai": False,
+                    "ready_at_start": p.get("ready_at_start", False),
                 }
             )
 
         return {
+            "source_code": "LAN",
+            "mode_code": "LAN",
+            "arena_code": self.map_id,
+            "lobby_session_id": self.lobby_session_id,
             "team_a_score": self.team_a_score,
             "team_b_score": self.team_b_score,
             "winner_team": winner_team,
             "duration_seconds": self.match_duration_seconds,
+            "started_at": datetime.fromtimestamp(self.started_at),
+            "finished_at": datetime.now(),
             "players": players,
         }
 
@@ -418,10 +447,41 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     def __init__(self, server_address, handler_class):
         super().__init__(server_address, handler_class)
         self.lobby = LobbyState()
+        self.lobby_invite_code = build_lobby_invite_code()
+        self.lobby_session_id = None
         self.match_running = False
         self.game_state = None
         self.game_lock = threading.Lock()
         self.game_thread = None
+
+    def sync_lobby_persistence(self, status_code: str = "OPEN"):
+        players = self.lobby.export_public_state()
+        if not players:
+            if self.lobby_session_id is not None:
+                close_lobby_session(self.lobby_session_id)
+                self.lobby_session_id = None
+                self.lobby_invite_code = build_lobby_invite_code()
+            return
+
+        host_name = self.lobby.get_host_name()
+        if self.lobby_session_id is None:
+            self.lobby_session_id = open_lobby_session(
+                host_name=host_name,
+                invite_code=self.lobby_invite_code,
+                match_duration_seconds=self.lobby.get_match_duration(),
+                arena_code=DEFAULT_MAP_ID,
+            )
+            if self.lobby_session_id is None:
+                return
+
+        sync_lobby_session(
+            self.lobby_session_id,
+            players=players,
+            match_duration_seconds=self.lobby.get_match_duration(),
+            host_name=host_name,
+            arena_code=DEFAULT_MAP_ID,
+            status_code=status_code,
+        )
 
     def broadcast(self, payload: dict):
         handlers = self.lobby.get_handlers()
@@ -444,9 +504,11 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 return
 
             snapshot = self.lobby.get_snapshot()
+            self.sync_lobby_persistence(status_code="IN_MATCH")
             self.game_state = GameState(
                 snapshot,
                 self.lobby.get_match_duration(),
+                lobby_session_id=self.lobby_session_id,
             )
             self.match_running = True
 
@@ -501,6 +563,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 for cid in list(snapshot.keys()):
                     self.lobby.set_ready(cid, False)
 
+                self.sync_lobby_persistence(status_code="OPEN")
                 self.broadcast_lobby_state()
                 break
 
@@ -557,6 +620,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
             }
         )
 
+        self.server.sync_lobby_persistence(status_code="OPEN")
         self.server.broadcast_lobby_state()
         return True
 
@@ -590,6 +654,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                     self.client_info["client_id"],
                     ready,
                 )
+                self.server.sync_lobby_persistence(status_code="OPEN")
                 self.server.broadcast_lobby_state()
                 self.server.try_start_match()
 
@@ -632,6 +697,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                         }
                     )
                 else:
+                    self.server.sync_lobby_persistence(status_code="OPEN")
                     self.server.broadcast_lobby_state()
 
             else:
@@ -642,6 +708,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
     def finish(self):
         if self.client_info is not None:
             self.server.lobby.remove_client(self.client_info["client_id"])
+            self.server.sync_lobby_persistence(status_code="OPEN")
             self.server.broadcast_lobby_state()
         super().finish()
 

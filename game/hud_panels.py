@@ -35,6 +35,8 @@ _RADIUS_BAR = 4   # arrondi barre de progression
 _ACCENT_W = 5     # largeur barre accent équipe
 _ROW_H = 40       # hauteur rangée joueur dans le roster
 _PAD = 8          # padding interne de base
+# hauteur fixe du bloc score/timer (indépendant de layout.hud_height)
+_SCORE_H = 78
 
 
 # ── Helpers texte ────────────────────────────────────────────────────────────
@@ -146,7 +148,7 @@ def _draw_timer_block(
     _panel(surface, rect, fill=_BG, border=tc)
 
     # Label "SABLIER"
-    label = small_font.render("SABLIER", True, _TEXT_MUTED[:3])
+    label = small_font.render("TEMPS", True, _TEXT_MUTED[:3])
     surface.blit(label, (
         rect.centerx - label.get_width() // 2,
         rect.y + _PAD,
@@ -194,6 +196,7 @@ def _draw_team_score_block(
     - Score grand centré (dominant).
     - Points colorés par joueur en bas (identification rapide des combattants).
     """
+    del rows  # conservé dans la signature pour compatibilité des appelants
     # Fond + bordure colorée par équipe
     _panel(surface, rect, fill=_BG, border=accent_color)
     _accent_stripe(surface, rect, accent_color, side=align)
@@ -217,21 +220,6 @@ def _draw_team_score_block(
                 + score_surf.get_height() // 2)
     )
     surface.blit(score_surf, score_rect)
-
-    # Points joueurs — petits cercles colorés, centrés en bas
-    dot_r = 5
-    dot_y = rect.bottom - dot_r - _PAD
-    n = len(rows)
-    if n:
-        total_w = n * dot_r * 2 + (n - 1) * 8
-        start_x = rect.centerx - total_w // 2 + dot_r
-        for i, row in enumerate(rows):
-            cx = start_x + i * (dot_r * 2 + 8)
-            dc = row["accent_color"]
-            pygame.draw.circle(surface, dc[:3], (cx, dot_y), dot_r)
-            pygame.draw.circle(
-                surface, _TEXT[:3], (cx, dot_y), dot_r, 1
-            )
 
 
 # ── Rangée joueur (roster) ──────────────────────────────────────────────
@@ -364,16 +352,16 @@ def draw_match_hud(
     """
     Orchestre le HUD complet.
 
-    Composition (1280×720, hud_height=80) :
-      - Bande top (y=8, h=hud_h) : [score A] [timer centré] [score B]
-      - Bande roster (y=hud_h+12) : [roster A à gauche] [roster B à droite]
+    Composition (1280×810, hud_height=250) :
+      - Bande top (y=8, h=_SCORE_H) : [score A] [timer centré] [score B]
+      - Bande roster (y=8+_SCORE_H+8) : [roster A gauche] [roster B droite]
 
     Le timer est toujours centré ; les blocs score s'ancrent aux marges.
-    Les rosters sont positionnés sous leurs blocs score respectifs.
+    Les rosters sont positionnés sous les blocs score, dans l'espace HUD.
     """
     sw, _ = surface.get_size()
     margin = max(16, getattr(layout, "margin", 60) // 2)
-    hud_h = max(78, getattr(layout, "hud_height", 80) - 2)
+    hud_h = _SCORE_H   # hauteur fixe des blocs score/timer
     top_y = 8
 
     # Dimensions des blocs

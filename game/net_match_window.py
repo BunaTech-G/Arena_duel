@@ -42,20 +42,34 @@ PG_SRCALPHA = getattr(pygame, "SRCALPHA")
 pg_init = getattr(pygame, "init")
 
 
+def _resolve_local_team(my_team, my_slot, *payloads):
+    if my_team:
+        return my_team
+
+    for payload in payloads:
+        if not payload:
+            continue
+
+        for player_state in payload.get("players", []):
+            if player_state.get("slot") == my_slot:
+                return player_state.get("team")
+
+    return None
+
+
 def run_network_match(client, my_slot, my_name, my_team):
     pg_init()
     init_audio()
     stop_music(fade_ms=0)
     active_layout = get_map_layout(DEFAULT_MAP_ID)
-    screen = pygame.display.set_mode(active_layout.window_size)
-    pygame.display.set_caption(f"Arena Duel - Joute partagee · {my_name}")
     icon_path = resource_path("assets", "icons", "app.png")
     if Path(icon_path).exists():
         try:
-            icon_surface = pygame.image.load(icon_path)
-            pygame.display.set_icon(icon_surface)
+            pygame.display.set_icon(pygame.image.load(icon_path))
         except OSError:
             pass
+    screen = pygame.display.set_mode(active_layout.window_size)
+    pygame.display.set_caption(f"Arena Duel - Joute partagee \u00b7 {my_name}")
     clock = pygame.time.Clock()
 
     font = load_font("CrimsonText-Regular.ttf", 20, fallback_name="Georgia")
@@ -176,6 +190,12 @@ def run_network_match(client, my_slot, my_name, my_team):
         if end_message:
             if not end_sound_played:
                 winner_team = end_message.get("winner_team")
+                local_team = _resolve_local_team(
+                    my_team,
+                    my_slot,
+                    end_message,
+                    latest_state,
+                )
                 if winner_team is None:
                     winner_team = get_winner_team(
                         end_message.get("team_a_score", 0),
@@ -184,7 +204,7 @@ def run_network_match(client, my_slot, my_name, my_team):
 
                 if winner_team is None:
                     play_draw()
-                elif winner_team == my_team:
+                elif local_team and winner_team == local_team:
                     play_win()
                 else:
                     play_lose()

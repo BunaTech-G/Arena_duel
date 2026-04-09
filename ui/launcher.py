@@ -29,11 +29,7 @@ from ui.theme import (
     create_button,
     enable_large_window,
     load_ctk_image,
-    set_textbox_content,
-    style_frame,
-    style_textbox,
     style_window,
-    update_badge,
 )
 
 
@@ -61,12 +57,16 @@ class LauncherApp(ctk.CTk):
         self.tcp_port = int(load_runtime_config().get("tcp_port", 5000))
         self._set_db_mode_local()
 
+        # Taille adaptive : remplit l'écran quelle que soit la résolution
+        _sw = max(1360, self.winfo_screenwidth())
+        _sh = max(860, self.winfo_screenheight())
         self.launcher_background_image = load_ctk_image(
             "assets",
             "backgrounds",
             "launcher_twilight_bastion_bg.png",
-            size=(1360, 765),
+            size=(_sw, _sh),
             fallback_label="twilight bastion",
+            brightness=1.5,
         )
 
         pygame.mixer.pre_init(44100, -16, 2, 512)
@@ -85,92 +85,20 @@ class LauncherApp(ctk.CTk):
         self._set_server_status("Hall au repos", "neutral")
 
     def _build_ui(self):
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-
-        shell = ctk.CTkFrame(
-            self, corner_radius=30, fg_color="transparent",
-        )
-        shell.grid(row=0, column=0, padx=22, pady=22, sticky="nsew")
-        shell.grid_columnconfigure(0, weight=1)
-        shell.grid_rowconfigure(1, weight=1)
-
         backdrop = ctk.CTkLabel(
-            shell,
-            text="",
-            image=self.launcher_background_image,
+            self, text="", image=self.launcher_background_image,
         )
-        backdrop.place(relx=0.5, rely=0.5, anchor="center")
+        backdrop.place(x=0, y=0, relwidth=1, relheight=1)
 
-        header = ctk.CTkFrame(shell, fg_color="transparent")
-        header.grid(row=0, column=0, padx=30, pady=(26, 12), sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
-        header.grid_columnconfigure(1, weight=0)
-
-        create_badge(header, "Bastion central", tone="gold").grid(
-            row=0,
-            column=0,
-            sticky="w",
-        )
-
-        status_panel = ctk.CTkFrame(header, corner_radius=18)
-        style_frame(
-            status_panel,
-            tone="panel_soft",
-            border_color=PALETTE["border"],
-        )
-        status_panel.grid(row=0, column=1, sticky="e")
-        status_panel.grid_columnconfigure((0, 1), weight=1)
-
-        ctk.CTkLabel(
-            status_panel,
-            text="Chroniques",
-            font=TYPOGRAPHY["small"],
-            text_color=PALETTE["text_soft"],
-        ).grid(row=0, column=0, padx=(14, 8), pady=(10, 4), sticky="w")
-
-        ctk.CTkLabel(
-            status_panel,
-            text="Hall LAN",
-            font=TYPOGRAPHY["small"],
-            text_color=PALETTE["text_soft"],
-        ).grid(row=0, column=1, padx=(8, 14), pady=(10, 4), sticky="w")
-
-        self.db_badge = create_badge(
-            status_panel,
-            "Chroniques en veille",
-            tone="neutral",
-        )
-        self.db_badge.grid(
-            row=1,
-            column=0,
-            padx=(14, 8),
-            pady=(0, 12),
-            sticky="w",
-        )
-
-        self.server_badge = create_badge(
-            status_panel,
-            "Hall au repos",
-            tone="neutral",
-        )
-        self.server_badge.grid(
-            row=1,
-            column=1,
-            padx=(8, 14),
-            pady=(0, 12),
-            sticky="w",
-        )
-
-        center_zone = ctk.CTkFrame(shell, fg_color="transparent")
-        center_zone.grid(row=1, column=0, padx=40, pady=(6, 12), sticky="nsew")
-        center_zone.grid_columnconfigure(0, weight=1)
-        center_zone.grid_rowconfigure(1, weight=1)
-
+        # ── Panneau titre flottant directement sur le fond
         title_panel = ctk.CTkFrame(
-            center_zone, corner_radius=22, fg_color="transparent",
+            self,
+            corner_radius=22,
+            fg_color=PALETTE["panel"],
+            border_width=1,
+            border_color=PALETTE["gold_dim"],
         )
-        title_panel.grid(row=0, column=0, pady=(12, 18))
+        title_panel.place(relx=0.5, rely=0.12, anchor="n")
         title_panel.grid_columnconfigure(0, weight=1)
 
         create_badge(
@@ -188,20 +116,22 @@ class LauncherApp(ctk.CTk):
 
         ctk.CTkLabel(
             title_panel,
-            text=(
-                "Ecran principal simplifie : fond 2D du bastion, actions "
-                "centrees et lecture immediate."
-            ),
+            text="Forgotten Bastion — Entrez dans l’arène",
             font=TYPOGRAPHY["body"],
             text_color=PALETTE["text_muted"],
-            wraplength=560,
+            wraplength=480,
             justify="center",
         ).grid(row=2, column=0, padx=26, pady=(0, 18))
 
+        # ── Panneau menu flottant directement sur le fond
         menu_panel = ctk.CTkFrame(
-            center_zone, corner_radius=24, fg_color="transparent",
+            self,
+            corner_radius=24,
+            fg_color=PALETTE["panel"],
+            border_width=1,
+            border_color=PALETTE["border"],
         )
-        menu_panel.grid(row=1, column=0, pady=(0, 14))
+        menu_panel.place(relx=0.5, rely=0.53, anchor="n")
         menu_panel.grid_columnconfigure((0, 1), weight=1)
 
         create_button(
@@ -279,55 +209,12 @@ class LauncherApp(ctk.CTk):
             column=0,
             columnspan=2,
             padx=22,
-            pady=(0, 16),
-            sticky="ew",
-        )
-
-        ctk.CTkLabel(
-            menu_panel,
-            text="Fond 2D du jeu - menu simple - aucune colonne inutile",
-            font=TYPOGRAPHY["small"],
-            text_color=PALETTE["text_soft"],
-            justify="center",
-        ).grid(row=5, column=0, columnspan=2, padx=20, pady=(0, 18))
-
-        info_panel = ctk.CTkFrame(
-            shell, corner_radius=22, fg_color="transparent",
-        )
-        info_panel.grid(row=2, column=0, padx=34, pady=(0, 24), sticky="ew")
-        info_panel.grid_columnconfigure(0, weight=1)
-        info_panel.grid_columnconfigure(1, weight=0)
-
-        ctk.CTkLabel(
-            info_panel,
-            text="Journal du bastion",
-            font=TYPOGRAPHY["section"],
-            text_color=PALETTE["text"],
-        ).grid(row=0, column=0, padx=18, pady=(16, 4), sticky="w")
-
-        self.info_badge = create_badge(
-            info_panel,
-            "Veille du bastion",
-            tone="neutral",
-        )
-        self.info_badge.grid(
-            row=0,
-            column=1,
-            padx=18,
-            pady=(16, 4),
-            sticky="e",
-        )
-
-        self.info_box = ctk.CTkTextbox(info_panel, height=98)
-        self.info_box.grid(
-            row=1,
-            column=0,
-            columnspan=2,
-            padx=18,
             pady=(0, 18),
             sticky="ew",
         )
-        style_textbox(self.info_box, tone="panel_soft")
+
+        # S'assurer que le fond est en dernière position (derrière tout)
+        self.after(0, backdrop.lower)
 
     def _default_journal_text(self):
         return (
@@ -369,14 +256,13 @@ class LauncherApp(ctk.CTk):
         )
 
     def _set_info(self, text, badge_text="Veille du bastion", tone="neutral"):
-        update_badge(self.info_badge, badge_text, tone)
-        set_textbox_content(self.info_box, text)
+        pass
 
     def _set_db_status(self, text: str, tone: str):
-        update_badge(self.db_badge, text, tone)
+        pass
 
     def _set_server_status(self, text: str, tone: str):
-        update_badge(self.server_badge, text, tone)
+        pass
 
     def _set_db_mode_local(self):
         set_runtime_override("db_host", "localhost")

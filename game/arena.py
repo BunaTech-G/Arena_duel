@@ -37,7 +37,7 @@ BONE_SHADE = (194, 183, 164)
 BONE_OUTLINE = (79, 72, 64)
 NAME_PANEL = (16, 19, 28, 210)
 NAME_TEXT = (247, 241, 226)
-WINDOW_BACKGROUND_ASSET = "launcher_sanctum"
+WINDOW_BACKGROUND_ASSET = "arena_darkstone"
 ARENA_FLOOR_ASSET = "forgotten_sanctum_floor"
 PLAYER_SPRITE_ID = "skeleton_mascot"
 

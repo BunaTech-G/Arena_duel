@@ -20,6 +20,79 @@ from ui.theme import (
 )
 
 
+def _coerce_history_row(row):
+    if isinstance(row, dict):
+        return {
+            "match_id": row.get("match_id"),
+            "team_a_players": row.get("team_a_players", "-"),
+            "team_b_players": row.get("team_b_players", "-"),
+            "winner_display": row.get("winner_display"),
+            "team_a_score": row.get("team_a_score", 0),
+            "team_b_score": row.get("team_b_score", 0),
+            "duration_seconds": row.get("duration_seconds", 0),
+            "played_at": row.get("played_at"),
+            "mode_code": row.get("mode_code"),
+            "source_code": row.get("source_code"),
+            "arena_label": row.get("arena_label"),
+            "ai_participants": row.get("ai_participants", 0),
+        }
+
+    row_data = list(row)
+    return {
+        "match_id": row_data[0] if len(row_data) > 0 else "?",
+        "team_a_players": row_data[1] if len(row_data) > 1 else "-",
+        "team_b_players": row_data[2] if len(row_data) > 2 else "-",
+        "winner_display": row_data[3] if len(row_data) > 3 else None,
+        "team_a_score": row_data[4] if len(row_data) > 4 else 0,
+        "team_b_score": row_data[5] if len(row_data) > 5 else 0,
+        "duration_seconds": row_data[6] if len(row_data) > 6 else 0,
+        "played_at": row_data[7] if len(row_data) > 7 else None,
+        "mode_code": "LEGACY",
+        "source_code": "LEGACY",
+        "arena_label": "Forgotten Sanctum",
+        "ai_participants": 0,
+    }
+
+
+def _build_match_context(row_data: dict) -> str:
+    mode_code = str(row_data.get("mode_code") or "").upper()
+    source_code = str(row_data.get("source_code") or "").upper()
+    ai_participants = int(row_data.get("ai_participants") or 0)
+    arena_label = str(row_data.get("arena_label") or "").strip()
+
+    if mode_code == "LAN" or source_code == "LAN":
+        source_label = "Hall LAN"
+    elif mode_code == "LOCAL_AI" or ai_participants > 0:
+        source_label = "Forge vs IA"
+    elif mode_code == "LEGACY" or source_code == "LEGACY":
+        source_label = "Archive legacy"
+    else:
+        source_label = "Forge locale"
+
+    if arena_label:
+        return f"{source_label} · {arena_label}"
+    return source_label
+
+
+def _build_match_footer(row_data: dict) -> str:
+    parts = []
+    ai_participants = int(row_data.get("ai_participants") or 0)
+    mode_code = str(row_data.get("mode_code") or "").upper()
+
+    if mode_code:
+        parts.append(_build_match_context(row_data))
+    if ai_participants > 0:
+        parts.append(f"{ai_participants} IA archivee(s)")
+
+    if not parts:
+        return (
+            "Archive complete avec score, verdict et duree reelle de la "
+            "joute."
+        )
+
+    return " · ".join(parts)
+
+
 class MatchCard(ctk.CTkFrame):
     def __init__(self, master, match_data, portrait_image=None):
         super().__init__(master, corner_radius=14)
@@ -36,9 +109,20 @@ class MatchCard(ctk.CTkFrame):
         self._build_ui()
 
     def _build_ui(self):
-        match_id, p1, p2, winner, s1, s2, duration, played_at = self.match_data
+        row_data = _coerce_history_row(self.match_data)
+        match_id = row_data["match_id"]
+        p1 = row_data["team_a_players"]
+        p2 = row_data["team_b_players"]
+        winner = row_data["winner_display"]
+        s1 = row_data["team_a_score"]
+        s2 = row_data["team_b_score"]
+        duration = row_data["duration_seconds"]
+        played_at = row_data["played_at"]
+
         winner_display = winner if winner else DRAW_LABEL
         duration_text = self._format_duration(duration)
+        context_text = _build_match_context(row_data)
+        footer_text = _build_match_footer(row_data)
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=0)
@@ -49,7 +133,7 @@ class MatchCard(ctk.CTkFrame):
 
         title = ctk.CTkLabel(
             self,
-            text="Chronique archivée",
+            text=context_text,
             font=TYPOGRAPHY["small_bold"],
             text_color=PALETTE["text_soft"],
         )
@@ -221,10 +305,7 @@ class MatchCard(ctk.CTkFrame):
 
         footer = ctk.CTkLabel(
             self,
-            text=(
-                "Archive complète avec score, verdict et durée réelle de la "
-                "joute."
-            ),
+            text=footer_text,
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
         )
@@ -289,10 +370,8 @@ class HistoryView(ctk.CTkToplevel):
         self.title("Chroniques de l'arène")
         self.geometry("1320x860")
         enable_large_window(self, 1120, 760)
-        try:
-            self.iconbitmap(resource_path("assets", "icons", "app.ico"))
-        except (OSError, TclError):
-            pass
+        _ico = resource_path("assets", "icons", "app.ico")
+        self.after(200, lambda: self._apply_icon(_ico))
 
         # IMPORTANT : forcer l'ouverture au premier plan
         self.transient(parent)
@@ -306,6 +385,12 @@ class HistoryView(ctk.CTkToplevel):
 
         self._build_ui()
         self.refresh_history()
+
+    def _apply_icon(self, path: str):
+        try:
+            self.iconbitmap(path)
+        except (OSError, TclError):
+            pass
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
@@ -583,7 +668,10 @@ class HistoryView(ctk.CTkToplevel):
         winners = []
 
         for row in rows:
-            _, p1, p2, winner, *_ = row
+            row_data = _coerce_history_row(row)
+            p1 = row_data["team_a_players"]
+            p2 = row_data["team_b_players"]
+            winner = row_data["winner_display"]
             for group in (p1, p2):
                 for player_name in str(group).split(","):
                     clean_name = player_name.strip()
@@ -602,7 +690,9 @@ class HistoryView(ctk.CTkToplevel):
         else:
             self.top_winner_label.configure(text="Aucun avantage net")
 
-        draws_count = sum(1 for row in rows if not row[3])
+        draws_count = sum(
+            1 for row in rows if not _coerce_history_row(row)["winner_display"]
+        )
         self.draws_label.configure(text=str(draws_count))
 
         self.status_label.configure(

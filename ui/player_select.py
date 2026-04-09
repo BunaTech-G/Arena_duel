@@ -1,8 +1,13 @@
 import customtkinter as ctk
+import queue
+import threading
+import time
 from tkinter import messagebox, TclError
 
-from db.database import test_connection
-from db.players import get_all_players, create_player
+from db.players import (
+    create_player,
+    get_player_registry_snapshot,
+)
 from db.matches import save_team_match
 from game.audio import (
     play_click,
@@ -10,6 +15,15 @@ from game.audio import (
     play_transition,
     start_menu_music,
     stop_music,
+)
+from game.computer_opponent import (
+    build_human_vs_ai_players,
+    get_opposite_team,
+)
+from game.control_models import (
+    AI_DIFFICULTY_CODE_BY_DISPLAY,
+    AI_DIFFICULTY_DISPLAY_BY_CODE,
+    HUMAN_CONTROL_MODE,
 )
 from game.match_text import get_team_label
 from game.settings import (
@@ -23,7 +37,6 @@ from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
     enable_large_window,
-    load_ctk_image,
     style_window,
     style_frame,
     style_textbox,
@@ -42,7 +55,22 @@ TEAM_DISPLAY_BY_CODE = {
 TEAM_CODE_BY_DISPLAY = {
     label: code for code, label in TEAM_DISPLAY_BY_CODE.items()
 }
-FORGE_RULES_TEXT = (
+MATCH_MODE_DISPLAY_BY_CODE = {
+    "human": "Joute locale",
+    "ai": "Contre l'ordinateur",
+}
+MATCH_MODE_CODE_BY_DISPLAY = {
+    label: code for code, label in MATCH_MODE_DISPLAY_BY_CODE.items()
+}
+AI_SIDE_DISPLAY_BY_CODE = {
+    code: TEAM_DISPLAY_BY_CODE[code]
+    for code in TEAM_DISPLAY_BY_CODE
+}
+AI_SIDE_CODE_BY_DISPLAY = {
+    label: code for code, label in AI_SIDE_DISPLAY_BY_CODE.items()
+}
+
+FORGE_RULES_TEXT_HUMAN = (
     "Formats autorisés :\n"
     "- Duel d'ouverture : 2 combattants\n"
     "- Escarmouche tenue : 4 combattants\n"
@@ -62,6 +90,7 @@ class PlayerSlotRow(ctk.CTkFrame):
         self.slot_number = slot_number
         self.on_change = on_change
         self.player_values = player_values if player_values else [""]
+        self.team_locked = False
         self.default_team_label = TEAM_DISPLAY_BY_CODE[
             "A" if slot_number % 2 == 1 else "B"
         ]
@@ -139,6 +168,7 @@ class PlayerSlotRow(ctk.CTkFrame):
 
     def _apply_slot_state(self, is_active: bool):
         team_code = self._current_team_code()
+        team_state = "disabled" if self.team_locked else "readonly"
         accent_color = PALETTE["gold"] if team_code == "A" else PALETTE["cyan"]
         accent_hover = (
             PALETTE["gold_hover"]
@@ -167,7 +197,7 @@ class PlayerSlotRow(ctk.CTkFrame):
                 text_color=PALETTE["text"],
             )
             self.team_combo.configure(
-                state="readonly",
+                state=team_state,
                 text_color=PALETTE["text"],
             )
             update_badge(
@@ -185,7 +215,7 @@ class PlayerSlotRow(ctk.CTkFrame):
                 text_color=PALETTE["text_soft"],
             )
             self.team_combo.configure(
-                state="readonly",
+                state=team_state,
                 text_color=PALETTE["text_soft"],
             )
             update_badge(
@@ -224,6 +254,22 @@ class PlayerSlotRow(ctk.CTkFrame):
             return
         self.on_change()
 
+    def set_team_code(self, team_code: str):
+        team_label = TEAM_DISPLAY_BY_CODE.get(
+            team_code,
+            TEAM_DISPLAY_BY_CODE["A"],
+        )
+        self.team_combo.set(team_label)
+        self._apply_slot_state(self.active_checkbox.get() == 1)
+
+    def lock_team(self, team_code: str):
+        self.team_locked = True
+        self.set_team_code(team_code)
+
+    def unlock_team(self):
+        self.team_locked = False
+        self._apply_slot_state(self.active_checkbox.get() == 1)
+
     def set_player_values(self, values):
         self.player_values = values if values else [""]
         self.player_combo.configure(values=self.player_values)
@@ -251,37 +297,34 @@ class PlayerSelectView(ctk.CTkToplevel):
         super().__init__(parent)
         style_window(self)
 
+        self._forge_open_started_at = time.perf_counter()
+        self._forge_first_paint_logged = False
+        self._registry_loading = False
+        self._registry_request_token = 0
+        self._registry_result_queue = queue.SimpleQueue()
         self.parent = parent
         self.player_options = []
-        self.registry_available = True
+        self.registry_available = None
         self.duration_values = [
             str(duration) for duration in MATCH_DURATION_OPTIONS
         ]
+        self.match_mode_var = ctk.StringVar(
+            value=MATCH_MODE_DISPLAY_BY_CODE["human"]
+        )
+        self.human_team_var = ctk.StringVar(
+            value=AI_SIDE_DISPLAY_BY_CODE["A"]
+        )
+        self.ai_difficulty_var = ctk.StringVar(
+            value=AI_DIFFICULTY_DISPLAY_BY_CODE["standard"]
+        )
         self.match_duration_var = ctk.StringVar(
             value=str(MATCH_DURATION_SECONDS)
         )
-        self.sanctum_preview_image = load_ctk_image(
-            "assets",
-            "backgrounds",
-            "launcher_sanctum_bg.png",
-            size=(250, 118),
-            fallback_label="sanctum",
-        )
-        self.mascot_portrait_image = load_ctk_image(
-            "assets",
-            "portraits",
-            "skeleton_mascot_portrait.png",
-            size=(72, 72),
-            fallback_label="mascot",
-        )
-
         self.title("Arena Duel - Forge locale")
         self.geometry("1380x900")
         enable_large_window(self, 1180, 820)
-        try:
-            self.iconbitmap(resource_path("assets", "icons", "app.ico"))
-        except (OSError, TclError):
-            pass
+        _ico = resource_path("assets", "icons", "app.ico")
+        self.after(200, lambda: self._apply_icon(_ico))
 
         self.transient(parent)
         self.lift()
@@ -291,7 +334,20 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.after(200, lambda: self.attributes("-topmost", False))
 
         self._build_ui()
-        self.refresh_players()
+        self._trace_perf("ui-shell-ready")
+        self._set_registry_loading_state(
+            "Ouverture de la forge et lecture du registre..."
+        )
+        self._refresh_forge_state()
+        self.after_idle(self._handle_first_paint)
+        # Ouvrir maximisé pour garantir que tout le contenu est visible
+        self.after(60, lambda: self.state("zoomed"))
+
+    def _apply_icon(self, path: str):
+        try:
+            self.iconbitmap(path)
+        except (OSError, TclError):
+            pass
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=2)
@@ -346,72 +402,6 @@ class PlayerSelectView(ctk.CTkToplevel):
         )
         subtitle.grid(row=1, column=0, padx=20, pady=(0, 18), sticky="w")
 
-        preview_card = ctk.CTkFrame(header, corner_radius=18)
-        style_frame(
-            preview_card,
-            tone="panel_soft",
-            border_color=PALETTE["border_strong"],
-        )
-        preview_card.grid(
-            row=0,
-            column=1,
-            rowspan=2,
-            padx=(12, 20),
-            pady=16,
-            sticky="nsew",
-        )
-        preview_card.grid_columnconfigure(1, weight=1)
-
-        preview_image = ctk.CTkLabel(
-            preview_card,
-            text="",
-            image=self.sanctum_preview_image,
-        )
-        preview_image.grid(
-            row=0,
-            column=0,
-            columnspan=2,
-            padx=12,
-            pady=(12, 10),
-            sticky="ew",
-        )
-
-        portrait = ctk.CTkLabel(
-            preview_card,
-            text="",
-            image=self.mascot_portrait_image,
-        )
-        portrait.grid(row=1, column=0, padx=(12, 10), pady=(0, 12), sticky="w")
-
-        preview_title = ctk.CTkLabel(
-            preview_card,
-            text="Héraut du sanctum",
-            font=TYPOGRAPHY["body_bold"],
-            text_color=PALETTE["text"],
-        )
-        preview_title.grid(
-            row=1,
-            column=1,
-            padx=(0, 12),
-            pady=(2, 0),
-            sticky="sw",
-        )
-
-        preview_hint = ctk.CTkLabel(
-            preview_card,
-            text="Portrait prêt pour\nles cartes et verdicts",
-            font=TYPOGRAPHY["small"],
-            text_color=PALETTE["text_muted"],
-            justify="left",
-        )
-        preview_hint.grid(
-            row=1,
-            column=1,
-            padx=(0, 12),
-            pady=(0, 12),
-            sticky="nw",
-        )
-
         left_frame = ctk.CTkFrame(self, corner_radius=16)
         style_frame(left_frame, tone="panel", border_color=PALETTE["border"])
         left_frame.grid(row=2, column=0, padx=(20, 10), pady=10, sticky="nsew")
@@ -426,7 +416,7 @@ class PlayerSelectView(ctk.CTkToplevel):
         )
         slots_title.grid(row=0, column=0, padx=18, pady=(18, 10), sticky="w")
 
-        slots_hint = ctk.CTkLabel(
+        self.slots_hint = ctk.CTkLabel(
             left_frame,
             text=(
                 "Active 2, 4 ou 6 postes. Chaque bastion doit garder le "
@@ -437,7 +427,13 @@ class PlayerSelectView(ctk.CTkToplevel):
             wraplength=760,
             justify="left",
         )
-        slots_hint.grid(row=1, column=0, padx=18, pady=(0, 12), sticky="w")
+        self.slots_hint.grid(
+            row=1,
+            column=0,
+            padx=18,
+            pady=(0, 12),
+            sticky="w",
+        )
 
         formation_strip = ctk.CTkFrame(left_frame, corner_radius=16)
         style_frame(
@@ -452,7 +448,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             pady=(0, 12),
             sticky="ew",
         )
-        formation_strip.grid_columnconfigure((0, 1), weight=1)
+        formation_strip.grid_columnconfigure((0, 1, 2), weight=1)
 
         self.left_format_value = self._build_stat_card(
             formation_strip,
@@ -467,6 +463,13 @@ class PlayerSelectView(ctk.CTkToplevel):
             1,
             "Duree scellee",
             format_match_duration_label(self._get_selected_duration_seconds()),
+        )
+        self.left_mode_value = self._build_stat_card(
+            formation_strip,
+            0,
+            2,
+            "Adversaire",
+            "Humains",
         )
 
         slots_shell = ctk.CTkFrame(left_frame, corner_radius=14)
@@ -536,7 +539,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             sticky="nsew",
         )
         right_frame.grid_columnconfigure(0, weight=1)
-        right_frame.grid_rowconfigure(2, weight=1)
+        right_frame.grid_rowconfigure(1, weight=1)
 
         setup_frame = ctk.CTkFrame(right_frame, corner_radius=16)
         style_frame(
@@ -562,13 +565,139 @@ class PlayerSelectView(ctk.CTkToplevel):
             sticky="w",
         )
 
+        mode_label = ctk.CTkLabel(
+            setup_frame,
+            text="Mode de joute",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_soft"],
+        )
+        mode_label.grid(row=1, column=0, padx=18, pady=(0, 4), sticky="w")
+
+        mode_hint = ctk.CTkLabel(
+            setup_frame,
+            text="Le mode IA complète automatiquement le bastion adverse.",
+            font=TYPOGRAPHY["small"],
+            text_color=PALETTE["text_soft"],
+        )
+        mode_hint.grid(row=1, column=1, padx=18, pady=(0, 4), sticky="e")
+
+        self.mode_menu = create_option_menu(
+            setup_frame,
+            values=list(MATCH_MODE_DISPLAY_BY_CODE.values()),
+            variable=self.match_mode_var,
+            command=self._handle_match_mode_change,
+            width=220,
+            height=42,
+        )
+        self.mode_menu.grid(
+            row=2,
+            column=0,
+            padx=18,
+            pady=(0, 12),
+            sticky="w",
+        )
+
+        self.mode_note = ctk.CTkLabel(
+            setup_frame,
+            text="Deux bastions humains contrôlés au clavier.",
+            font=TYPOGRAPHY["body_bold"],
+            text_color=PALETTE["text"],
+            justify="right",
+        )
+        self.mode_note.grid(
+            row=2,
+            column=1,
+            padx=18,
+            pady=(0, 12),
+            sticky="e",
+        )
+
+        self.ai_setup_frame = ctk.CTkFrame(
+            setup_frame,
+            corner_radius=14,
+        )
+        style_frame(
+            self.ai_setup_frame,
+            tone="panel",
+            border_color=PALETTE["border"],
+        )
+        self.ai_setup_frame.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            padx=18,
+            pady=(0, 12),
+            sticky="ew",
+        )
+        self.ai_setup_frame.grid_columnconfigure((0, 1), weight=1)
+
+        human_team_label = ctk.CTkLabel(
+            self.ai_setup_frame,
+            text="Camp humain",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_soft"],
+        )
+        human_team_label.grid(
+            row=0,
+            column=0,
+            padx=14,
+            pady=(12, 6),
+            sticky="w",
+        )
+
+        ai_difficulty_label = ctk.CTkLabel(
+            self.ai_setup_frame,
+            text="Difficulté de l'IA",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_soft"],
+        )
+        ai_difficulty_label.grid(
+            row=0,
+            column=1,
+            padx=14,
+            pady=(12, 6),
+            sticky="w",
+        )
+
+        self.human_team_menu = create_option_menu(
+            self.ai_setup_frame,
+            values=list(AI_SIDE_DISPLAY_BY_CODE.values()),
+            variable=self.human_team_var,
+            command=self._handle_ai_setup_change,
+            width=210,
+            height=40,
+        )
+        self.human_team_menu.grid(
+            row=1,
+            column=0,
+            padx=14,
+            pady=(0, 12),
+            sticky="w",
+        )
+
+        self.ai_difficulty_menu = create_option_menu(
+            self.ai_setup_frame,
+            values=list(AI_DIFFICULTY_DISPLAY_BY_CODE.values()),
+            variable=self.ai_difficulty_var,
+            command=self._handle_ai_setup_change,
+            width=210,
+            height=40,
+        )
+        self.ai_difficulty_menu.grid(
+            row=1,
+            column=1,
+            padx=14,
+            pady=(0, 12),
+            sticky="w",
+        )
+
         duration_label = ctk.CTkLabel(
             setup_frame,
             text="Durée de la partie",
             font=TYPOGRAPHY["small_bold"],
             text_color=PALETTE["text_soft"],
         )
-        duration_label.grid(row=1, column=0, padx=18, pady=(0, 4), sticky="w")
+        duration_label.grid(row=4, column=0, padx=18, pady=(0, 4), sticky="w")
 
         duration_hint = ctk.CTkLabel(
             setup_frame,
@@ -576,7 +705,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
         )
-        duration_hint.grid(row=1, column=1, padx=18, pady=(0, 4), sticky="e")
+        duration_hint.grid(row=4, column=1, padx=18, pady=(0, 4), sticky="e")
 
         self.duration_menu = create_option_menu(
             setup_frame,
@@ -587,7 +716,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             height=42,
         )
         self.duration_menu.grid(
-            row=2,
+            row=5,
             column=0,
             padx=18,
             pady=(0, 12),
@@ -604,24 +733,24 @@ class PlayerSelectView(ctk.CTkToplevel):
             text_color=PALETTE["text"],
         )
         self.duration_note.grid(
-            row=2,
+            row=5,
             column=1,
             padx=18,
             pady=(0, 12),
             sticky="e",
         )
 
-        rules_box = ctk.CTkTextbox(setup_frame, height=120)
-        rules_box.grid(
-            row=3,
+        self.rules_box = ctk.CTkTextbox(setup_frame, height=80)
+        self.rules_box.grid(
+            row=6,
             column=0,
             columnspan=2,
             padx=18,
             pady=(0, 14),
             sticky="ew",
         )
-        style_textbox(rules_box)
-        set_textbox_content(rules_box, FORGE_RULES_TEXT)
+        style_textbox(self.rules_box)
+        set_textbox_content(self.rules_box, FORGE_RULES_TEXT_HUMAN)
 
         pulse_title = ctk.CTkLabel(
             setup_frame,
@@ -630,7 +759,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             text_color=PALETTE["text"],
         )
         pulse_title.grid(
-            row=4,
+            row=7,
             column=0,
             columnspan=2,
             padx=18,
@@ -645,7 +774,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             border_color=PALETTE["border"],
         )
         self.selection_frame.grid(
-            row=5,
+            row=8,
             column=0,
             columnspan=2,
             padx=18,
@@ -697,7 +826,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             sticky="nsew",
         )
         register_frame.grid_columnconfigure((0, 1), weight=1)
-        register_frame.grid_rowconfigure(4, weight=1)
+        register_frame.grid_rowconfigure(3, weight=1)
 
         create_title = ctk.CTkLabel(
             register_frame,
@@ -754,30 +883,16 @@ class PlayerSelectView(ctk.CTkToplevel):
             sticky="ew",
         )
 
-        existing_title = ctk.CTkLabel(
-            register_frame,
-            text="Registre du bastion",
-            font=TYPOGRAPHY["section"],
-            text_color=PALETTE["text"],
-        )
-        existing_title.grid(
-            row=3,
-            column=0,
-            columnspan=2,
-            padx=18,
-            pady=(0, 8),
-            sticky="nw",
-        )
-
         self.players_list_frame = ctk.CTkScrollableFrame(
             register_frame,
             corner_radius=14,
+            height=120,
             fg_color=PALETTE["panel"],
             border_width=1,
             border_color=PALETTE["border"],
         )
         self.players_list_frame.grid(
-            row=4,
+            row=3,
             column=0,
             columnspan=2,
             padx=18,
@@ -785,45 +900,6 @@ class PlayerSelectView(ctk.CTkToplevel):
             sticky="nsew",
         )
         self.players_list_frame.grid_columnconfigure(0, weight=1)
-
-        info_frame = ctk.CTkFrame(right_frame, corner_radius=16)
-        style_frame(info_frame, tone="bg_alt", border_color=PALETTE["border"])
-        info_frame.grid(row=2, column=0, padx=18, pady=(0, 18), sticky="nsew")
-        info_frame.grid_columnconfigure(0, weight=1)
-        info_frame.grid_columnconfigure(1, weight=0)
-        info_frame.grid_rowconfigure(1, weight=1)
-
-        info_title = ctk.CTkLabel(
-            info_frame,
-            text="Echo de la forge",
-            font=TYPOGRAPHY["body_bold"],
-            text_color=PALETTE["text"],
-        )
-        info_title.grid(row=0, column=0, padx=14, pady=(14, 6), sticky="w")
-
-        self.info_badge = create_badge(
-            info_frame,
-            "Veille de la forge",
-            tone="neutral",
-        )
-        self.info_badge.grid(
-            row=0,
-            column=1,
-            padx=14,
-            pady=(14, 6),
-            sticky="e",
-        )
-
-        self.info_box = ctk.CTkTextbox(info_frame, height=136)
-        self.info_box.grid(
-            row=1,
-            column=0,
-            columnspan=2,
-            padx=14,
-            pady=(0, 14),
-            sticky="ew",
-        )
-        style_textbox(self.info_box)
 
         footer = ctk.CTkFrame(self, corner_radius=16)
         style_frame(footer, tone="panel", border_color=PALETTE["border"])
@@ -837,14 +913,20 @@ class PlayerSelectView(ctk.CTkToplevel):
         )
         footer.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
-        validate_btn = create_button(
+        self.launch_button = create_button(
             footer,
             "Ouvrir la joute",
             self._handle_validate_and_launch,
             variant="primary",
             height=46,
         )
-        validate_btn.grid(row=0, column=0, padx=(16, 8), pady=16, sticky="ew")
+        self.launch_button.grid(
+            row=0,
+            column=0,
+            padx=(16, 8),
+            pady=16,
+            sticky="ew",
+        )
 
         history_btn = create_button(
             footer,
@@ -863,6 +945,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             height=42,
         )
         refresh_btn.grid(row=0, column=2, padx=8, pady=16, sticky="ew")
+        self.refresh_button = refresh_btn
 
         close_btn = create_button(
             footer,
@@ -872,6 +955,8 @@ class PlayerSelectView(ctk.CTkToplevel):
             height=42,
         )
         close_btn.grid(row=0, column=3, padx=(8, 16), pady=16, sticky="ew")
+
+        self._sync_match_mode_ui()
 
     def _build_stat_card(
         self,
@@ -992,14 +1077,49 @@ class PlayerSelectView(ctk.CTkToplevel):
                 sticky="w",
             )
 
+    def _render_registry_loading_state(self, message: str):
+        for widget in self.players_list_frame.winfo_children():
+            widget.destroy()
+
+        loading_state = ctk.CTkLabel(
+            self.players_list_frame,
+            text=message,
+            font=TYPOGRAPHY["body"],
+            text_color=PALETTE["text_soft"],
+            justify="left",
+            anchor="w",
+        )
+        loading_state.grid(row=0, column=0, padx=16, pady=18, sticky="ew")
+
+    def _trace_perf(self, stage: str, **metrics):
+        elapsed_ms = (time.perf_counter() - self._forge_open_started_at) * 1000
+        details = [f"open_ms={elapsed_ms:.1f}"]
+        for key, value in metrics.items():
+            details.append(f"{key}={value}")
+        print(f"[forge-perf] {stage} | " + " | ".join(details))
+
+    def _handle_first_paint(self):
+        if self._forge_first_paint_logged or not self.winfo_exists():
+            return
+
+        self._forge_first_paint_logged = True
+        self._trace_perf("first-paint")
+        self.refresh_players(reason="initial")
+
+    def _set_registry_loading_state(self, message: str):
+        self._registry_loading = True
+        update_badge(self.register_count_badge, "Lecture...", "neutral")
+        if hasattr(self, "refresh_button"):
+            self.refresh_button.configure(state="disabled")
+        self._render_registry_loading_state(message)
+
     def _set_info(
         self,
         text: str,
         badge_text: str = "Veille de la forge",
         tone: str = "neutral",
     ):
-        update_badge(self.info_badge, badge_text, tone)
-        set_textbox_content(self.info_box, text)
+        pass
 
     def _handle_duration_change(self, _choice=None):
         duration_text = format_match_duration_label(
@@ -1008,6 +1128,100 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.duration_note.configure(text=f"Durée scellée : {duration_text}")
         self.left_duration_value.configure(text=duration_text)
         self._refresh_forge_state()
+
+    def _get_selected_match_mode(self) -> str:
+        return MATCH_MODE_CODE_BY_DISPLAY.get(
+            self.match_mode_var.get().strip(),
+            "human",
+        )
+
+    def _get_selected_human_team(self) -> str:
+        return AI_SIDE_CODE_BY_DISPLAY.get(
+            self.human_team_var.get().strip(),
+            "A",
+        )
+
+    def _get_selected_ai_team(self) -> str:
+        return get_opposite_team(self._get_selected_human_team())
+
+    def _get_selected_ai_difficulty(self) -> str:
+        return AI_DIFFICULTY_CODE_BY_DISPLAY.get(
+            self.ai_difficulty_var.get().strip(),
+            "standard",
+        )
+
+    def _handle_match_mode_change(self, _choice=None):
+        self._sync_match_mode_ui()
+        self._refresh_forge_state()
+
+    def _handle_ai_setup_change(self, _choice=None):
+        self._sync_match_mode_ui()
+        self._refresh_forge_state()
+
+    def _build_vs_ai_rules_text(self) -> str:
+        human_team_label = TEAM_DISPLAY_BY_CODE[
+            self._get_selected_human_team()
+        ]
+        ai_team_label = TEAM_DISPLAY_BY_CODE[self._get_selected_ai_team()]
+        return (
+            "Formats autorisés contre l'ordinateur :\n"
+            "- Duel assisté : 1 combattant humain\n"
+            "- Escarmouche assistée : 2 combattants humains\n"
+            "- Mêlée assistée : 3 combattants humains\n\n"
+            "Conditions de scellage :\n"
+            "- tous les combattants humains restent dans "
+            f"{human_team_label.lower()}\n"
+            "- aucun doublon dans les noms\n"
+            f"- l'ordinateur complète automatiquement {ai_team_label.lower()}"
+        )
+
+    def _sync_match_mode_ui(self):
+        is_vs_ai = self._get_selected_match_mode() == "ai"
+        human_team = self._get_selected_human_team()
+        ai_team = self._get_selected_ai_team()
+        ai_team_label = TEAM_DISPLAY_BY_CODE[ai_team]
+        difficulty_label = AI_DIFFICULTY_DISPLAY_BY_CODE[
+            self._get_selected_ai_difficulty()
+        ]
+
+        if is_vs_ai:
+            self.slots_hint.configure(
+                text=(
+                    "Active 1, 2 ou 3 postes humains. L'ordinateur "
+                    f"complète automatiquement {ai_team_label.lower()} avec "
+                    "le même nombre de combattants."
+                )
+            )
+            self.mode_note.configure(
+                text=(
+                    f"{ai_team_label} sera joué par l'ordinateur · "
+                    "les flèches pilotent en priorité le premier humain."
+                )
+            )
+            self.left_mode_value.configure(text=f"IA · {difficulty_label}")
+            self.launch_button.configure(text="Lancer contre l'ordinateur")
+            set_textbox_content(self.rules_box, self._build_vs_ai_rules_text())
+            self.human_team_menu.configure(state="normal")
+            self.ai_difficulty_menu.configure(state="normal")
+            for row in self.slot_rows:
+                row.lock_team(human_team)
+        else:
+            self.slots_hint.configure(
+                text=(
+                    "Active 2, 4 ou 6 postes. Chaque bastion doit garder le "
+                    "même nombre de combattants avant l'ouverture de la joute."
+                )
+            )
+            self.mode_note.configure(
+                text="Deux bastions humains contrôlés au clavier."
+            )
+            self.left_mode_value.configure(text="Humains")
+            self.launch_button.configure(text="Ouvrir la joute")
+            set_textbox_content(self.rules_box, FORGE_RULES_TEXT_HUMAN)
+            self.human_team_menu.configure(state="disabled")
+            self.ai_difficulty_menu.configure(state="disabled")
+            for row in self.slot_rows:
+                row.unlock_team()
 
     def _get_selected_duration_seconds(self) -> int:
         try:
@@ -1018,6 +1232,8 @@ class PlayerSelectView(ctk.CTkToplevel):
     def _refresh_forge_state(self):
         selected_players = self._collect_selected_players()
         total = len(selected_players)
+        match_mode = self._get_selected_match_mode()
+        is_vs_ai = match_mode == "ai"
         team_a_count = sum(
             1 for player in selected_players if player["team"] == "A"
         )
@@ -1030,11 +1246,19 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         self.active_slots_value.configure(text=str(total))
         self.balance_value.configure(
-            text=f"{team_a_count} / {team_b_count}" if total else "-"
+            text=(
+                f"{total} humain(s) / {total} IA"
+                if total and is_vs_ai
+                else (f"{team_a_count} / {team_b_count}" if total else "-")
+            )
         )
         self.registered_value.configure(text=str(registered_count))
 
-        if not self.registry_available:
+        if self._registry_loading:
+            update_badge(self.status_badge, "Forge en ouverture", "neutral")
+            return
+
+        if self.registry_available is False:
             update_badge(self.status_badge, "Registre indisponible", "danger")
             self._set_info(
                 (
@@ -1048,12 +1272,20 @@ class PlayerSelectView(ctk.CTkToplevel):
             )
             return
 
-        format_label = {
-            0: "Veille",
-            2: "Duel",
-            4: "Escarmouche",
-            6: "Melee",
-        }.get(total, "A completer")
+        if is_vs_ai:
+            format_label = {
+                0: "Veille",
+                1: "Duel IA",
+                2: "Escarmouche IA",
+                3: "Melee IA",
+            }.get(total, "A completer")
+        else:
+            format_label = {
+                0: "Veille",
+                2: "Duel",
+                4: "Escarmouche",
+                6: "Melee",
+            }.get(total, "A completer")
         self.format_value.configure(text=format_label)
         self.left_format_value.configure(text=format_label)
         duration_text = format_match_duration_label(
@@ -1076,14 +1308,30 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         if total == 0:
             update_badge(self.status_badge, "Forge prete", "gold")
-            self._set_info(
-                (
-                    "Active 2, 4 ou 6 postes, choisis les combattants puis "
-                    "garde le meme nombre de guerriers dans chaque bastion."
-                ),
-                badge_text="Veille de la forge",
-                tone="neutral",
-            )
+            if is_vs_ai:
+                ai_team_label = TEAM_DISPLAY_BY_CODE[
+                    self._get_selected_ai_team()
+                ]
+                self._set_info(
+                    (
+                        "Active 1, 2 ou 3 postes humains. La forge générera "
+                        f"ensuite {ai_team_label.lower()} contrôlé par "
+                        "l'ordinateur, "
+                        "avec un nombre égal de combattants."
+                    ),
+                    badge_text="Veille de la forge",
+                    tone="neutral",
+                )
+            else:
+                self._set_info(
+                    (
+                        "Active 2, 4 ou 6 postes, choisis les combattants "
+                        "puis garde le meme nombre de guerriers dans chaque "
+                        "bastion."
+                    ),
+                    badge_text="Veille de la forge",
+                    tone="neutral",
+                )
             return
 
         ok, message = self._validate_selection(selected_players)
@@ -1102,14 +1350,72 @@ class PlayerSelectView(ctk.CTkToplevel):
                 tone="warning",
             )
 
-    def refresh_players(self):
-        self.registry_available = test_connection()
+    def refresh_players(self, reason: str = "manual"):
+        if self._registry_loading:
+            return
 
-        if self.registry_available:
-            rows = get_all_players()
-        else:
-            rows = []
+        self._registry_request_token += 1
+        request_token = self._registry_request_token
+        self._set_registry_loading_state("Lecture du registre en cours...")
+        self._trace_perf("registry-load-start", reason=reason)
 
+        worker = threading.Thread(
+            target=self._load_registry_worker,
+            args=(request_token, reason),
+            daemon=True,
+        )
+        worker.start()
+        self.after(25, self._drain_registry_results)
+
+    def _load_registry_worker(self, request_token: int, reason: str):
+        query_started_at = time.perf_counter()
+        registry_available, rows = get_player_registry_snapshot()
+        query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
+
+        self._registry_result_queue.put(
+            (
+                request_token,
+                registry_available,
+                rows,
+                reason,
+                query_elapsed_ms,
+            )
+        )
+
+    def _drain_registry_results(self):
+        if not self.winfo_exists():
+            return
+
+        processed_result = False
+        while True:
+            try:
+                payload = self._registry_result_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            processed_result = True
+            self._apply_registry_snapshot(*payload)
+
+        if self._registry_loading and not processed_result:
+            self.after(25, self._drain_registry_results)
+
+    def _apply_registry_snapshot(
+        self,
+        request_token: int,
+        registry_available: bool,
+        rows,
+        reason: str,
+        query_elapsed_ms: float,
+    ):
+        if (
+            not self.winfo_exists()
+            or request_token != self._registry_request_token
+        ):
+            return
+
+        apply_started_at = time.perf_counter()
+        self._registry_loading = False
+        self.registry_available = registry_available
         self.player_options = [row[1] for row in rows]
         player_count = len(rows)
 
@@ -1128,9 +1434,21 @@ class PlayerSelectView(ctk.CTkToplevel):
         else:
             update_badge(self.register_count_badge, "0 inscrit", "neutral")
 
-        self._render_registered_players(rows)
+        if hasattr(self, "refresh_button"):
+            self.refresh_button.configure(state="normal")
 
+        self._render_registered_players(rows)
         self._refresh_forge_state()
+
+        apply_elapsed_ms = (time.perf_counter() - apply_started_at) * 1000
+        self._trace_perf(
+            "registry-load-done",
+            reason=reason,
+            db_ms=f"{query_elapsed_ms:.1f}",
+            ui_ms=f"{apply_elapsed_ms:.1f}",
+            rows=player_count,
+            db_ok=registry_available,
+        )
 
     def _handle_add_player(self):
         play_click()
@@ -1139,7 +1457,7 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         if ok:
             self.new_player_entry.delete(0, "end")
-            self.refresh_players()
+            self.refresh_players(reason="post-add")
             update_badge(self.status_badge, "Combattant enrôle", "success")
             self._set_info(
                 message,
@@ -1164,6 +1482,9 @@ class PlayerSelectView(ctk.CTkToplevel):
         return selected
 
     def _validate_selection(self, players_data):
+        if self._get_selected_match_mode() == "ai":
+            return self._validate_vs_ai_selection(players_data)
+
         total = len(players_data)
 
         if total not in (2, 4, 6):
@@ -1204,10 +1525,72 @@ class PlayerSelectView(ctk.CTkToplevel):
             "l'arène.",
         )
 
+    def _validate_vs_ai_selection(self, players_data):
+        total = len(players_data)
+        human_team = self._get_selected_human_team()
+        human_team_label = TEAM_DISPLAY_BY_CODE[human_team]
+
+        if total not in (1, 2, 3):
+            return (
+                False,
+                "Active 1, 2 ou 3 combattants humains pour lancer une "
+                "joute contre l'ordinateur.",
+            )
+
+        names = [p["name"] for p in players_data]
+        if any(not name for name in names):
+            return False, "Un emplacement actif attend encore un combattant."
+
+        if len(names) != len(set(names)):
+            return (
+                False,
+                "Un même combattant ne peut pas servir deux emplacements "
+                "dans la même joute.",
+            )
+
+        invalid_teams = [
+            player
+            for player in players_data
+            if player.get("team") != human_team
+        ]
+        if invalid_teams:
+            return (
+                False,
+                "En mode contre l'ordinateur, les combattants humains "
+                f"restent dans {human_team_label.lower()}."
+            )
+
+        return (
+            True,
+            f"Formation validée. {human_team_label} entrera dans l'arène "
+            "avec un adversaire contrôlé par l'ordinateur de taille "
+            "équivalente.",
+        )
+
+    def _build_launch_players(self, players_data):
+        if self._get_selected_match_mode() == "ai":
+            human_team = self._get_selected_human_team()
+            return build_human_vs_ai_players(
+                players_data,
+                human_team=human_team,
+                ai_team=self._get_selected_ai_team(),
+                difficulty=self._get_selected_ai_difficulty(),
+                prefer_arrow_controls=True,
+            )
+
+        return [
+            {
+                **player,
+                "control_mode": HUMAN_CONTROL_MODE,
+            }
+            for player in players_data
+        ]
+
     def _handle_validate_and_launch(self):
         play_transition()
         players_data = self._collect_selected_players()
         ok, message = self._validate_selection(players_data)
+        is_vs_ai = self._get_selected_match_mode() == "ai"
 
         self._set_info(
             message,
@@ -1223,11 +1606,21 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         update_badge(self.status_badge, "Joute en préparation", "gold")
         selected_duration = self._get_selected_duration_seconds()
+        ai_difficulty_label = AI_DIFFICULTY_DISPLAY_BY_CODE[
+            self._get_selected_ai_difficulty()
+        ]
+        ai_team_label = TEAM_DISPLAY_BY_CODE[self._get_selected_ai_team()]
         self._set_info(
             (
                 "La forge scelle la formation. "
-                "La joute va s'ouvrir avec les bastions choisis pour "
-                f"{format_match_duration_label(selected_duration)}."
+                + (
+                    f"{ai_team_label} sera immédiatement confié à "
+                    f"l'ordinateur ({ai_difficulty_label}). "
+                    if is_vs_ai
+                    else ""
+                )
+                + "La joute va s'ouvrir pour "
+                + f"{format_match_duration_label(selected_duration)}."
             ),
             badge_text="Joute en préparation",
             tone="gold",
@@ -1238,8 +1631,9 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         from game.game_window import run_game
         stop_music(fade_ms=180)
+        launch_players = self._build_launch_players(players_data)
         result = run_game(
-            players_data,
+            launch_players,
             match_duration_seconds=selected_duration,
         )
 

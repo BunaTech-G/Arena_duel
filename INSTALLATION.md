@@ -43,7 +43,7 @@ arena_duel/
 ├── run_local.bat
 ├── run_server.bat
 ├── run_client_lan.bat
-├── schema.sql
+├── shema.sql
 ├── ui/
 ├── game/
 ├── db/
@@ -268,16 +268,22 @@ Si vous utilisez la sauvegarde des joueurs, matchs et scores :
 http://localhost/phpmyadmin
 ```
 
-4. Créez la base :
+1. Creez la base :
 
 ```text
 arena_duel_v2_db
 ```
 
-5. Importez le fichier :
+1. Pour une installation neuve, importez le fichier :
 
 ```text
-schema.sql
+shema.sql
+```
+
+1. Si vous avez deja une base legacy avec des donnees, appliquez ensuite :
+
+```text
+db/migrations/001_v1_to_v2.sql
 ```
 
 ---
@@ -361,7 +367,7 @@ Dans ce mode :
 - **Python n'est pas nécessaire** sur le PC cible
 - mais la **base de données reste séparée**
 
-Si le projet dépend de MariaDB / phpMyAdmin, il faut toujours installer XAMPP et importer `schema.sql`.
+Si le projet depend de MariaDB / phpMyAdmin, il faut toujours installer XAMPP et importer `shema.sql` pour une base neuve, ou appliquer `db/migrations/001_v1_to_v2.sql` sur une base legacy existante.
 
 ---
 
@@ -420,7 +426,7 @@ Sur un nouveau PC :
 setup_env.bat
 ```
 
-5. Lancer ensuite selon le besoin :
+1. Lancer ensuite selon le besoin :
 
 ```powershell
 run_local.bat
@@ -443,6 +449,7 @@ run_client_lan.bat
 ## 12. Dépannage rapide
 
 ### Erreur : module manquant
+
 Relancer :
 
 ```powershell
@@ -450,13 +457,17 @@ setup_env.bat
 ```
 
 ### GitHub inaccessible
+
 Vérifier :
+
 - passerelle réseau
 - DNS
 - accès Internet
 
 ### Le client LAN ne se connecte pas
+
 Vérifier :
+
 - que le serveur est lancé
 - l'adresse IP du serveur
 - le port `5000`
