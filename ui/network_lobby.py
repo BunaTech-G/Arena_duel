@@ -1,5 +1,4 @@
 import json
-import os
 import threading
 import time
 from tkinter import TclError
@@ -35,8 +34,14 @@ from network.messages import (
     LOBBY_STATE,
     START,
 )
-from network.net_utils import get_local_lan_ip
-from runtime_utils import load_runtime_config, resource_path
+from network.net_utils import (
+    format_endpoint,
+    get_lan_address_info,
+    is_loopback_host,
+    load_lan_runtime_config,
+    parse_server_invitation,
+)
+from runtime_utils import resource_path
 from ui.history_view import HistoryView
 from ui.theme import (
     PALETTE,
@@ -55,14 +60,14 @@ class NetworkLobbyView(ctk.CTkToplevel):
     def __init__(
         self,
         parent,
-        default_server_ip=None,
+        default_server_invitation=None,
         server_port=None,
         host_mode=False,
     ):
         super().__init__(parent)
         style_window(self)
 
-        runtime_config = load_runtime_config()
+        self.network_config = load_lan_runtime_config()
         self.duration_values = [
             str(duration) for duration in MATCH_DURATION_OPTIONS
         ]
@@ -88,12 +93,17 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.running = False
         self.history_request_pending = False
         self.server_port = int(
-            server_port or runtime_config.get("tcp_port", 5000)
+            server_port or self.network_config.port
         )
 
-        self.config_file = "client_lan_config.json"
-        self.detected_local_ip = get_local_lan_ip()
-        self.default_server_ip = default_server_ip
+        self.config_file = self.network_config.client_state_path
+        self.address_info = get_lan_address_info()
+        self.detected_local_ip = self.address_info.primary_ip or ""
+        self.default_server_invitation = default_server_invitation
+        self.local_test_invitation = format_endpoint(
+            "127.0.0.1",
+            self.server_port,
+        )
         self.host_mode = host_mode
 
         self.my_slot = None
@@ -128,20 +138,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         start_menu_music()
 
-        if self.host_mode:
-            self.info_label.configure(
-                text=(
-                    "Le bastion est pret. Copie l'invitation du hall, "
-                    "choisis la duree, puis inscris ton nom de combattant."
-                )
-            )
-        else:
-            self.info_label.configure(
-                text=(
-                    "Saisis l'invitation du gardien et ton nom de "
-                    "combattant pour rejoindre la joute partagee."
-                )
-            )
+        self.info_label.configure(text=self._build_initial_info_text())
 
     def _apply_icon(self, path: str):
         try:
@@ -251,9 +248,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.local_ip_label = ctk.CTkLabel(
             panel,
             text=(
-                "Invitation du bastion prete a etre partagee"
+                "Invitation LAN a partager avec les autres PC"
                 if self.host_mode
-                else "Entre l'invitation transmise par le gardien"
+                else (
+                    "Colle l'invitation LAN du gardien "
+                    "ou choisis un test local"
+                )
             ),
             font=TYPOGRAPHY["body"],
             text_color=PALETTE["text_soft"],
@@ -291,7 +291,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         invite_title = ctk.CTkLabel(
             invite_panel,
             text=(
-                "Invitation a partager"
+                "Invitation LAN a partager"
                 if self.host_mode
                 else "Invitation actuellement ciblee"
             ),
@@ -331,7 +331,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self.ip_entry = ctk.CTkEntry(
             panel,
-            placeholder_text="Invitation du bastion",
+            placeholder_text="Invitation LAN ou IP:port du hall",
             height=42,
             font=TYPOGRAPHY["body"],
             fg_color=PALETTE["panel_soft"],
@@ -346,11 +346,16 @@ class NetworkLobbyView(ctk.CTkToplevel):
             sticky="ew",
         )
 
-        default_ip = self._load_saved_server_ip()
-        if default_ip:
-            self.ip_entry.insert(0, default_ip)
+        default_invitation = self._load_saved_server_invitation()
+        if default_invitation:
+            self.ip_entry.insert(0, default_invitation)
         elif self.host_mode:
-            self.ip_entry.insert(0, self.detected_local_ip)
+            self.ip_entry.insert(
+                0,
+                self._get_shareable_invitation_text()
+                if self.detected_local_ip
+                else self.local_test_invitation,
+            )
         self.ip_entry.bind("<KeyRelease>", self._handle_ip_entry_change)
         self._sync_invitation_spotlight(self.ip_entry.get().strip())
 
@@ -405,7 +410,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self.use_local_ip_btn = create_button(
             action_row,
-            "Jouer sur ce poste",
+            "Tester sur ce PC (local)",
             self._use_loopback_ip,
             variant="ghost",
             font=TYPOGRAPHY["button_small"],
@@ -422,7 +427,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         connect_pad = (8, 0) if action_column else (0, 0)
         self.connect_btn = create_button(
             action_row,
-            "Rejoindre le hall",
+            "Entrer dans le hall",
             self._connect,
             variant="accent",
             height=40,
@@ -701,8 +706,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 )
                 update_badge(self.mode_badge, "Gardien", "gold")
             else:
-                text = "Bastion pret · hall en veille"
-                update_badge(self.mode_badge, "Gardien", "warning")
+                if self.detected_local_ip:
+                    text = "Bastion pret · invitation LAN disponible"
+                    update_badge(self.mode_badge, "Gardien", "warning")
+                else:
+                    text = "Bastion pret · test local uniquement"
+                    update_badge(self.mode_badge, "Gardien", "danger")
         else:
             if self.client and self.client.running:
                 text = "Hall rejoint · serment scelle · chroniques du bastion"
@@ -746,28 +755,71 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self._reset_lobby_state()
         self.info_label.configure(text=message)
 
-    def _load_saved_server_ip(self) -> str:
-        if self.default_server_ip:
-            return self.default_server_ip
+    def _build_initial_info_text(self) -> str:
+        if self.host_mode:
+            if self.detected_local_ip:
+                return (
+                    "Le bastion est pret. Partage l'invitation LAN, "
+                    "choisis la duree puis inscris ton nom de combattant.\n\n"
+                    "Invitation LAN actuelle : "
+                    f"{self._get_shareable_invitation_text()}"
+                )
+
+            return (
+                "Le bastion est pret, mais aucune IP LAN exploitable "
+                "n'a ete detectee. Tu peux encore tester le hall "
+                "en local sur ce PC, mais pas inviter un autre "
+                "ordinateur tant que le reseau local n'est pas disponible."
+            )
+
+        return (
+            "Saisis l'invitation LAN du gardien et ton nom de combattant "
+            "pour rejoindre la joute partagee. "
+            "Le mode local sur ce PC reste separe."
+        )
+
+    def _get_shareable_invitation_text(self) -> str:
+        if not self.detected_local_ip:
+            return "IP LAN indisponible"
+        return format_endpoint(self.detected_local_ip, self.server_port)
+
+    def _load_saved_server_invitation(self) -> str:
+        if self.default_server_invitation:
+            return self.default_server_invitation
 
         try:
-            if not os.path.exists(self.config_file):
-                return ""
-
             with open(self.config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            ip = data.get("last_server_ip", "").strip()
-            return ip
+            last_mode = str(
+                data.get("last_connection_mode") or ""
+            ).strip().lower()
+            if not self.host_mode and last_mode == "local":
+                return ""
 
-        except (OSError, json.JSONDecodeError):
+            invitation = str(
+                data.get("last_server_invitation") or ""
+            ).strip()
+            if invitation:
+                return invitation
+
+            legacy_ip = str(data.get("last_server_ip") or "").strip()
+            if legacy_ip:
+                return format_endpoint(legacy_ip, self.server_port)
+
             return ""
 
-    def _save_server_ip(self, ip: str):
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return ""
+
+    def _save_server_invitation(self, invitation: str, mode: str):
         try:
             with open(self.config_file, "w", encoding="utf-8") as f:
                 json.dump(
-                    {"last_server_ip": ip},
+                    {
+                        "last_server_invitation": invitation,
+                        "last_connection_mode": mode,
+                    },
                     f,
                     ensure_ascii=False,
                     indent=2,
@@ -779,23 +831,34 @@ class NetworkLobbyView(ctk.CTkToplevel):
         play_click()
 
         self.ip_entry.delete(0, "end")
-        self.ip_entry.insert(0, "127.0.0.1")
-        self._sync_invitation_spotlight("127.0.0.1")
+        self.ip_entry.insert(0, self.local_test_invitation)
+        self._sync_invitation_spotlight(self.local_test_invitation)
 
     def _copy_bastion_address(self):
         play_click()
 
+        shareable_invitation = self._get_shareable_invitation_text()
+        if shareable_invitation == "IP LAN indisponible":
+            self.info_label.configure(
+                text=(
+                    "Aucune IP LAN exploitable n'a ete detectee. "
+                    "Verifie le reseau "
+                    "local avant d'inviter un autre PC."
+                )
+            )
+            return
+
         try:
             self.clipboard_clear()
-            self.clipboard_append(self.detected_local_ip)
+            self.clipboard_append(shareable_invitation)
             self.info_label.configure(
-                text="Invitation du bastion copiee dans le presse-papiers."
+                text="Invitation LAN copiee dans le presse-papiers."
             )
         except (RuntimeError, TclError):
             self.info_label.configure(
                 text=(
-                    "Partage cette invitation du bastion : "
-                    f"{self.detected_local_ip}"
+                    "Partage cette invitation LAN : "
+                    f"{shareable_invitation}"
                 )
             )
 
@@ -805,10 +868,10 @@ class NetworkLobbyView(ctk.CTkToplevel):
     def _connect(self):
         play_transition()
 
-        ip = self.ip_entry.get().strip()
+        invitation = self.ip_entry.get().strip()
         name = self.name_entry.get().strip()
 
-        if not ip or not name:
+        if not invitation or not name:
             play_error()
             self.info_label.configure(
                 text=(
@@ -818,14 +881,25 @@ class NetworkLobbyView(ctk.CTkToplevel):
             )
             return
 
+        try:
+            host, port = parse_server_invitation(
+                invitation,
+                self.server_port,
+            )
+        except ValueError as error:
+            play_error()
+            self.info_label.configure(text=str(error))
+            return
+
         self.client = NetworkClient()
 
         try:
             self.client.connect(
-                ip,
-                self.server_port,
+                host,
+                port,
                 name,
                 is_host=self.host_mode,
+                timeout_seconds=self.network_config.connect_timeout_seconds,
             )
         except (ConnectionError, OSError) as error:
             play_alert()
@@ -836,6 +910,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 )
             )
             return
+
+        normalized_invitation = format_endpoint(host, port)
+        self.server_port = port
+        self.local_test_invitation = format_endpoint("127.0.0.1", port)
+        self.ip_entry.delete(0, "end")
+        self.ip_entry.insert(0, normalized_invitation)
 
         self.info_label.configure(
             text=(
@@ -851,7 +931,10 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.use_local_ip_btn.configure(state="disabled")
 
         self.my_name = name
-        self._save_server_ip(ip)
+        self._save_server_invitation(
+            normalized_invitation,
+            "local" if is_loopback_host(host) else "lan",
+        )
 
         self._start_network_thread()
         if self.host_mode:
@@ -861,19 +944,38 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self._refresh_mode_label()
 
         if self.host_mode:
-            self.info_label.configure(
-                text=(
-                    f"{name} veille sur le bastion. Les chroniques du hall "
-                    "seront gardees sur ce poste."
+            if is_loopback_host(host):
+                self.info_label.configure(
+                    text=(
+                        f"{name} veille sur le bastion en mode local "
+                        "sur ce PC. Invitation LAN a partager : "
+                        f"{self._get_shareable_invitation_text()}."
+                    )
                 )
-            )
+            else:
+                self.info_label.configure(
+                    text=(
+                        f"{name} veille sur le bastion. "
+                        "Invitation LAN active : "
+                        f"{normalized_invitation}."
+                    )
+                )
         else:
-            self.info_label.configure(
-                text=(
-                    f"{name} a rejoint le hall. Les chroniques seront lues "
-                    "depuis le bastion rejoint."
+            if is_loopback_host(host):
+                self.info_label.configure(
+                    text=(
+                        f"{name} a rejoint un hall local sur ce PC. "
+                        "N'utilise pas cette adresse depuis "
+                        "un autre ordinateur."
+                    )
                 )
-            )
+            else:
+                self.info_label.configure(
+                    text=(
+                        f"{name} a rejoint le hall {normalized_invitation}. "
+                        "Les chroniques seront lues depuis ce bastion."
+                    )
+                )
 
     # =========================
     # Réception réseau
@@ -974,16 +1076,37 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self._sync_invitation_spotlight(self.ip_entry.get().strip())
 
     def _sync_invitation_spotlight(self, ip_value: str):
-        active_value = ip_value.strip()
-        if not active_value:
-            active_value = (
-                self.detected_local_ip if self.host_mode else "En attente"
-            )
-
         if self.host_mode:
-            caption = "Adresse actuellement diffusee ou utilisee sur ce poste."
+            active_value = self._get_shareable_invitation_text()
+            if self.detected_local_ip:
+                caption = (
+                    "Invitation LAN reelle a transmettre aux autres PC "
+                    "du reseau local."
+                )
+            else:
+                caption = (
+                    "Aucune IP LAN exploitable detectee. "
+                    "Le test local sur ce PC reste possible."
+                )
         else:
-            caption = "Adresse actuellement preparee pour rejoindre le hall."
+            active_value = ip_value.strip() or "En attente"
+            caption = (
+                "Invitation LAN actuellement preparee "
+                "pour rejoindre le hall."
+            )
+            try:
+                host, port = parse_server_invitation(
+                    active_value,
+                    self.server_port,
+                )
+                active_value = format_endpoint(host, port)
+                if is_loopback_host(host):
+                    caption = (
+                        "Mode local sur ce PC. Ne pas utiliser "
+                        "cette adresse depuis un autre ordinateur."
+                    )
+            except ValueError:
+                pass
 
         self.invite_value_label.configure(text=active_value)
         self.invite_caption_label.configure(text=caption)

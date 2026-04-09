@@ -12,9 +12,13 @@ from game.audio import (
     start_menu_music,
     stop_music,
 )
+from network.net_utils import (
+    format_endpoint,
+    get_lan_address_info,
+    load_lan_runtime_config,
+)
 from network.server import start_server_in_background
 from runtime_utils import (
-    load_runtime_config,
     resource_path,
     set_runtime_override,
 )
@@ -52,9 +56,10 @@ class LauncherApp(ctk.CTk):
 
         self.embedded_server = None
         self.embedded_server_thread = None
-        self.embedded_server_ip = None
+        self.embedded_server_address_info = None
         self.current_db_mode = "local"
-        self.tcp_port = int(load_runtime_config().get("tcp_port", 5000))
+        self.network_config = load_lan_runtime_config()
+        self.tcp_port = self.network_config.port
         self._set_db_mode_local()
 
         # Taille adaptive : remplit l'écran quelle que soit la résolution
@@ -240,19 +245,27 @@ class LauncherApp(ctk.CTk):
             "gardien avant de reprendre la joute."
         )
 
-    def _relay_opened_journal_text(self, local_ip: str):
-        return (
+    def _relay_opened_journal_text(
+        self,
+        invitation_text: str,
+        warning_text: str | None = None,
+    ):
+        message = (
             "Hall ouvert.\n\n"
-            f"Invitation du bastion a transmettre : {local_ip}\n\n"
+            f"Invitation LAN a transmettre : {invitation_text}\n\n"
             "Ouvre le hall, inscris les combattants puis lance la joute "
             "quand tous les etendards sont leves."
         )
+        if warning_text:
+            message += f"\n\nAlerte reseau : {warning_text}"
+        return message
 
     def _relay_join_journal_text(self):
         return (
             "Le hall s'ouvre.\n\n"
-            "Prepare l'invitation du bastion et le nom du combattant avant "
-            "d'entrer dans l'arene partagee."
+            "Prepare l'invitation LAN du bastion et le nom du combattant "
+            "avant d'entrer dans l'arene partagee. Le test local sur ce PC "
+            "reste disponible comme mode distinct."
         )
 
     def _set_info(self, text, badge_text="Veille du bastion", tone="neutral"):
@@ -330,20 +343,32 @@ class LauncherApp(ctk.CTk):
 
         if self.embedded_server is None:
             try:
-                server, thread, local_ip = start_server_in_background(
-                    "0.0.0.0",
+                server, thread, address_info = start_server_in_background(
+                    self.network_config.bind_host,
                     self.tcp_port,
                 )
                 self.embedded_server = server
                 self.embedded_server_thread = thread
-                self.embedded_server_ip = local_ip
+                self.embedded_server_address_info = address_info
+
+                invitation_text = (
+                    format_endpoint(address_info.primary_ip, self.tcp_port)
+                    if address_info.primary_ip
+                    else (
+                        "IP LAN indisponible · test local: "
+                        f"127.0.0.1:{self.tcp_port}"
+                    )
+                )
 
                 self._set_server_status(
                     "Hall ouvert - invitation prete",
                     "info",
                 )
                 self._set_info(
-                    self._relay_opened_journal_text(local_ip),
+                    self._relay_opened_journal_text(
+                        invitation_text,
+                        address_info.warning,
+                    ),
                     badge_text="Invitation prete",
                     tone="info",
                 )
@@ -362,12 +387,27 @@ class LauncherApp(ctk.CTk):
                 )
                 return
         else:
+            self.embedded_server_address_info = get_lan_address_info()
+            invitation_text = (
+                format_endpoint(
+                    self.embedded_server_address_info.primary_ip,
+                    self.tcp_port,
+                )
+                if self.embedded_server_address_info.primary_ip
+                else (
+                    "IP LAN indisponible · test local: "
+                    f"127.0.0.1:{self.tcp_port}"
+                )
+            )
             self._set_server_status(
                 "Hall deja ouvert - invitation prete",
                 "info",
             )
             self._set_info(
-                self._relay_opened_journal_text(self.embedded_server_ip),
+                self._relay_opened_journal_text(
+                    invitation_text,
+                    self.embedded_server_address_info.warning,
+                ),
                 badge_text="Invitation prete",
                 tone="info",
             )
@@ -376,7 +416,15 @@ class LauncherApp(ctk.CTk):
 
         window = NetworkLobbyView(
             self,
-            default_server_ip="127.0.0.1",
+            default_server_invitation=(
+                format_endpoint(
+                    self.embedded_server_address_info.primary_ip,
+                    self.tcp_port,
+                )
+                if self.embedded_server_address_info
+                and self.embedded_server_address_info.primary_ip
+                else f"127.0.0.1:{self.tcp_port}"
+            ),
             server_port=self.tcp_port,
             host_mode=True,
         )

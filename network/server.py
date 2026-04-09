@@ -1,4 +1,5 @@
 import argparse
+import json
 import math
 import socketserver
 import threading
@@ -46,7 +47,12 @@ from db.lobby_repository import (
 )
 from db.network_match_repository import save_network_match_result
 from db.matches import get_serializable_match_history
-from network.net_utils import get_local_lan_ip
+from network.net_utils import (
+    format_bind_error,
+    format_endpoint,
+    get_lan_address_info,
+    get_network_logger,
+)
 
 MAX_PLAYERS = 6
 
@@ -54,6 +60,7 @@ PLAYER_SPEED = 260
 ORB_COUNT = ORB_SPAWN_COUNT
 
 TICK_RATE = 20
+LOGGER = get_network_logger()
 
 
 def clamp(value, minimum, maximum):
@@ -453,6 +460,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.game_state = None
         self.game_lock = threading.Lock()
         self.game_thread = None
+        self.network_logger = LOGGER
 
     def sync_lobby_persistence(self, status_code: str = "OPEN"):
         players = self.lobby.export_public_state()
@@ -511,6 +519,11 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 lobby_session_id=self.lobby_session_id,
             )
             self.match_running = True
+            self.network_logger.info(
+                "Demarrage du match LAN (%s joueur(s), duree=%ss)",
+                len(snapshot),
+                self.lobby.get_match_duration(),
+            )
 
             self.broadcast({"type": START})
 
@@ -540,13 +553,16 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 try:
                     match_result = self.game_state.build_persistable_result()
                     match_id = save_network_match_result(match_result)
-                    print(
-                        "[server] match LAN sauvegardé en base "
-                        f"(match_id={match_id})"
+                    self.network_logger.info(
+                        "Match LAN sauvegarde en base (match_id=%s)",
+                        match_id,
                     )
                 except RuntimeError as error:
                     save_error = str(error)
-                    print(f"[server] erreur sauvegarde match LAN: {error}")
+                    self.network_logger.error(
+                        "Erreur sauvegarde match LAN: %s",
+                        error,
+                    )
 
                 end_message = self.game_state.build_end_message()
                 end_message["history_saved"] = save_error is None
@@ -609,6 +625,16 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
             return False
 
         self.client_info = info
+        remote_ip, remote_port = self.client_address
+        self.server.network_logger.info(
+            "Client LAN connecte: %s (%s:%s, slot=%s, team=%s, host=%s)",
+            info["name"],
+            remote_ip,
+            remote_port,
+            info["slot"],
+            info["team"],
+            is_host,
+        )
 
         self.safe_send(
             {
@@ -625,7 +651,31 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
         return True
 
     def handle(self):
-        hello = receive_message_binary(self.rfile)
+        try:
+            hello = receive_message_binary(self.rfile)
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            self.server.network_logger.warning(
+                "HELLO LAN illisible depuis %s:%s: %s",
+                self.client_address[0],
+                self.client_address[1],
+                error,
+            )
+            self.safe_send(
+                {
+                    "type": ERROR,
+                    "message": "Le message d'ouverture du hall est invalide.",
+                }
+            )
+            return
+        except OSError as error:
+            self.server.network_logger.info(
+                "Connexion fermee avant HELLO depuis %s:%s: %s",
+                self.client_address[0],
+                self.client_address[1],
+                error,
+            )
+            return
+
         if hello is None:
             return
 
@@ -642,7 +692,33 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
             return
 
         while True:
-            message = receive_message_binary(self.rfile)
+            try:
+                message = receive_message_binary(self.rfile)
+            except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                self.server.network_logger.warning(
+                    "Message LAN illisible depuis %s:%s: %s",
+                    self.client_address[0],
+                    self.client_address[1],
+                    error,
+                )
+                self.safe_send(
+                    {
+                        "type": ERROR,
+                        "message": (
+                            "Un message reseau recu par le hall est invalide."
+                        ),
+                    }
+                )
+                break
+            except OSError as error:
+                self.server.network_logger.info(
+                    "Connexion LAN interrompue depuis %s:%s: %s",
+                    self.client_address[0],
+                    self.client_address[1],
+                    error,
+                )
+                break
+
             if message is None:
                 break
 
@@ -673,6 +749,10 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                 self.safe_send({"type": PONG})
 
             elif msg_type == REQUEST_HISTORY:
+                self.server.network_logger.info(
+                    "Chroniques LAN demandees par %s",
+                    self.client_info["name"],
+                )
                 rows = get_serializable_match_history()
                 self.safe_send(
                     {"type": HISTORY_DATA, "ok": True, "rows": rows}
@@ -696,9 +776,18 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                             ),
                         }
                     )
+                    self.server.network_logger.warning(
+                        "Refus changement duree LAN pour %s",
+                        self.client_info["name"],
+                    )
                 else:
                     self.server.sync_lobby_persistence(status_code="OPEN")
                     self.server.broadcast_lobby_state()
+                    self.server.network_logger.info(
+                        "Duree LAN mise a jour a %ss par %s",
+                        self.server.lobby.get_match_duration(),
+                        self.client_info["name"],
+                    )
 
             else:
                 self.safe_send(
@@ -707,6 +796,10 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
 
     def finish(self):
         if self.client_info is not None:
+            self.server.network_logger.info(
+                "Client LAN deconnecte: %s",
+                self.client_info["name"],
+            )
             self.server.lobby.remove_client(self.client_info["client_id"])
             self.server.sync_lobby_persistence(status_code="OPEN")
             self.server.broadcast_lobby_state()
@@ -714,28 +807,52 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
 
 
 def run_server(host: str, port: int):
-    with ArenaTCPServer((host, port), ArenaRequestHandler) as server:
-        local_ip = get_local_lan_ip()
-        print(f"[server] écoute sur {host}:{port}")
-        print(f"[server] IP LAN locale détectée : {local_ip}")
-        print(f"[server] Adresse à donner aux clients : {local_ip}:{port}")
-        print("[server] Ctrl+C pour arrêter")
+    try:
+        server = ArenaTCPServer((host, port), ArenaRequestHandler)
+    except OSError as error:
+        raise RuntimeError(format_bind_error(host, port, error)) from error
+
+    with server:
+        address_info = get_lan_address_info()
+        invite_endpoint = (
+            format_endpoint(address_info.primary_ip, port)
+            if address_info.primary_ip
+            else "IP LAN indisponible"
+        )
+        LOGGER.info(
+            "Serveur LAN en ecoute sur %s",
+            format_endpoint(host, port),
+        )
+        LOGGER.info("Invitation LAN conseillee: %s", invite_endpoint)
+        if address_info.warning:
+            LOGGER.warning(address_info.warning)
         server.serve_forever()
 
 
 def start_server_in_background(host: str = "0.0.0.0", port: int = 5000):
-    server = ArenaTCPServer((host, port), ArenaRequestHandler)
+    try:
+        server = ArenaTCPServer((host, port), ArenaRequestHandler)
+    except OSError as error:
+        raise RuntimeError(format_bind_error(host, port, error)) from error
 
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    local_ip = get_local_lan_ip()
-    print(f"[server] écoute sur {host}:{port}")
-    print(f"[server] IP LAN locale détectée : {local_ip}")
-    print(f"[server] Adresse à donner aux clients : {local_ip}:{port}")
-    print("[server] serveur lancé en arrière-plan")
+    address_info = get_lan_address_info()
+    invite_endpoint = (
+        format_endpoint(address_info.primary_ip, port)
+        if address_info.primary_ip
+        else "IP LAN indisponible"
+    )
+    LOGGER.info(
+        "Serveur LAN lance en arriere-plan sur %s",
+        format_endpoint(host, port),
+    )
+    LOGGER.info("Invitation LAN conseillee: %s", invite_endpoint)
+    if address_info.warning:
+        LOGGER.warning(address_info.warning)
 
-    return server, thread, local_ip
+    return server, thread, address_info
 
 
 if __name__ == "__main__":

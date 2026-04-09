@@ -15,6 +15,12 @@ from network.messages import (
     REQUEST_HISTORY,
     SET_MATCH_DURATION,
 )
+from network.net_utils import (
+    format_connect_error,
+    format_endpoint,
+    get_network_logger,
+    load_lan_runtime_config,
+)
 from network.protocol import encode_message, decode_message
 
 
@@ -26,13 +32,52 @@ class NetworkClient:
         self.incoming = queue.Queue()
         self.send_lock = threading.Lock()
         self.disconnect_notified = False
+        self.logger = get_network_logger()
 
         self.last_input_state = None
         self.last_input_send_time = 0.0
 
-    def connect(self, host: str, port: int, name: str, is_host: bool = False):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.connect((host, port))
+    def connect(
+        self,
+        host: str,
+        port: int,
+        name: str,
+        is_host: bool = False,
+        timeout_seconds: float | None = None,
+    ):
+        socket_timeout = (
+            timeout_seconds
+            or load_lan_runtime_config().connect_timeout_seconds
+        )
+        endpoint = format_endpoint(host, port)
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(socket_timeout)
+        self.logger.info(
+            "Tentative de connexion LAN vers %s (joueur=%s, host_mode=%s)",
+            endpoint,
+            name,
+            is_host,
+        )
+
+        try:
+            sock.connect((host, port))
+            sock.settimeout(None)
+        except OSError as error:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            self.logger.warning(
+                "Connexion LAN echouee vers %s: %s",
+                endpoint,
+                error,
+            )
+            raise ConnectionError(
+                format_connect_error(host, port, error)
+            ) from error
+
+        self.sock = sock
         self.running = True
         self.disconnect_notified = False
         self.last_input_state = None
@@ -40,6 +85,10 @@ class NetworkClient:
 
         if not self.send({"type": HELLO, "name": name, "host": is_host}):
             self.close()
+            self.logger.error(
+                "Initialisation LAN echouee apres connexion vers %s",
+                endpoint,
+            )
             raise ConnectionError(
                 "Impossible d'initialiser la session réseau."
             )
@@ -49,6 +98,7 @@ class NetworkClient:
             daemon=True,
         )
         self.reader_thread.start()
+        self.logger.info("Connexion LAN etablie vers %s", endpoint)
 
     def _close_socket(self):
         sock = self.sock
@@ -73,6 +123,7 @@ class NetworkClient:
 
         self.disconnect_notified = True
         self.running = False
+        self.logger.info("Connexion LAN fermee: %s", message)
         self.incoming.put(
             {
                 "type": DISCONNECTED,
@@ -86,6 +137,7 @@ class NetworkClient:
             while self.running:
                 chunk = self.sock.recv(4096)
                 if not chunk:
+                    self.logger.info("Le serveur LAN a ferme le flux TCP.")
                     break
 
                 buffer += chunk
@@ -101,6 +153,10 @@ class NetworkClient:
                             json.JSONDecodeError,
                             UnicodeDecodeError,
                         ) as error:
+                            self.logger.warning(
+                                "Message LAN illisible recu: %s",
+                                error,
+                            )
                             self.incoming.put(
                                 {
                                     "type": "ERROR",
@@ -110,6 +166,8 @@ class NetworkClient:
                                 }
                             )
         except OSError as error:
+            if self.running:
+                self.logger.warning("Lecture LAN interrompue: %s", error)
             self.incoming.put(
                 {
                     "type": ERROR,
@@ -131,6 +189,11 @@ class NetworkClient:
                 self.sock.sendall(data)
             return True
         except OSError as error:
+            self.logger.warning(
+                "Envoi LAN impossible (%s): %s",
+                message.get("type", "?"),
+                error,
+            )
             self.incoming.put(
                 {
                     "type": ERROR,
@@ -200,6 +263,7 @@ class NetworkClient:
     def close(self):
         self.running = False
         self._close_socket()
+        self.logger.info("Client LAN ferme localement.")
 
 
 def run_cli_client(host: str, port: int, name: str):
