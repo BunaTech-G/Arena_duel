@@ -1,3 +1,6 @@
+-- Alias legacy du bootstrap SQL Arena Duel.
+-- Pour une installation V1 neuve, preferer schema_v2.sql.
+
 CREATE DATABASE IF NOT EXISTS arena_duel_v2_db
 CHARACTER SET utf8mb4
 COLLATE utf8mb4_unicode_ci;

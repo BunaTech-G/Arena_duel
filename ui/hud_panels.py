@@ -1,10 +1,9 @@
-"""
-ui.hud_panels — prototype de layout HUD pour Arena Duel
+"""Helpers de layout HUD pour Arena Duel.
 
 Fournit des helpers non dépendants d'un framework graphique pour
 calculer les positions des éléments HUD (timer, scores, portrait,
 barre de compétences, mini-map, notifications) selon la taille
-de la fenêtre. Idéal pour prototypage et tests d'ergonomie.
+de la fenêtre.
 """
 
 from typing import Dict, Tuple
@@ -86,13 +85,3 @@ def get_hud_layout(screen_w: int, screen_h: int) -> Dict[str, object]:
     }
 
     return layout
-
-
-if __name__ == "__main__":
-    # Demo rapide
-    for sw, sh in [(1280, 720), (1920, 1080)]:
-        print(f"HUD layout for {sw}x{sh}")
-        hud = get_hud_layout(sw, sh)
-        for k, v in hud.items():
-            print(f" - {k}: {v}")
-        print()

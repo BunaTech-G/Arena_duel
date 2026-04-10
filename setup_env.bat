@@ -33,7 +33,9 @@ echo [OK] Environnement configure avec succes.
 echo.
 echo Utilisation :
 echo   - run_local.bat
+echo   - run_lan_ui.bat
 echo   - run_server.bat
 echo   - run_client_lan.bat
+echo   - build_presentation.bat
 echo.
 pause

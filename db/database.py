@@ -1,8 +1,13 @@
 import mariadb
+
+from db.demo_store import is_demo_storage_enabled, should_force_demo_storage
 from runtime_utils import load_runtime_config
 
 
 def get_connection():
+    if should_force_demo_storage():
+        return None
+
     cfg = load_runtime_config()
 
     try:
@@ -21,7 +26,7 @@ def get_connection():
 def test_connection():
     conn = get_connection()
     if not conn:
-        return False
+        return is_demo_storage_enabled()
 
     try:
         conn.close()

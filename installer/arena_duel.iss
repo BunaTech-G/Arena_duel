@@ -17,7 +17,7 @@ Name: "french"; MessagesFile: "compiler:Languages\French.isl"
 Name: "desktopicon"; Description: "Créer un raccourci sur le bureau"; GroupDescription: "Raccourcis :"; Flags: unchecked
 
 [Files]
-Source: "..\dist\ArenaDuel\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist_release\ArenaDuel\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Arena Duel"; Filename: "{app}\ArenaDuel.exe"; IconFilename: "{app}\ArenaDuel.exe"

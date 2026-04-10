@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pygame
 
+from hardware.service import create_match_hardware_service
 from runtime_utils import resource_path
 from game.asset_pipeline import load_font
 from game.computer_opponent import BotController
@@ -36,7 +37,7 @@ from game.arena import (
     get_team_spawn_positions_for_layout,
 )
 from game.audio import init_audio, play_draw, play_win, stop_music
-from game.audio import play_lose
+from game.audio import play_lose, play_pickup, start_match_music
 
 
 PG_KEYDOWN = getattr(pygame, "KEYDOWN")
@@ -47,6 +48,11 @@ PG_QUIT = getattr(pygame, "QUIT")
 PG_SRCALPHA = getattr(pygame, "SRCALPHA")
 pg_init = getattr(pygame, "init")
 pg_quit = getattr(pygame, "quit")
+
+
+def _tick_frame(clock, target_fps):
+    tick_method = getattr(clock, "tick_busy_loop", None) or clock.tick
+    return tick_method(target_fps)
 
 
 def get_local_focus_team(players):
@@ -196,16 +202,30 @@ def draw_end_overlay(
     players,
 ):
     team_a_score, team_b_score = get_team_scores(players)
+    team_a_players = [p for p in players if p.team_code == "A"]
+    team_b_players = [p for p in players if p.team_code == "B"]
+    max_team_size = max(1, len(team_a_players), len(team_b_players))
 
     overlay = pygame.Surface(surface.get_size(), PG_SRCALPHA)
     overlay.fill((0, 0, 0, 185))
     surface.blit(overlay, (0, 0))
 
     sw, sh = surface.get_size()
-    panel_width = 820
-    panel_height = 340
+    panel_width = min(920, sw - 72)
+    column_gap = 28
+    side_padding = 34
+    header_height = 120
+    roster_header_height = 34
+    row_pitch = 60
+    footer_height = 82
+    roster_height = roster_header_height + max_team_size * row_pitch
+    panel_height = min(
+        sh - 64,
+        max(370, header_height + roster_height + footer_height),
+    )
     panel_x = (sw - panel_width) // 2
     panel_y = (sh - panel_height) // 2
+    column_width = (panel_width - side_padding * 2 - column_gap) // 2
 
     panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
     pygame.draw.rect(surface, (36, 40, 48), panel_rect, border_radius=18)
@@ -230,56 +250,138 @@ def draw_end_overlay(
     score_rect = score_text.get_rect(center=(sw // 2, panel_y + 88))
     surface.blit(score_text, score_rect)
 
-    team_a_players = [p for p in players if p.team_code == "A"]
-    team_b_players = [p for p in players if p.team_code == "B"]
+    roster_top = panel_y + header_height
+    team_a_rect = pygame.Rect(
+        panel_x + side_padding,
+        roster_top,
+        column_width,
+        roster_height,
+    )
+    team_b_rect = pygame.Rect(
+        team_a_rect.right + column_gap,
+        roster_top,
+        column_width,
+        roster_height,
+    )
+
+    pygame.draw.rect(surface, (28, 34, 44), team_a_rect, border_radius=14)
+    pygame.draw.rect(
+        surface,
+        (243, 201, 107),
+        team_a_rect,
+        width=2,
+        border_radius=14,
+    )
+    pygame.draw.rect(surface, (24, 34, 48), team_b_rect, border_radius=14)
+    pygame.draw.rect(
+        surface,
+        (100, 215, 255),
+        team_b_rect,
+        width=2,
+        border_radius=14,
+    )
 
     team_a_title = medium_font.render(
         get_team_label("A"),
         True,
-        (255, 255, 255),
+        (255, 241, 214),
     )
     team_b_title = medium_font.render(
         get_team_label("B"),
         True,
-        (255, 255, 255),
+        (223, 245, 255),
     )
 
-    surface.blit(team_a_title, (panel_x + 80, panel_y + 130))
-    surface.blit(team_b_title, (panel_x + 460, panel_y + 130))
+    surface.blit(team_a_title, (team_a_rect.x + 18, team_a_rect.y + 14))
+    surface.blit(team_b_title, (team_b_rect.x + 18, team_b_rect.y + 14))
+
+    row_origin_y = roster_top + roster_header_height
 
     for idx, p in enumerate(team_a_players):
         draw_player_summary_row(
             surface,
             small_font,
-            panel_x + 80,
-            panel_y + 166 + idx * 64,
+            team_a_rect.x + 10,
+            row_origin_y + idx * row_pitch,
             name=p.name,
             score=p.score,
             accent_color=p.color,
-            portrait_size=48,
+            panel_width=team_a_rect.width - 20,
+            portrait_size=40,
         )
 
     for idx, p in enumerate(team_b_players):
         draw_player_summary_row(
             surface,
             small_font,
-            panel_x + 460,
-            panel_y + 166 + idx * 64,
+            team_b_rect.x + 10,
+            row_origin_y + idx * row_pitch,
             name=p.name,
             score=p.score,
             accent_color=p.color,
-            portrait_size=48,
+            panel_width=team_b_rect.width - 20,
+            portrait_size=40,
         )
 
-    instructions = [
-        "Entrée · revenir au bastion",
-        "R · relancer la joute",
-        "Échap · quitter l'arène",
-    ]
+    footer_rect = pygame.Rect(
+        panel_x + 24,
+        panel_rect.bottom - footer_height + 12,
+        panel_width - 48,
+        footer_height - 24,
+    )
+    pygame.draw.rect(surface, (24, 28, 36), footer_rect, border_radius=14)
+    pygame.draw.rect(
+        surface,
+        (86, 102, 132),
+        footer_rect,
+        width=1,
+        border_radius=14,
+    )
 
-    for idx, line in enumerate(instructions):
-        txt = small_font.render(line, True, (220, 220, 220))
-        surface.blit(txt, (panel_x + 80, panel_y + 255 + idx * 24))
+    instruction_specs = [
+        ("Entrée", "revenir au bastion"),
+        ("R", "relancer la joute"),
+        ("Échap", "quitter l'arène"),
+    ]
+    chips = []
+    total_width = 0
+    for key_text, label_text in instruction_specs:
+        key_surface = small_font.render(key_text, True, (28, 28, 32))
+        label_surface = small_font.render(label_text, True, (228, 230, 236))
+        chip_width = (
+            36
+            + key_surface.get_width()
+            + label_surface.get_width()
+            + 36
+        )
+        chips.append((key_surface, label_surface, chip_width))
+        total_width += chip_width
+
+    total_width += 18 * (len(chips) - 1)
+    chip_x = footer_rect.centerx - total_width // 2
+    chip_y = footer_rect.centery - 18
+
+    for key_surface, label_surface, chip_width in chips:
+        chip_rect = pygame.Rect(chip_x, chip_y, chip_width, 36)
+        pygame.draw.rect(surface, (39, 47, 61), chip_rect, border_radius=18)
+        pygame.draw.rect(
+            surface,
+            (82, 94, 117),
+            chip_rect,
+            width=1,
+            border_radius=18,
+        )
+
+        key_badge = pygame.Rect(chip_rect.x + 8, chip_rect.y + 5, 62, 26)
+        pygame.draw.rect(surface, (243, 201, 107), key_badge, border_radius=13)
+
+        key_rect = key_surface.get_rect(center=key_badge.center)
+        surface.blit(key_surface, key_rect)
+
+        label_x = key_badge.right + 12
+        label_y = chip_rect.centery - label_surface.get_height() // 2
+        surface.blit(label_surface, (label_x, label_y))
+        chip_x += chip_width + 18
 
 
 def build_result(
@@ -330,6 +432,7 @@ def build_result(
 
 
 def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
+    hardware_service = create_match_hardware_service()
     pygame.mixer.pre_init(44100, -16, 2, 512)
     pg_init()
     init_audio()
@@ -377,153 +480,186 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
     game_w, game_h = layout.window_size
     game_surface = pygame.Surface((game_w, game_h))
 
-    while True:
-        players, ai_controllers = build_runtime_players(players_config, layout)
-        orbs = [
-            Orb(arena_rect, obstacles, layout=layout)
-            for _ in range(ORB_SPAWN_COUNT)
-        ]
+    try:
+        while True:
+            players, ai_controllers = build_runtime_players(
+                players_config,
+                layout,
+            )
+            orbs = [
+                Orb(arena_rect, obstacles, layout=layout)
+                for _ in range(ORB_SPAWN_COUNT)
+            ]
+            start_match_music(restart=True)
+            hardware_service.reset()
+            hardware_service.emit_state("COMBAT")
+            hardware_service.emit_score(0, 0)
 
-        running = True
-        game_over = False
-        start_ticks = pygame.time.get_ticks()
-        winner_text = ""
-        final_sound_played = False
+            running = True
+            game_over = False
+            restart_requested = False
+            start_ticks = pygame.time.get_ticks()
+            winner_text = ""
+            final_sound_played = False
 
-        while running:
-            clock.tick(FPS)
+            while running:
+                _tick_frame(clock, FPS)
 
-            for event in pygame.event.get():
-                if event.type == PG_QUIT:
-                    stop_music(fade_ms=120)
-                    pg_quit()
-                    return None
-
-                if event.type == PG_KEYDOWN:
-                    if event.key == PG_K_ESCAPE and not game_over:
+                for event in pygame.event.get():
+                    if event.type == PG_QUIT:
+                        hardware_service.reset()
                         stop_music(fade_ms=120)
                         pg_quit()
                         return None
 
-                    if game_over:
-                        if event.key == PG_K_RETURN:
-                            stop_music(fade_ms=120)
-                            pg_quit()
-                            return build_result(
-                                players,
-                                winner_text,
-                                active_match_duration,
-                                players_config=players_config,
-                            )
-
-                        elif event.key == PG_K_R:
-                            stop_music(fade_ms=120)
-                            return run_game(
-                                players_config,
-                                match_duration_seconds=active_match_duration,
-                            )
-
-                        elif event.key == PG_K_ESCAPE:
+                    if event.type == PG_KEYDOWN:
+                        if event.key == PG_K_ESCAPE and not game_over:
+                            hardware_service.reset()
                             stop_music(fade_ms=120)
                             pg_quit()
                             return None
 
-            elapsed_seconds = (pygame.time.get_ticks() - start_ticks) // 1000
-            remaining_time = max(0, active_match_duration - elapsed_seconds)
+                        if game_over:
+                            if event.key == PG_K_RETURN:
+                                stop_music(fade_ms=120)
+                                pg_quit()
+                                return build_result(
+                                    players,
+                                    winner_text,
+                                    active_match_duration,
+                                    players_config=players_config,
+                                )
 
-            if remaining_time <= 0 and not game_over:
-                game_over = True
-                stop_music(fade_ms=280)
+                            elif event.key == PG_K_R:
+                                hardware_service.reset()
+                                stop_music(fade_ms=120)
+                                restart_requested = True
+                                running = False
+
+                            elif event.key == PG_K_ESCAPE:
+                                stop_music(fade_ms=120)
+                                pg_quit()
+                                return None
+
+                elapsed_seconds = (
+                    pygame.time.get_ticks() - start_ticks
+                ) // 1000
+                remaining_time = max(
+                    0,
+                    active_match_duration - elapsed_seconds,
+                )
+
+                if remaining_time <= 0 and not game_over:
+                    game_over = True
+                    stop_music(fade_ms=280)
+                    team_a_score, team_b_score = get_team_scores(players)
+
+                    winner_team = get_winner_team(
+                        team_a_score,
+                        team_b_score,
+                    )
+                    winner_text = format_winner_text(winner_team)
+
+                keys = pygame.key.get_pressed()
+                elapsed_ms = pygame.time.get_ticks()
+
+                if not game_over:
+                    for player in players:
+                        if player.control_mode == AI_CONTROL_MODE:
+                            intent = ai_controllers[
+                                player
+                            ].get_movement_intent(
+                                player=player,
+                                players=players,
+                                orbs=orbs,
+                                obstacles=obstacles,
+                                elapsed_ms=elapsed_ms,
+                            )
+                            player.update_from_intent(
+                                intent,
+                                arena_rect,
+                                obstacles,
+                            )
+                        else:
+                            player.update(keys, arena_rect, obstacles)
+
+                    for orb in orbs:
+                        for player in players:
+                            if player.collides_with_orb(orb):
+                                player.score += orb.value
+                                play_pickup()
+                                orb.respawn(arena_rect, obstacles)
+                                break
+
                 team_a_score, team_b_score = get_team_scores(players)
+                hardware_service.emit_score(team_a_score, team_b_score)
 
-                winner_team = get_winner_team(team_a_score, team_b_score)
-                winner_text = format_winner_text(winner_team)
+                if game_over and not final_sound_played:
+                    winner_team = get_winner_team(
+                        team_a_score,
+                        team_b_score,
+                    )
+                    local_focus_team = get_local_focus_team(players)
 
-            keys = pygame.key.get_pressed()
-            elapsed_ms = pygame.time.get_ticks()
-
-            if not game_over:
-                for player in players:
-                    if player.control_mode == AI_CONTROL_MODE:
-                        intent = ai_controllers[player].get_movement_intent(
-                            player=player,
-                            players=players,
-                            orbs=orbs,
-                            obstacles=obstacles,
-                            elapsed_ms=elapsed_ms,
-                        )
-                        player.update_from_intent(
-                            intent,
-                            arena_rect,
-                            obstacles,
-                        )
+                    if winner_team is None:
+                        play_draw()
+                    elif local_focus_team is not None:
+                        if winner_team == local_focus_team:
+                            play_win()
+                        else:
+                            play_lose()
                     else:
-                        player.update(keys, arena_rect, obstacles)
+                        play_win()
+
+                    hardware_service.emit_state("RESULT")
+                    hardware_service.emit_winner(winner_team)
+                    final_sound_played = True
+
+                draw_background(game_surface, layout)
+                draw_arena(
+                    game_surface,
+                    arena_rect,
+                    obstacles,
+                    layout=layout,
+                    elapsed_ms=elapsed_ms,
+                )
 
                 for orb in orbs:
-                    for player in players:
-                        if player.collides_with_orb(orb):
-                            player.score += orb.value
-                            orb.respawn(arena_rect, obstacles)
-                            break
+                    orb.draw(game_surface)
 
-            if game_over and not final_sound_played:
-                team_a_score, team_b_score = get_team_scores(players)
-                winner_team = get_winner_team(team_a_score, team_b_score)
-                local_focus_team = get_local_focus_team(players)
+                for player in players:
+                    player.draw(game_surface, name_font)
 
-                if winner_team is None:
-                    play_draw()
-                elif local_focus_team is not None:
-                    if winner_team == local_focus_team:
-                        play_win()
-                    else:
-                        play_lose()
-                else:
-                    play_win()
-
-                final_sound_played = True
-
-            draw_background(game_surface, layout)
-            draw_arena(
-                game_surface,
-                arena_rect,
-                obstacles,
-                layout=layout,
-                elapsed_ms=elapsed_ms,
-            )
-
-            for orb in orbs:
-                orb.draw(game_surface)
-
-            for player in players:
-                player.draw(game_surface, name_font)
-
-            draw_hud(
-                game_surface,
-                big_font,
-                medium_font,
-                small_font,
-                players,
-                remaining_time,
-                layout,
-                match_duration=active_match_duration,
-            )
-
-            if game_over:
-                draw_end_overlay(
+                draw_hud(
                     game_surface,
                     big_font,
                     medium_font,
                     small_font,
-                    winner_text,
                     players,
+                    remaining_time,
+                    layout,
+                    match_duration=active_match_duration,
                 )
 
-            # Centre la scène de jeu dans la fenêtre (supporte resize/maximisé)
-            sw, sh = screen.get_size()
-            screen.fill((10, 13, 19))
-            blit_x = max(0, (sw - game_w) // 2)
-            blit_y = max(0, (sh - game_h) // 2)
-            screen.blit(game_surface, (blit_x, blit_y))
-            pygame.display.flip()
+                if game_over:
+                    draw_end_overlay(
+                        game_surface,
+                        big_font,
+                        medium_font,
+                        small_font,
+                        winner_text,
+                        players,
+                    )
+
+                # Centre la scene de jeu dans la fenetre.
+                sw, sh = screen.get_size()
+                screen.fill((10, 13, 19))
+                blit_x = max(0, (sw - game_w) // 2)
+                blit_y = max(0, (sh - game_h) // 2)
+                screen.blit(game_surface, (blit_x, blit_y))
+                pygame.display.flip()
+
+            if restart_requested:
+                continue
+    finally:
+        hardware_service.shutdown()

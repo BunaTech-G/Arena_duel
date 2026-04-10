@@ -1,7 +1,10 @@
 @echo off
 echo =========================================
-echo   Arena Duel - Client LAN (CLI)
+echo   Arena Duel - Client LAN CLI de diagnostic
 echo =========================================
+echo.
+echo [INFO] Pour la presentation V1, prefere run_lan_ui.bat.
+echo [INFO] Ce script reste utile pour un test reseau bas niveau.
 echo.
 
 if not exist .\.venv\Scripts\python.exe (
@@ -11,8 +14,8 @@ if not exist .\.venv\Scripts\python.exe (
     exit /b 1
 )
 
-set /p SERVER_IP=Entrez l IP du serveur : 
+set /p SERVER_INVITATION=Entrez l invitation LAN (IP ou IP:port) : 
 set /p PLAYER_NAME=Entrez le pseudo : 
 
-.\.venv\Scripts\python.exe -m network.client --host %SERVER_IP% --port 5000 --name %PLAYER_NAME%
+.\.venv\Scripts\python.exe -m network.client --server "%SERVER_INVITATION%" --name "%PLAYER_NAME%"
 pause

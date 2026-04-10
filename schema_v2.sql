@@ -1,3 +1,6 @@
+-- Bootstrap SQL canonique V2 pour une base neuve Arena Duel.
+-- Le fichier shema.sql est conserve comme alias legacy de compatibilite.
+
 CREATE DATABASE IF NOT EXISTS arena_duel_v2_db
 CHARACTER SET utf8mb4
 COLLATE utf8mb4_unicode_ci;

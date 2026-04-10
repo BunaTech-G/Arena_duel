@@ -4,6 +4,7 @@ from datetime import datetime
 
 import mariadb
 
+from db import demo_store
 from db.database import get_connection
 from game.control_models import AI_CONTROL_MODE, HUMAN_CONTROL_MODE, is_ai_name
 from game.match_text import get_team_label
@@ -149,6 +150,11 @@ def ensure_player_exists_by_name(
 ):
     conn = get_connection()
     if not conn:
+        if demo_store.is_demo_storage_enabled():
+            return demo_store.ensure_player_exists_by_name(
+                username,
+                allow_ai_names=allow_ai_names,
+            )
         return None
 
     cursor = conn.cursor()
@@ -458,6 +464,8 @@ def _insert_match_legacy(cursor, payload: dict) -> int:
 def save_match_result(match_result: dict) -> int:
     conn = get_connection()
     if not conn:
+        if demo_store.is_demo_storage_enabled():
+            return demo_store.save_match_result(match_result)
         raise RuntimeError("Le sanctuaire des chroniques est indisponible.")
 
     cursor = conn.cursor()
@@ -637,6 +645,8 @@ def _load_history_from_legacy(cursor) -> list[dict]:
 def get_match_history_records() -> list[dict]:
     conn = get_connection()
     if not conn:
+        if demo_store.is_demo_storage_enabled():
+            return demo_store.get_match_history_records()
         return []
 
     cursor = conn.cursor()

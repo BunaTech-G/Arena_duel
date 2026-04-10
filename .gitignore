@@ -9,7 +9,10 @@ env/
 
 build/
 dist/
-*.spec
+build_release/
+build_release_check/
+dist_release/
+dist_release_check/
 
 .idea/
 .vscode/

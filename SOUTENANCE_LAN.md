@@ -54,7 +54,7 @@ Présenter le launcher principal.
 À montrer :
 
 - un seul point d'entrée : `main.py`
-- les trois usages visibles : local, héberger, rejoindre
+- les trois usages visibles : local, ouvrir le hall LAN, rejoindre un hall
 - l'état MariaDB et l'état du serveur LAN
 
 À dire :
@@ -83,10 +83,10 @@ Passer au mode hôte LAN sur le poste serveur.
 
 À montrer :
 
-- clic sur `Héberger une partie LAN`
+- clic sur `Ouvrir le hall LAN`
 - démarrage automatique du serveur intégré
 - IP et port affichés clairement
-- connexion du joueur hôte dans le lobby
+- enrôlement du joueur hôte dans le lobby
 
 À dire :
 
@@ -99,8 +99,8 @@ Sur le poste client, rejoindre la partie.
 
 À montrer :
 
-- clic sur `Rejoindre une partie LAN`
-- saisie de l'IP du host
+- clic sur `Rejoindre un hall`
+- saisie de l'invitation LAN du host
 - connexion du client au lobby
 - affichage du mode courant et de la source de l'historique
 
@@ -115,7 +115,7 @@ Montrer l'historique LAN depuis le lobby client ou host.
 
 À montrer :
 
-- bouton `Voir l'historique LAN`
+- bouton `Consulter les chroniques`
 - affichage d'une fenêtre d'historique indiquant sa source
 
 À dire :
@@ -129,7 +129,7 @@ Lancer une partie LAN courte.
 
 À montrer :
 
-- deux joueurs passent en prêt
+- les deux joueurs entrent d'abord dans le hall, puis passent en prêt
 - démarrage automatique du match
 - jeu en temps réel sur les deux machines
 - fin de match et retour automatique au lobby

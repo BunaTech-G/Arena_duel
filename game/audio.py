@@ -1,7 +1,7 @@
 from pathlib import Path
 import pygame
 
-from runtime_utils import resource_path
+from runtime_utils import is_runtime_flag_enabled, resource_path
 
 
 SOUNDS_DIR = Path(resource_path("assets", "sounds"))
@@ -25,17 +25,29 @@ SOUND_CONFIG = {
         "maxtime_ms": 220,
     },
     "select": {
-        "files": ["confirm-sting.mp3", "humordome-magic-button-click-453255.mp3", "click.mp3"],
+        "files": [
+            "confirm-sting.mp3",
+            "humordome-magic-button-click-453255.mp3",
+            "click.mp3",
+        ],
         "volume": 0.17,
         "maxtime_ms": 420,
     },
     "transition": {
-        "files": ["menu-open-sting.mp3", "voicebosch-menu-select-button-182476.mp3", "confirm-sting.mp3"],
+        "files": [
+            "menu-open-sting.mp3",
+            "voicebosch-menu-select-button-182476.mp3",
+            "confirm-sting.mp3",
+        ],
         "volume": 0.14,
         "maxtime_ms": 650,
     },
     "lose": {
-        "files": ["lose-sting.mp3", "floraphonic-violin-lose-1-175615.mp3", "draw.mp3"],
+        "files": [
+            "lose-sting.mp3",
+            "floraphonic-violin-lose-1-175615.mp3",
+            "draw.mp3",
+        ],
         "volume": 0.52,
     },
     "error": {
@@ -56,7 +68,10 @@ MUSIC_CONFIG = {
         "volume": 0.18,
     },
     "match": {
-        "files": ["match-theme.mp3", "drummusiclooper5000-lose-sfx-365579.mp3"],
+        "files": [
+            "match-theme.mp3",
+            "drummusiclooper5000-lose-sfx-365579.mp3",
+        ],
         "volume": 0.14,
     },
 }
@@ -74,19 +89,23 @@ lose_sound = None
 error_sound = None
 alert_sound = None
 
+
+def _log_audio(message):
+    if is_runtime_flag_enabled("debug_console_logs", default=False):
+        print(f"[audio] {message}")
+
+
 def _resolve_audio_path(candidates):
     for filename in candidates:
         path = SOUNDS_DIR / filename
         if path.exists():
             return path
 
-    print(f"[audio] aucun fichier trouvé parmi : {', '.join(candidates)}")
+    _log_audio(f"aucun fichier trouve parmi : {', '.join(candidates)}")
     return None
 
 
 def _safe_load_sound(candidates, volume=1.0, label="son"):
-    global _audio_ready
-
     if not _audio_ready:
         return None
 
@@ -99,7 +118,9 @@ def _safe_load_sound(candidates, volume=1.0, label="son"):
         sound.set_volume(volume)
         return sound
     except Exception as e:
-        print(f"[audio] impossible de charger {label} depuis {path.name} : {e}")
+        _log_audio(
+            f"impossible de charger {label} depuis {path.name} : {e}"
+        )
         return None
 
 
@@ -113,12 +134,16 @@ def _safe_play(sound, label, maxtime_ms=None):
         else:
             sound.play()
     except Exception as e:
-        print(f"[audio] lecture {label} impossible : {e}")
+        _log_audio(f"lecture {label} impossible : {e}")
 
 
 def _load_role_sound(role_name):
     config = SOUND_CONFIG[role_name]
-    return _safe_load_sound(config["files"], volume=config.get("volume", 1.0), label=role_name)
+    return _safe_load_sound(
+        config["files"],
+        volume=config.get("volume", 1.0),
+        label=role_name,
+    )
 
 
 def _role_maxtime(role_name):
@@ -138,7 +163,7 @@ def init_audio():
             pygame.mixer.init()
         _audio_ready = True
     except Exception as e:
-        print(f"[audio] initialisation audio échouée : {e}")
+        _log_audio(f"initialisation audio echouee : {e}")
         _audio_ready = False
         return
 
@@ -167,7 +192,11 @@ def play_music(track_name="menu", loops=-1, restart=False):
         return False
 
     try:
-        if not restart and _active_music_track == track_name and pygame.mixer.music.get_busy():
+        if (
+            not restart
+            and _active_music_track == track_name
+            and pygame.mixer.music.get_busy()
+        ):
             return True
     except Exception:
         pass
@@ -183,7 +212,7 @@ def play_music(track_name="menu", loops=-1, restart=False):
         _active_music_track = track_name
         return True
     except Exception as e:
-        print(f"[audio] lecture musique {track_name} impossible : {e}")
+        _log_audio(f"lecture musique {track_name} impossible : {e}")
         return False
 
 
@@ -207,9 +236,10 @@ def stop_music(fade_ms=250):
         else:
             pygame.mixer.music.stop()
     except Exception as e:
-        print(f"[audio] arret musique impossible : {e}")
+        _log_audio(f"arret musique impossible : {e}")
     finally:
         _active_music_track = None
+
 
 def play_pickup():
     _safe_play(pickup_sound, "pickup", _role_maxtime("pickup"))
@@ -228,11 +258,19 @@ def play_click():
 
 
 def play_select():
-    _safe_play(select_sound or click_sound, "selection", _role_maxtime("select"))
+    _safe_play(
+        select_sound or click_sound,
+        "selection",
+        _role_maxtime("select"),
+    )
 
 
 def play_transition():
-    _safe_play(transition_sound or select_sound or click_sound, "transition", _role_maxtime("transition"))
+    _safe_play(
+        transition_sound or select_sound or click_sound,
+        "transition",
+        _role_maxtime("transition"),
+    )
 
 
 def play_lose():

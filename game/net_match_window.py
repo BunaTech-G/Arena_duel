@@ -23,7 +23,15 @@ from game.match_text import (
 )
 from game.settings import PLAYER_RADIUS, ORB_RADIUS
 from network.messages import STATE, END, ERROR, DISCONNECTED
-from game.audio import init_audio, play_draw, play_lose, play_win, stop_music
+from game.audio import (
+    init_audio,
+    play_draw,
+    play_lose,
+    play_pickup,
+    play_win,
+    start_match_music,
+    stop_music,
+)
 from runtime_utils import resource_path
 
 
@@ -40,6 +48,11 @@ PG_K_D = getattr(pygame, "K_d")
 PG_K_RIGHT = getattr(pygame, "K_RIGHT")
 PG_SRCALPHA = getattr(pygame, "SRCALPHA")
 pg_init = getattr(pygame, "init")
+
+
+def _tick_frame(clock, target_fps):
+    tick_method = getattr(clock, "tick_busy_loop", None) or clock.tick
+    return tick_method(target_fps)
 
 
 def _resolve_local_team(my_team, my_slot, *payloads):
@@ -61,6 +74,7 @@ def run_network_match(client, my_slot, my_name, my_team):
     pg_init()
     init_audio()
     stop_music(fade_ms=0)
+    start_match_music(restart=True)
     active_layout = get_map_layout(DEFAULT_MAP_ID)
     icon_path = resource_path("assets", "icons", "app.png")
     if Path(icon_path).exists():
@@ -99,13 +113,14 @@ def run_network_match(client, my_slot, my_name, my_team):
     last_error_message = None
 
     previous_positions = {}
+    previous_scores = {}
     latest_movement = {}
     end_sound_played = False
 
     running = True
 
     while running and client.running:
-        dt = clock.tick(50) / 1000.0
+        dt = _tick_frame(clock, 50) / 1000.0
 
         up = down = left = right = False
 
@@ -129,15 +144,22 @@ def run_network_match(client, my_slot, my_name, my_team):
 
             if msg_type == STATE:
                 latest_movement = {}
+                score_changed = False
+                current_scores = {}
                 for player_state in msg.get("players", []):
+                    slot = player_state["slot"]
+                    score = int(player_state.get("score", 0))
                     previous_pos = previous_positions.get(player_state["slot"])
-                    latest_movement[player_state["slot"]] = (
+                    latest_movement[slot] = (
                         previous_pos is not None
                         and (
                             abs(player_state["x"] - previous_pos[0]) > 0.5
                             or abs(player_state["y"] - previous_pos[1]) > 0.5
                         )
                     )
+                    current_scores[slot] = score
+                    if score > previous_scores.get(slot, score):
+                        score_changed = True
                 previous_positions = {
                     player_state["slot"]: (
                         player_state["x"],
@@ -145,6 +167,9 @@ def run_network_match(client, my_slot, my_name, my_team):
                     )
                     for player_state in msg.get("players", [])
                 }
+                previous_scores = current_scores
+                if score_changed:
+                    play_pickup()
                 latest_state = msg
                 active_layout = get_map_layout(
                     msg.get("map_id", DEFAULT_MAP_ID)

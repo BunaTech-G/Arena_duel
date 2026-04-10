@@ -3,6 +3,7 @@ import pygame
 from tkinter import TclError, messagebox
 
 from db.database import test_connection
+from hardware.service import describe_hardware_runtime_status
 from game.audio import (
     init_audio,
     play_alert,
@@ -33,7 +34,9 @@ from ui.theme import (
     create_button,
     enable_large_window,
     load_ctk_image,
+    present_window,
     style_window,
+    update_badge,
 )
 
 
@@ -58,6 +61,12 @@ class LauncherApp(ctk.CTk):
         self.embedded_server_thread = None
         self.embedded_server_address_info = None
         self.current_db_mode = "local"
+        self.player_select_window = None
+        self.history_window = None
+        self.host_lobby_window = None
+        self.join_lobby_window = None
+        self.hardware_status_badge = None
+        self.hardware_status_label = None
         self.network_config = load_lan_runtime_config()
         self.tcp_port = self.network_config.port
         self._set_db_mode_local()
@@ -79,8 +88,10 @@ class LauncherApp(ctk.CTk):
         start_menu_music()
 
         self.protocol("WM_DELETE_WINDOW", self._handle_close_app)
+        self.bind("<FocusIn>", self._handle_focus_in)
 
         self._build_ui()
+        self._refresh_hardware_status()
         self._set_info(
             self._default_journal_text(),
             badge_text="Voie de demo",
@@ -218,6 +229,56 @@ class LauncherApp(ctk.CTk):
             sticky="ew",
         )
 
+        footer_panel = ctk.CTkFrame(
+            self,
+            corner_radius=18,
+            fg_color=PALETTE["panel"],
+            border_width=1,
+            border_color=PALETTE["border"],
+        )
+        footer_panel.place(relx=0.5, rely=0.965, anchor="s", relwidth=0.92)
+        footer_panel.grid_columnconfigure(0, weight=1)
+        footer_panel.grid_columnconfigure(1, weight=0)
+
+        ctk.CTkLabel(
+            footer_panel,
+            text="Jeu cree par Ousmane et Gabriel",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_muted"],
+        ).grid(row=0, column=0, padx=18, pady=14, sticky="w")
+
+        hardware_panel = ctk.CTkFrame(footer_panel, fg_color="transparent")
+        hardware_panel.grid(row=0, column=1, padx=18, pady=10, sticky="e")
+        hardware_panel.grid_columnconfigure(1, weight=1)
+
+        self.hardware_status_badge = create_badge(
+            hardware_panel,
+            "Bridge Arduino",
+            tone="neutral",
+        )
+        self.hardware_status_badge.grid(
+            row=0,
+            column=0,
+            padx=(0, 10),
+            pady=4,
+            sticky="e",
+        )
+
+        self.hardware_status_label = ctk.CTkLabel(
+            hardware_panel,
+            text="Bonus materiel en veille.",
+            font=TYPOGRAPHY["small"],
+            text_color=PALETTE["text_soft"],
+            justify="left",
+            wraplength=330,
+        )
+        self.hardware_status_label.grid(
+            row=0,
+            column=1,
+            pady=4,
+            sticky="w",
+        )
+
         # S'assurer que le fond est en dernière position (derrière tout)
         self.after(0, backdrop.lower)
 
@@ -281,6 +342,44 @@ class LauncherApp(ctk.CTk):
         set_runtime_override("db_host", "localhost")
         self.current_db_mode = "local"
 
+    def _handle_focus_in(self, _event=None):
+        self._refresh_hardware_status()
+
+    def _refresh_hardware_status(self):
+        if (
+            self.hardware_status_badge is None
+            or self.hardware_status_label is None
+        ):
+            return
+
+        status = describe_hardware_runtime_status()
+        update_badge(
+            self.hardware_status_badge,
+            status.badge_text,
+            status.tone,
+        )
+        self.hardware_status_label.configure(text=status.detail_text)
+
+    def _get_live_window(self, window):
+        if window is None:
+            return None
+
+        try:
+            return window if window.winfo_exists() else None
+        except TclError:
+            return None
+
+    def _focus_or_open_window(self, attr_name, factory):
+        existing_window = self._get_live_window(getattr(self, attr_name))
+        if existing_window is not None:
+            present_window(existing_window)
+            return existing_window
+
+        window = factory()
+        setattr(self, attr_name, window)
+        present_window(window)
+        return window
+
     def _set_db_mode_remote(self, server_ip: str):
         set_runtime_override("db_host", server_ip)
         self.current_db_mode = f"remote:{server_ip}"
@@ -315,10 +414,10 @@ class LauncherApp(ctk.CTk):
             badge_text="Forge ouverte",
             tone="gold",
         )
-
-        window = PlayerSelectView(self)
-        window.lift()
-        window.focus_force()
+        self._focus_or_open_window(
+            "player_select_window",
+            lambda: PlayerSelectView(self),
+        )
 
     def _handle_history(self):
         play_transition()
@@ -330,13 +429,13 @@ class LauncherApp(ctk.CTk):
             badge_text="Chroniques ouvertes",
             tone="gold",
         )
-
-        window = HistoryView(
-            self,
-            source_label="Chroniques locales du bastion",
+        self._focus_or_open_window(
+            "history_window",
+            lambda: HistoryView(
+                self,
+                source_label="Chroniques locales du bastion",
+            ),
         )
-        window.lift()
-        window.focus_force()
 
     def _handle_host_lan(self):
         play_transition()
@@ -413,23 +512,23 @@ class LauncherApp(ctk.CTk):
             )
 
         self._set_db_mode_local()
-
-        window = NetworkLobbyView(
-            self,
-            default_server_invitation=(
-                format_endpoint(
-                    self.embedded_server_address_info.primary_ip,
-                    self.tcp_port,
-                )
-                if self.embedded_server_address_info
-                and self.embedded_server_address_info.primary_ip
-                else f"127.0.0.1:{self.tcp_port}"
+        self._focus_or_open_window(
+            "host_lobby_window",
+            lambda: NetworkLobbyView(
+                self,
+                default_server_invitation=(
+                    format_endpoint(
+                        self.embedded_server_address_info.primary_ip,
+                        self.tcp_port,
+                    )
+                    if self.embedded_server_address_info
+                    and self.embedded_server_address_info.primary_ip
+                    else f"127.0.0.1:{self.tcp_port}"
+                ),
+                server_port=self.tcp_port,
+                host_mode=True,
             ),
-            server_port=self.tcp_port,
-            host_mode=True,
         )
-        window.lift()
-        window.focus_force()
 
     def _handle_join_lan(self):
         play_transition()
@@ -439,10 +538,10 @@ class LauncherApp(ctk.CTk):
             badge_text="Hall en approche",
             tone="info",
         )
-
-        window = NetworkLobbyView(self, server_port=self.tcp_port)
-        window.lift()
-        window.focus_force()
+        self._focus_or_open_window(
+            "join_lobby_window",
+            lambda: NetworkLobbyView(self, server_port=self.tcp_port),
+        )
 
     def _handle_close_app(self):
         if self.embedded_server is not None:

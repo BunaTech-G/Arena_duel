@@ -1,48 +1,39 @@
 @echo off
 setlocal
 
-REM Se placer à la racine du projet
 cd /d %~dp0\..
 
-echo ================================
-echo  Arena Duel - Build PyInstaller
-echo ================================
+echo =========================================
+echo   Arena Duel - Build Presentation + Installer
+echo =========================================
+echo.
 
-REM Trouver automatiquement le dossier CustomTkinter
-for /f "delims=" %%i in ('python -c "import customtkinter, os; print(os.path.dirname(customtkinter.__file__))"') do set CTK_DIR=%%i
-
-if not exist "%CTK_DIR%" (
-    echo [ERREUR] Dossier CustomTkinter introuvable.
-    pause
-    exit /b 1
+call build_presentation.bat
+if errorlevel 1 (
+  exit /b 1
 )
 
-echo CustomTkinter detecte ici :
-echo %CTK_DIR%
-
-python -m pip install -U pyinstaller
-
-REM Nettoyage ancien build
-if exist build rmdir /s /q build
-if exist dist rmdir /s /q dist
-
-REM Build avec python -m PyInstaller
-python -m PyInstaller --noconfirm --clean --onedir --windowed ^
-  --name "ArenaDuel" ^
-  --icon "assets\\images\\arena_duel.ico" ^
-  --add-data "%CTK_DIR%;customtkinter/" ^
-  --add-data "assets;assets" ^
-  main.py
-
+where ISCC >nul 2>nul
 if errorlevel 1 (
-    echo.
-    echo [ERREUR] Le build PyInstaller a echoue.
-    pause
-    exit /b 1
+  echo.
+  echo [INFO] Inno Setup n est pas detecte sur ce poste.
+  echo [INFO] L EXE est pret dans dist_release\ArenaDuel.
+  echo [INFO] Pour generer le setup, compile installer\arena_duel.iss.
+  echo.
+  pause
+  exit /b 0
+)
+
+ISCC installer\arena_duel.iss
+if errorlevel 1 (
+  echo.
+  echo [ERREUR] La generation de l installateur a echoue.
+  pause
+  exit /b 1
 )
 
 echo.
-echo Build termine avec succes.
-echo Le dossier genere est :
-echo dist\\ArenaDuel
+echo [OK] Installateur genere avec succes.
+echo Fichier final : installer\Setup_ArenaDuel.exe
+echo.
 pause

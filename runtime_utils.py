@@ -36,7 +36,15 @@ def runtime_file_path(filename: str) -> str:
     placé à côté de l'exe ou à la racine du projet source.
     """
     if getattr(sys, "frozen", False):
-        return str(Path(sys.executable).resolve().parent / filename)
+        external_path = Path(sys.executable).resolve().parent / filename
+        if external_path.exists():
+            return str(external_path)
+
+        bundled_path = Path(resource_path(filename))
+        if bundled_path.exists():
+            return str(bundled_path)
+
+        return str(external_path)
     return str(PROJECT_DIR / filename)
 
 
@@ -71,6 +79,22 @@ def runtime_user_file_path(filename: str) -> str:
     return str(runtime_user_dir() / filename)
 
 
+def is_runtime_flag_enabled(
+    flag_name: str,
+    default: bool = False,
+) -> bool:
+    raw_value = load_runtime_config().get(flag_name, default)
+    if isinstance(raw_value, bool):
+        return raw_value
+
+    normalized_value = str(raw_value).strip().lower()
+    if normalized_value in {"1", "true", "yes", "on"}:
+        return True
+    if normalized_value in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
 def set_runtime_override(key: str, value):
     _RUNTIME_OVERRIDES[key] = value
 
@@ -97,6 +121,17 @@ def load_runtime_config() -> dict:
         "lan_bind_host": "0.0.0.0",
         "tcp_port": 5000,
         "lan_connect_timeout_seconds": 4,
+        "hardware_bridge_enabled": False,
+        "hardware_bridge_backend": "arduino",
+        "hardware_serial_port": "",
+        "hardware_serial_auto_detect": True,
+        "hardware_serial_baudrate": 115200,
+        "hardware_serial_timeout_seconds": 0.2,
+        "hardware_serial_write_timeout_seconds": 0.2,
+        "debug_console_logs": False,
+        "demo_local_storage_enabled": False,
+        "demo_local_storage_force": False,
+        "demo_seed_players": [],
     }
 
     path = Path(runtime_file_path("app_runtime.json"))
