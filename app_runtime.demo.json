@@ -1,0 +1,29 @@
+{
+  "db_host": "localhost",
+  "db_port": 3306,
+  "db_user": "root",
+  "db_password": "",
+  "db_name": "arena_duel_v2_db",
+  "db_connect_timeout": 3,
+  "lan_bind_host": "0.0.0.0",
+  "tcp_port": 5000,
+  "lan_connect_timeout_seconds": 4,
+  "hardware_bridge_enabled": false,
+  "hardware_bridge_backend": "arduino",
+  "hardware_serial_port": "",
+  "hardware_serial_auto_detect": true,
+  "hardware_serial_baudrate": 115200,
+  "hardware_serial_timeout_seconds": 0.2,
+  "hardware_serial_write_timeout_seconds": 0.2,
+  "debug_console_logs": false,
+  "demo_local_storage_enabled": true,
+  "demo_local_storage_force": true,
+  "demo_seed_players": [
+    "Aegis",
+    "Selene",
+    "Orion",
+    "Nyx",
+    "Kael",
+    "Iris"
+  ]
+}

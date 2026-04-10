@@ -29,5 +29,6 @@ echo.
 echo [OK] Environnement LAN configure avec succes.
 echo.
 echo Lance ensuite : run_lan_ui.bat
+echo Ou utilise run_client_lan.bat pour un test CLI de diagnostic.
 echo.
 pause

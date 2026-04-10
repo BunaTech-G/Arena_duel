@@ -229,6 +229,52 @@ def update_badge(badge, text, tone="neutral"):
     badge.configure(text=text, fg_color=fg_color, text_color=text_color)
 
 
+def present_window(window, *, clear_topmost_after_ms: int = 180):
+    def _clear_topmost():
+        try:
+            window.attributes("-topmost", False)
+        except TclError:
+            pass
+
+    def _present():
+        try:
+            window.deiconify()
+        except TclError:
+            pass
+
+        try:
+            window.update_idletasks()
+        except TclError:
+            pass
+
+        try:
+            window.lift()
+            window.focus_force()
+            window.attributes("-topmost", True)
+        except TclError:
+            _clear_topmost()
+            return
+
+        try:
+            window.after(120, _repulse)
+            window.after(clear_topmost_after_ms + 120, _clear_topmost)
+        except TclError:
+            _clear_topmost()
+
+    def _repulse():
+        try:
+            window.lift()
+            window.focus_force()
+            window.attributes("-topmost", True)
+        except TclError:
+            _clear_topmost()
+
+    try:
+        window.after(0, _present)
+    except TclError:
+        _present()
+
+
 def _parse_geometry_size(geometry: str) -> tuple[int | None, int | None]:
     try:
         size_token = geometry.split("+", 1)[0]

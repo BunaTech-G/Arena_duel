@@ -1,5 +1,6 @@
 import mariadb
 
+from db import demo_store
 from db.database import get_connection
 from game.control_models import is_ai_name
 
@@ -7,6 +8,8 @@ from game.control_models import is_ai_name
 def get_player_registry_snapshot():
     conn = get_connection()
     if not conn:
+        if demo_store.is_demo_storage_enabled():
+            return demo_store.get_player_registry_snapshot()
         return False, []
 
     cur = conn.cursor()
@@ -31,6 +34,8 @@ def get_all_players():
 def get_player_by_username(username):
     conn = get_connection()
     if not conn:
+        if demo_store.is_demo_storage_enabled():
+            return demo_store.get_player_by_username(username)
         return None
 
     cur = conn.cursor()
@@ -58,6 +63,8 @@ def create_player(username):
 
     conn = get_connection()
     if not conn:
+        if demo_store.is_demo_storage_enabled():
+            return demo_store.create_player(username)
         return False, "Le sanctuaire des chroniques est indisponible."
 
     cur = conn.cursor()

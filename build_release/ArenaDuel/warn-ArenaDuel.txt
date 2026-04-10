@@ -14,7 +14,7 @@ Types of import:
 IMPORTANT: Do NOT post this list to the issue-tracker. Use it as a basis for
             tracking down the missing module yourself. Thanks!
 
-missing module named 'collections.abc' - imported by _colorize (top-level), typing (top-level), traceback (top-level), logging (top-level), selectors (top-level), http.client (top-level), importlib.resources.readers (top-level), inspect (top-level), tracemalloc (top-level), PIL.Image (top-level), PIL._typing (top-level), xml.etree.ElementTree (top-level), PIL.TiffImagePlugin (top-level), PIL.ImageOps (top-level), PIL.ImagePalette (top-level), PIL.GimpGradientFile (conditional), PIL.ImageFilter (top-level), PIL.ImageQt (conditional), PIL.ImageMath (conditional), PIL.ImageSequence (conditional), PIL.PngImagePlugin (conditional), pygame.base (top-level), pygame._sdl2.audio (top-level), pygame._sdl2.video (top-level), pygame.color (top-level), pygame.typing (top-level), pygame.rect (top-level), pygame.surface (top-level), pygame.math (top-level), pygame.display (top-level), pygame.font (top-level), PIL.ImageDraw (top-level), PIL._imagingft (top-level), PIL.Jpeg2KImagePlugin (conditional)
+missing module named 'collections.abc' - imported by tracemalloc (top-level), typing (top-level), traceback (top-level), _colorize (top-level), logging (top-level), selectors (top-level), http.client (top-level), importlib.resources.readers (top-level), inspect (top-level), PIL.Image (top-level), PIL._typing (top-level), xml.etree.ElementTree (top-level), PIL.TiffImagePlugin (top-level), PIL.ImageOps (top-level), PIL.ImagePalette (top-level), PIL.GimpGradientFile (conditional), PIL.ImageFilter (top-level), PIL.ImageQt (conditional), PIL.ImageMath (conditional), PIL.ImageSequence (conditional), PIL.PngImagePlugin (conditional), pygame.base (top-level), pygame._sdl2.audio (top-level), pygame._sdl2.video (top-level), pygame.color (top-level), pygame.typing (top-level), pygame.rect (top-level), pygame.surface (top-level), pygame.math (top-level), pygame.display (top-level), pygame.font (top-level), PIL.ImageDraw (top-level), PIL._imagingft (top-level), PIL.Jpeg2KImagePlugin (conditional)
 missing module named _scproxy - imported by urllib.request (conditional)
 missing module named posix - imported by posixpath (optional), shutil (conditional), importlib._bootstrap_external (conditional), pathlib._os (optional), os (conditional, optional)
 missing module named resource - imported by posix (top-level)
@@ -31,6 +31,8 @@ missing module named typing_extensions - imported by packaging.version (conditio
 missing module named vms_lib - imported by platform (delayed, optional)
 missing module named 'java.lang' - imported by platform (delayed, optional)
 missing module named java - imported by platform (delayed)
+missing module named 'serial.tools' - imported by hardware.arduino (optional)
+missing module named serial - imported by hardware.arduino (optional)
 missing module named OpenGL - imported by pygame (delayed)
 missing module named pygame.__file__ - imported by pygame (top-level), pygame.sysfont (top-level)
 missing module named PyObjCTools - imported by darkdetect._mac_detect (optional)

@@ -50,6 +50,7 @@ from ui.theme import (
     create_button,
     create_option_menu,
     enable_large_window,
+    present_window,
     style_frame,
     style_window,
     update_badge,
@@ -82,15 +83,14 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.geometry("1320x860")
         enable_large_window(self, 1120, 780)
 
-        self.transient(parent)
         self.lift()
         self.focus_force()
-        self.attributes("-topmost", True)
-        self.after(200, lambda: self.attributes("-topmost", False))
         self.protocol("WM_DELETE_WINDOW", self.shutdown)
 
         self.client = None
         self.running = False
+        self._connect_in_progress = False
+        self._ready_request_pending = False
         self.history_request_pending = False
         self.server_port = int(
             server_port or self.network_config.port
@@ -111,6 +111,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.my_name = None
         self.ready_state = False
         self.match_running = False
+        self.history_window = None
 
         self.mode_badge = None
         self.mode_label = None
@@ -134,6 +135,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.info_label = None
 
         self._build_ui()
+        present_window(self)
         self._refresh_mode_label()
 
         start_menu_music()
@@ -146,6 +148,112 @@ class NetworkLobbyView(ctk.CTkToplevel):
         except (OSError, TclError):
             pass
 
+    def _get_live_window(self, window):
+        if window is None:
+            return None
+
+        try:
+            return window if window.winfo_exists() else None
+        except TclError:
+            return None
+
+    def _show_history_window(self, history_rows, source_label: str):
+        existing_window = self._get_live_window(self.history_window)
+        if existing_window is not None:
+            existing_window.destroy()
+
+        self.history_window = HistoryView(
+            self,
+            history_rows=history_rows,
+            source_label=source_label,
+            allow_refresh=False,
+        )
+        present_window(self.history_window)
+
+    def _sync_controls_state(self):
+        connected = bool(self.client and self.client.running)
+        connect_locked = (
+            connected or self._connect_in_progress or self.match_running
+        )
+
+        self.connect_btn.configure(
+            text=(
+                "Connexion..."
+                if self._connect_in_progress
+                else (
+                    "Dans le hall"
+                    if connected
+                    else "Entrer dans le hall"
+                )
+            ),
+            state="disabled" if connect_locked else "normal",
+        )
+        self.ip_entry.configure(
+            state="disabled" if connect_locked else "normal"
+        )
+        self.name_entry.configure(
+            state="disabled" if connect_locked else "normal"
+        )
+        self.use_local_ip_btn.configure(
+            state="disabled" if connect_locked else "normal"
+        )
+        if self.copy_invite_btn is not None:
+            self.copy_invite_btn.configure(
+                state=(
+                    "disabled"
+                    if self._connect_in_progress or self.match_running
+                    else "normal"
+                )
+            )
+
+        self.ready_btn.configure(
+            text=(
+                "Transmission..."
+                if self._ready_request_pending
+                else (
+                    "Retirer l'état prêt"
+                    if self.ready_state
+                    else "Se déclarer prêt"
+                )
+            ),
+            state=(
+                "normal"
+                if (
+                    connected
+                    and not self._connect_in_progress
+                    and not self._ready_request_pending
+                    and not self.match_running
+                )
+                else "disabled"
+            ),
+        )
+        self.history_btn.configure(
+            text=(
+                "Lecture en cours..."
+                if self.history_request_pending
+                else "Consulter les chroniques"
+            ),
+            state=(
+                "normal"
+                if (
+                    connected
+                    and not self._connect_in_progress
+                    and not self.history_request_pending
+                    and not self.match_running
+                )
+                else "disabled"
+            ),
+        )
+        self.duration_menu.configure(
+            state=(
+                "normal"
+                if self.host_mode
+                and not self._connect_in_progress
+                and not self.match_running
+                else "disabled"
+            )
+        )
+
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=7)
         self.grid_columnconfigure(1, weight=5)
@@ -156,6 +264,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self._build_roster_panel()
         self._clear_roster_display()
         self._apply_match_duration(MATCH_DURATION_SECONDS)
+        self._sync_controls_state()
 
     def _build_header(self):
         header = ctk.CTkFrame(self, corner_radius=20)
@@ -357,11 +466,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 else self.local_test_invitation,
             )
         self.ip_entry.bind("<KeyRelease>", self._handle_ip_entry_change)
+        self.ip_entry.bind("<Return>", lambda _event: self._connect())
         self._sync_invitation_spotlight(self.ip_entry.get().strip())
 
         self.name_entry = ctk.CTkEntry(
             panel,
-            placeholder_text="Enroler un nouveau combattant",
+            placeholder_text="Nom du combattant qui rejoint le hall",
             height=42,
             font=TYPOGRAPHY["body"],
             fg_color=PALETTE["panel_soft"],
@@ -375,6 +485,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             pady=(0, 10),
             sticky="ew",
         )
+        self.name_entry.bind("<Return>", lambda _event: self._connect())
 
         action_row = ctk.CTkFrame(panel, fg_color="transparent")
         action_row.grid(
@@ -727,22 +838,21 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.my_team = None
         self.my_name = None
         self.ready_state = False
+        self._connect_in_progress = False
+        self._ready_request_pending = False
         self.match_running = False
         self.history_request_pending = False
 
-        self.ready_btn.configure(text="Se déclarer prêt", state="disabled")
-        self.history_btn.configure(state="disabled")
-        self.connect_btn.configure(state="normal")
-        self.ip_entry.configure(state="normal")
-        self.name_entry.configure(state="normal")
-        self.use_local_ip_btn.configure(state="normal")
         self._clear_roster_display()
+        self._sync_controls_state()
         self._refresh_mode_label()
 
     def _handle_disconnect(self, message: str):
         play_alert()
 
         self.running = False
+        self._connect_in_progress = False
+        self._ready_request_pending = False
         self.history_request_pending = False
 
         if self.client:
@@ -908,6 +1018,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
     # Connexion réseau
     # =========================
     def _connect(self):
+        if self._connect_in_progress or (self.client and self.client.running):
+            return
+
         play_transition()
 
         invitation = self.ip_entry.get().strip()
@@ -933,6 +1046,13 @@ class NetworkLobbyView(ctk.CTkToplevel):
             self.info_label.configure(text=str(error))
             return
 
+        self._connect_in_progress = True
+        self.info_label.configure(
+            text="Connexion au hall du bastion en cours..."
+        )
+        self._sync_controls_state()
+        self.update_idletasks()
+
         self.client = NetworkClient()
 
         try:
@@ -944,6 +1064,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 timeout_seconds=self.network_config.connect_timeout_seconds,
             )
         except (ConnectionError, OSError) as error:
+            self._connect_in_progress = False
+            self.client = None
+            self._sync_controls_state()
             play_alert()
             self.info_label.configure(
                 text=(
@@ -953,11 +1076,14 @@ class NetworkLobbyView(ctk.CTkToplevel):
             )
             return
 
+        self._connect_in_progress = False
+
         normalized_invitation = format_endpoint(host, port)
         self.server_port = port
         self.local_test_invitation = format_endpoint("127.0.0.1", port)
         self.ip_entry.delete(0, "end")
         self.ip_entry.insert(0, normalized_invitation)
+        self._sync_controls_state()
 
         self.info_label.configure(
             text=(
@@ -965,12 +1091,6 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 "dans la joute."
             )
         )
-        self.connect_btn.configure(state="disabled")
-        self.ready_btn.configure(state="normal")
-        self.history_btn.configure(state="normal")
-        self.ip_entry.configure(state="disabled")
-        self.name_entry.configure(state="disabled")
-        self.use_local_ip_btn.configure(state="disabled")
 
         self.my_name = name
         self._save_server_invitation(
@@ -980,9 +1100,16 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self._start_network_thread()
         if self.host_mode:
-            self.client.send_match_duration(
+            if not self.client.send_match_duration(
                 self._get_selected_match_duration()
-            )
+            ):
+                play_error()
+                self.info_label.configure(
+                    text=(
+                        "Le hall est rejoint, mais la duree n'a pas pu etre "
+                        "transmise au gardien."
+                    )
+                )
         self._refresh_mode_label()
 
         if self.host_mode:
@@ -1066,8 +1193,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         elif msg_type == HISTORY_DATA:
             self.history_request_pending = False
-            if self.client and self.client.running:
-                self.history_btn.configure(state="normal")
+            self._sync_controls_state()
 
             if not msg.get("ok", False):
                 play_error()
@@ -1091,11 +1217,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
                     "depuis le hall."
                 )
             )
-            HistoryView(
-                self,
-                history_rows=msg.get("rows", []),
-                source_label=source_label,
-                allow_refresh=False,
+            self._show_history_window(
+                msg.get("rows", []),
+                source_label,
             )
 
         elif msg_type == ERROR:
@@ -1345,15 +1469,40 @@ class NetworkLobbyView(ctk.CTkToplevel):
     # Ready
     # =========================
     def _toggle_ready(self):
+        if (
+            not self.client
+            or not self.client.running
+            or self._ready_request_pending
+        ):
+            return
+
         play_select()
 
-        self.ready_state = not self.ready_state
-        self.client.send_ready(self.ready_state)
+        next_ready_state = not self.ready_state
+        self._ready_request_pending = True
+        self.info_label.configure(text="Transmission du serment au hall...")
+        self._sync_controls_state()
+        self.update_idletasks()
 
-        if self.ready_state:
-            self.ready_btn.configure(text="Retirer l'état prêt")
-        else:
-            self.ready_btn.configure(text="Se déclarer prêt")
+        if not self.client.send_ready(next_ready_state):
+            self._ready_request_pending = False
+            self._sync_controls_state()
+            play_error()
+            self.info_label.configure(
+                text="Impossible de transmettre le serment au hall."
+            )
+            return
+
+        self.ready_state = next_ready_state
+        self._ready_request_pending = False
+        self._sync_controls_state()
+        self.info_label.configure(
+            text=(
+                "Serment levé. Le hall attend les autres combattants."
+                if self.ready_state
+                else "Serment retiré. Le hall met ton poste en veille."
+            )
+        )
 
     def _request_history(self):
         play_transition()
@@ -1369,13 +1518,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
             return
 
         self.history_request_pending = True
-        self.history_btn.configure(state="disabled")
         self.info_label.configure(text="Lecture des chroniques du hall...")
+        self._sync_controls_state()
 
         if not self.client.send_request_history():
             self.history_request_pending = False
-            if self.client and self.client.running:
-                self.history_btn.configure(state="normal")
+            self._sync_controls_state()
             play_error()
             self.info_label.configure(
                 text="Impossible d'appeler les chroniques du hall."
@@ -1408,6 +1556,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         # on stoppe la boucle lobby pendant le match
         self.running = False
         self.match_running = True
+        self._sync_controls_state()
         stop_music(fade_ms=180)
 
         # on cache le lobby
@@ -1432,6 +1581,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.attributes("-topmost", True)
         self.after(200, lambda: self.attributes("-topmost", False))
         self.match_running = False
+        self._sync_controls_state()
 
         for msg in match_summary.get("deferred_messages", []):
             self._handle_message(msg)
@@ -1447,8 +1597,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         # reset visuel du ready
         self.ready_state = False
-        self.ready_btn.configure(text="Se déclarer prêt", state="normal")
-        self.history_btn.configure(state="normal")
+        self._sync_controls_state()
 
         status_text = self._format_post_match_status(
             match_summary.get("end_message", {})

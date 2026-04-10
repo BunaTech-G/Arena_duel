@@ -2,6 +2,7 @@ import argparse
 import json
 import queue
 import socket
+import sys
 import threading
 import time
 
@@ -20,6 +21,7 @@ from network.net_utils import (
     format_endpoint,
     get_network_logger,
     load_lan_runtime_config,
+    parse_server_invitation,
 )
 from network.protocol import encode_message, decode_message
 
@@ -207,7 +209,7 @@ class NetworkClient:
             return False
 
     def send_ready(self, ready: bool):
-        self.send({"type": READY, "ready": ready})
+        return self.send({"type": READY, "ready": ready})
 
     def send_ping(self):
         self.send({"type": PING})
@@ -297,9 +299,27 @@ def run_cli_client(host: str, port: int, name: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Arena Duel - client LAN")
-    parser.add_argument("--host", required=True, help="IP du serveur")
+    parser.add_argument(
+        "--server",
+        help="Invitation LAN au format IP:port ou IP",
+    )
+    parser.add_argument("--host", help="IP du serveur")
     parser.add_argument("--port", type=int, default=5000, help="Port TCP")
     parser.add_argument("--name", required=True, help="Nom du joueur")
     args = parser.parse_args()
 
-    run_cli_client(args.host, args.port, args.name)
+    if args.server:
+        resolved_host, resolved_port = parse_server_invitation(
+            args.server,
+            args.port,
+        )
+    else:
+        if not args.host:
+            parser.error("Utilise --server ou --host pour cibler un hall LAN.")
+        resolved_host, resolved_port = args.host, args.port
+
+    try:
+        run_cli_client(resolved_host, resolved_port, args.name)
+    except ConnectionError as error:
+        print(f"[client] connexion impossible: {error}")
+        sys.exit(1)

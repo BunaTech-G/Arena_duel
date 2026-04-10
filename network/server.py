@@ -7,6 +7,7 @@ import time
 import uuid
 from datetime import datetime
 
+from hardware.service import create_match_hardware_service
 from game.arena_layout import (
     DEFAULT_MAP_ID,
     get_team_spawn_positions,
@@ -452,6 +453,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
     def __init__(self, server_address, handler_class):
+        self.hardware_service = None
         super().__init__(server_address, handler_class)
         self.lobby = LobbyState()
         self.lobby_invite_code = build_lobby_invite_code()
@@ -461,6 +463,17 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.game_lock = threading.Lock()
         self.game_thread = None
         self.network_logger = LOGGER
+        self.hardware_service = create_match_hardware_service()
+        self.hardware_service.emit_state("LOBBY")
+        self.hardware_service.emit_score(0, 0)
+
+    def server_close(self):
+        try:
+            if self.hardware_service is not None:
+                self.hardware_service.reset()
+                self.hardware_service.shutdown()
+        finally:
+            super().server_close()
 
     def sync_lobby_persistence(self, status_code: str = "OPEN"):
         players = self.lobby.export_public_state()
@@ -524,6 +537,9 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 len(snapshot),
                 self.lobby.get_match_duration(),
             )
+            self.hardware_service.reset()
+            self.hardware_service.emit_state("COMBAT")
+            self.hardware_service.emit_score(0, 0)
 
             self.broadcast({"type": START})
 
@@ -544,6 +560,10 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 break
 
             self.game_state.update(dt, snapshot)
+            self.hardware_service.emit_score(
+                self.game_state.team_a_score,
+                self.game_state.team_b_score,
+            )
             self.broadcast(self.game_state.export_state())
 
             if self.game_state.is_finished():
@@ -569,6 +589,11 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 end_message["match_id"] = match_id
                 if save_error:
                     end_message["history_error"] = save_error
+
+                self.hardware_service.emit_state("RESULT")
+                self.hardware_service.emit_winner(
+                    end_message.get("winner_team")
+                )
 
                 self.broadcast(end_message)
 
@@ -865,4 +890,8 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=5000, help="Port TCP")
     args = parser.parse_args()
 
-    run_server(args.host, args.port)
+    try:
+        run_server(args.host, args.port)
+    except RuntimeError as error:
+        print(f"[server] {error}")
+        raise SystemExit(1) from error

@@ -10,6 +10,7 @@ from db.players import (
 )
 from db.matches import save_team_match
 from game.audio import (
+    init_audio,
     play_click,
     play_error,
     play_transition,
@@ -32,7 +33,7 @@ from game.settings import (
     format_match_duration_label,
 )
 from ui.history_view import HistoryView
-from runtime_utils import resource_path
+from runtime_utils import is_runtime_flag_enabled, resource_path
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
@@ -44,6 +45,7 @@ from ui.theme import (
     create_button,
     create_option_menu,
     create_badge,
+    present_window,
     update_badge,
 )
 
@@ -300,9 +302,12 @@ class PlayerSelectView(ctk.CTkToplevel):
         self._forge_open_started_at = time.perf_counter()
         self._forge_first_paint_logged = False
         self._registry_loading = False
+        self._add_player_in_progress = False
+        self._launch_in_progress = False
         self._registry_request_token = 0
         self._registry_result_queue = queue.SimpleQueue()
         self.parent = parent
+        self.history_window = None
         self.player_options = []
         self.registry_available = None
         self.duration_values = [
@@ -326,28 +331,105 @@ class PlayerSelectView(ctk.CTkToplevel):
         _ico = resource_path("assets", "icons", "app.ico")
         self.after(200, lambda: self._apply_icon(_ico))
 
-        self.transient(parent)
         self.lift()
         self.focus_force()
-        self.grab_set()
-        self.after(100, lambda: self.attributes("-topmost", True))
-        self.after(200, lambda: self.attributes("-topmost", False))
 
         self._build_ui()
+        present_window(self)
         self._trace_perf("ui-shell-ready")
-        self._set_registry_loading_state(
+        self._render_registry_loading_state(
             "Ouverture de la forge et lecture du registre..."
         )
         self._refresh_forge_state()
-        self.after_idle(self._handle_first_paint)
+        self.after(40, lambda: self.refresh_players(reason="initial"))
+        self.after(80, self._handle_first_paint)
         # Ouvrir maximisé pour garantir que tout le contenu est visible
         self.after(60, lambda: self.state("zoomed"))
+        self.after(120, lambda: present_window(self))
 
     def _apply_icon(self, path: str):
         try:
             self.iconbitmap(path)
         except (OSError, TclError):
             pass
+
+    def _get_idle_launch_button_text(self) -> str:
+        if self._get_selected_match_mode() == "ai":
+            return "Lancer contre l'ordinateur"
+        return "Ouvrir la joute"
+
+    def _get_live_window(self, window):
+        if window is None:
+            return None
+
+        try:
+            return window if window.winfo_exists() else None
+        except TclError:
+            return None
+
+    def _focus_or_open_window(self, attr_name, factory):
+        existing_window = self._get_live_window(getattr(self, attr_name))
+        if existing_window is not None:
+            present_window(existing_window)
+            return existing_window
+
+        window = factory()
+        setattr(self, attr_name, window)
+        present_window(window)
+        return window
+
+    def _sync_action_controls(self):
+        registry_busy = self._registry_loading
+        add_busy = self._add_player_in_progress
+        launch_busy = self._launch_in_progress
+        entry_enabled = (
+            not registry_busy
+            and not add_busy
+            and not launch_busy
+        )
+
+        self.new_player_entry.configure(
+            state="normal" if entry_enabled else "disabled"
+        )
+
+        self.add_button.configure(
+            text=(
+                "Enrôlement..."
+                if add_busy
+                else "Enrôler ce nouveau combattant"
+            ),
+            state="normal" if entry_enabled else "disabled",
+        )
+        self.refresh_button.configure(
+            text=(
+                "Lecture du registre..."
+                if registry_busy
+                else "Actualiser le registre"
+            ),
+            state=(
+                "disabled"
+                if registry_busy or add_busy or launch_busy
+                else "normal"
+            ),
+        )
+        self.launch_button.configure(
+            text=(
+                "Ouverture en cours..."
+                if launch_busy
+                else self._get_idle_launch_button_text()
+            ),
+            state=(
+                "disabled"
+                if registry_busy or add_busy or launch_busy
+                else "normal"
+            ),
+        )
+        self.history_button.configure(
+            state="disabled" if launch_busy else "normal"
+        )
+        self.close_button.configure(
+            state="disabled" if launch_busy else "normal"
+        )
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=2)
@@ -539,16 +621,39 @@ class PlayerSelectView(ctk.CTkToplevel):
             sticky="nsew",
         )
         right_frame.grid_columnconfigure(0, weight=1)
-        right_frame.grid_rowconfigure(1, weight=1)
+        right_frame.grid_rowconfigure(0, weight=1)
 
-        setup_frame = ctk.CTkFrame(right_frame, corner_radius=16)
+        self.right_scroll_frame = ctk.CTkScrollableFrame(
+            right_frame,
+            corner_radius=12,
+            fg_color="transparent",
+            scrollbar_button_color=PALETTE["surface"],
+            scrollbar_button_hover_color=PALETTE["border_strong"],
+        )
+        self.right_scroll_frame.grid(
+            row=0,
+            column=0,
+            padx=8,
+            pady=8,
+            sticky="nsew",
+        )
+        self.right_scroll_frame.grid_columnconfigure(0, weight=1)
+
+        setup_frame = ctk.CTkFrame(self.right_scroll_frame, corner_radius=16)
         style_frame(
             setup_frame,
             tone="panel_soft",
             border_color=PALETTE["border"],
         )
-        setup_frame.grid(row=0, column=0, padx=18, pady=(18, 12), sticky="ew")
-        setup_frame.grid_columnconfigure((0, 1), weight=1)
+        setup_frame.grid(
+            row=0,
+            column=0,
+            padx=10,
+            pady=(10, 12),
+            sticky="ew",
+        )
+        setup_frame.grid_columnconfigure(0, weight=0, minsize=176)
+        setup_frame.grid_columnconfigure(1, weight=1)
 
         setup_title = ctk.CTkLabel(
             setup_frame,
@@ -578,15 +683,17 @@ class PlayerSelectView(ctk.CTkToplevel):
             text="Le mode IA complète automatiquement le bastion adverse.",
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
+            wraplength=190,
+            justify="left",
         )
-        mode_hint.grid(row=1, column=1, padx=18, pady=(0, 4), sticky="e")
+        mode_hint.grid(row=1, column=1, padx=18, pady=(0, 4), sticky="w")
 
         self.mode_menu = create_option_menu(
             setup_frame,
             values=list(MATCH_MODE_DISPLAY_BY_CODE.values()),
             variable=self.match_mode_var,
             command=self._handle_match_mode_change,
-            width=220,
+            width=170,
             height=42,
         )
         self.mode_menu.grid(
@@ -602,14 +709,15 @@ class PlayerSelectView(ctk.CTkToplevel):
             text="Deux bastions humains contrôlés au clavier.",
             font=TYPOGRAPHY["body_bold"],
             text_color=PALETTE["text"],
-            justify="right",
+            wraplength=190,
+            justify="left",
         )
         self.mode_note.grid(
             row=2,
             column=1,
             padx=18,
             pady=(0, 12),
-            sticky="e",
+            sticky="w",
         )
 
         self.ai_setup_frame = ctk.CTkFrame(
@@ -664,7 +772,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             values=list(AI_SIDE_DISPLAY_BY_CODE.values()),
             variable=self.human_team_var,
             command=self._handle_ai_setup_change,
-            width=210,
+            width=170,
             height=40,
         )
         self.human_team_menu.grid(
@@ -680,7 +788,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             values=list(AI_DIFFICULTY_DISPLAY_BY_CODE.values()),
             variable=self.ai_difficulty_var,
             command=self._handle_ai_setup_change,
-            width=210,
+            width=170,
             height=40,
         )
         self.ai_difficulty_menu.grid(
@@ -704,15 +812,23 @@ class PlayerSelectView(ctk.CTkToplevel):
             text="Ce choix est réellement transmis au gameplay.",
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
+            wraplength=190,
+            justify="left",
         )
-        duration_hint.grid(row=4, column=1, padx=18, pady=(0, 4), sticky="e")
+        duration_hint.grid(
+            row=4,
+            column=1,
+            padx=18,
+            pady=(0, 4),
+            sticky="w",
+        )
 
         self.duration_menu = create_option_menu(
             setup_frame,
             values=self.duration_values,
             variable=self.match_duration_var,
             command=self._handle_duration_change,
-            width=160,
+            width=120,
             height=42,
         )
         self.duration_menu.grid(
@@ -731,13 +847,15 @@ class PlayerSelectView(ctk.CTkToplevel):
             text=f"Durée scellée : {selected_duration_label}",
             font=TYPOGRAPHY["body_bold"],
             text_color=PALETTE["text"],
+            wraplength=190,
+            justify="left",
         )
         self.duration_note.grid(
             row=5,
             column=1,
             padx=18,
             pady=(0, 12),
-            sticky="e",
+            sticky="w",
         )
 
         self.rules_box = ctk.CTkTextbox(setup_frame, height=80)
@@ -812,7 +930,10 @@ class PlayerSelectView(ctk.CTkToplevel):
             "0",
         )
 
-        register_frame = ctk.CTkFrame(right_frame, corner_radius=16)
+        register_frame = ctk.CTkFrame(
+            self.right_scroll_frame,
+            corner_radius=16,
+        )
         style_frame(
             register_frame,
             tone="panel_soft",
@@ -821,20 +942,22 @@ class PlayerSelectView(ctk.CTkToplevel):
         register_frame.grid(
             row=1,
             column=0,
-            padx=18,
+            padx=10,
             pady=(0, 12),
-            sticky="nsew",
+            sticky="ew",
         )
-        register_frame.grid_columnconfigure((0, 1), weight=1)
-        register_frame.grid_rowconfigure(3, weight=1)
+        register_frame.grid_columnconfigure(0, weight=1)
+        register_frame.grid_columnconfigure(1, weight=0)
 
         create_title = ctk.CTkLabel(
             register_frame,
             text="Enrôler un nouveau combattant",
             font=TYPOGRAPHY["section"],
             text_color=PALETTE["text"],
+            wraplength=240,
+            justify="left",
         )
-        create_title.grid(row=0, column=0, padx=18, pady=(16, 8), sticky="w")
+        create_title.grid(row=0, column=0, padx=18, pady=(16, 8), sticky="ew")
 
         self.register_count_badge = create_badge(
             register_frame,
@@ -866,15 +989,19 @@ class PlayerSelectView(ctk.CTkToplevel):
             pady=(0, 10),
             sticky="ew",
         )
+        self.new_player_entry.bind(
+            "<Return>",
+            lambda _event: self._handle_add_player(),
+        )
 
-        add_btn = create_button(
+        self.add_button = create_button(
             register_frame,
             "Enrôler ce nouveau combattant",
             self._handle_add_player,
             variant="accent",
             height=42,
         )
-        add_btn.grid(
+        self.add_button.grid(
             row=2,
             column=0,
             columnspan=2,
@@ -928,14 +1055,20 @@ class PlayerSelectView(ctk.CTkToplevel):
             sticky="ew",
         )
 
-        history_btn = create_button(
+        self.history_button = create_button(
             footer,
             "Lire les chroniques",
             self._open_history,
             variant="secondary",
             height=42,
         )
-        history_btn.grid(row=0, column=1, padx=8, pady=16, sticky="ew")
+        self.history_button.grid(
+            row=0,
+            column=1,
+            padx=8,
+            pady=16,
+            sticky="ew",
+        )
 
         refresh_btn = create_button(
             footer,
@@ -947,16 +1080,23 @@ class PlayerSelectView(ctk.CTkToplevel):
         refresh_btn.grid(row=0, column=2, padx=8, pady=16, sticky="ew")
         self.refresh_button = refresh_btn
 
-        close_btn = create_button(
+        self.close_button = create_button(
             footer,
             "Retour au bastion",
             self._handle_close,
             variant="danger",
             height=42,
         )
-        close_btn.grid(row=0, column=3, padx=(8, 16), pady=16, sticky="ew")
+        self.close_button.grid(
+            row=0,
+            column=3,
+            padx=(8, 16),
+            pady=16,
+            sticky="ew",
+        )
 
         self._sync_match_mode_ui()
+        self._sync_action_controls()
 
     def _build_stat_card(
         self,
@@ -1092,6 +1232,9 @@ class PlayerSelectView(ctk.CTkToplevel):
         loading_state.grid(row=0, column=0, padx=16, pady=18, sticky="ew")
 
     def _trace_perf(self, stage: str, **metrics):
+        if not is_runtime_flag_enabled("debug_console_logs"):
+            return
+
         elapsed_ms = (time.perf_counter() - self._forge_open_started_at) * 1000
         details = [f"open_ms={elapsed_ms:.1f}"]
         for key, value in metrics.items():
@@ -1104,13 +1247,11 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         self._forge_first_paint_logged = True
         self._trace_perf("first-paint")
-        self.refresh_players(reason="initial")
 
     def _set_registry_loading_state(self, message: str):
         self._registry_loading = True
         update_badge(self.register_count_badge, "Lecture...", "neutral")
-        if hasattr(self, "refresh_button"):
-            self.refresh_button.configure(state="disabled")
+        self._sync_action_controls()
         self._render_registry_loading_state(message)
 
     def _set_info(
@@ -1199,7 +1340,9 @@ class PlayerSelectView(ctk.CTkToplevel):
                 )
             )
             self.left_mode_value.configure(text=f"IA · {difficulty_label}")
-            self.launch_button.configure(text="Lancer contre l'ordinateur")
+            self.launch_button.configure(
+                text=self._get_idle_launch_button_text()
+            )
             set_textbox_content(self.rules_box, self._build_vs_ai_rules_text())
             self.human_team_menu.configure(state="normal")
             self.ai_difficulty_menu.configure(state="normal")
@@ -1216,12 +1359,16 @@ class PlayerSelectView(ctk.CTkToplevel):
                 text="Deux bastions humains contrôlés au clavier."
             )
             self.left_mode_value.configure(text="Humains")
-            self.launch_button.configure(text="Ouvrir la joute")
+            self.launch_button.configure(
+                text=self._get_idle_launch_button_text()
+            )
             set_textbox_content(self.rules_box, FORGE_RULES_TEXT_HUMAN)
             self.human_team_menu.configure(state="disabled")
             self.ai_difficulty_menu.configure(state="disabled")
             for row in self.slot_rows:
                 row.unlock_team()
+
+        self._sync_action_controls()
 
     def _get_selected_duration_seconds(self) -> int:
         try:
@@ -1435,7 +1582,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             update_badge(self.register_count_badge, "0 inscrit", "neutral")
 
         if hasattr(self, "refresh_button"):
-            self.refresh_button.configure(state="normal")
+            self._sync_action_controls()
 
         self._render_registered_players(rows)
         self._refresh_forge_state()
@@ -1451,9 +1598,23 @@ class PlayerSelectView(ctk.CTkToplevel):
         )
 
     def _handle_add_player(self):
+        if self._registry_loading or self._add_player_in_progress:
+            return
+
         play_click()
+        self._add_player_in_progress = True
+        update_badge(self.status_badge, "Enrôlement en cours", "info")
+        self._set_info(
+            "La forge inscrit le combattant dans le registre...",
+            badge_text="Enrôlement en cours",
+            tone="info",
+        )
+        self._sync_action_controls()
+        self.update_idletasks()
+
         username = self.new_player_entry.get().strip()
         ok, message = create_player(username)
+        self._add_player_in_progress = False
 
         if ok:
             self.new_player_entry.delete(0, "end")
@@ -1472,6 +1633,7 @@ class PlayerSelectView(ctk.CTkToplevel):
                 badge_text="Enrôlement refusé",
                 tone="warning",
             )
+            self._sync_action_controls()
 
     def _collect_selected_players(self):
         selected = []
@@ -1587,6 +1749,13 @@ class PlayerSelectView(ctk.CTkToplevel):
         ]
 
     def _handle_validate_and_launch(self):
+        if (
+            self._registry_loading
+            or self._add_player_in_progress
+            or self._launch_in_progress
+        ):
+            return
+
         play_transition()
         players_data = self._collect_selected_players()
         ok, message = self._validate_selection(players_data)
@@ -1604,6 +1773,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             messagebox.showwarning("Formation à reprendre", message)
             return
 
+        self._launch_in_progress = True
         update_badge(self.status_badge, "Joute en préparation", "gold")
         selected_duration = self._get_selected_duration_seconds()
         ai_difficulty_label = AI_DIFFICULTY_DISPLAY_BY_CODE[
@@ -1625,6 +1795,8 @@ class PlayerSelectView(ctk.CTkToplevel):
             badge_text="Joute en préparation",
             tone="gold",
         )
+        self._sync_action_controls()
+        self.update_idletasks()
 
         self.parent.withdraw()
         self.destroy()
@@ -1638,7 +1810,9 @@ class PlayerSelectView(ctk.CTkToplevel):
         )
 
         self.parent.deiconify()
-        start_menu_music()
+        init_audio()
+        start_menu_music(restart=True)
+        present_window(self.parent)
 
         if result:
             ok, save_message = save_team_match(
@@ -1649,12 +1823,26 @@ class PlayerSelectView(ctk.CTkToplevel):
             )
             if not ok:
                 play_error()
-            messagebox.showinfo(
-                "Verdict de la joute",
+            dialog_title = (
+                "Verdict de la joute"
+                if ok
+                else "Archive indisponible"
+            )
+            dialog_handler = (
+                messagebox.showinfo
+                if ok
+                else messagebox.showwarning
+            )
+            dialog_handler(
+                dialog_title,
                 f"{result['winner_text']}\n\n{save_message}",
+                parent=self.parent,
             )
 
     def _open_history(self):
+        if self._launch_in_progress:
+            return
+
         play_transition()
         self._set_info(
             (
@@ -1664,12 +1852,14 @@ class PlayerSelectView(ctk.CTkToplevel):
             badge_text="Chroniques ouvertes",
             tone="gold",
         )
-        HistoryView(
-            self,
-            source_label="Chroniques locales du bastion",
+        self._focus_or_open_window(
+            "history_window",
+            lambda: HistoryView(
+                self,
+                source_label="Chroniques locales du bastion",
+            ),
         )
 
     def _handle_close(self):
         play_click()
-        self.grab_release()
         self.destroy()

@@ -31,25 +31,43 @@ Le projet repose sur :
 
 ---
 
-## 2. Structure recommandée du projet
+## 2. Structure recommandee du projet
 
 Le dossier du projet doit contenir au minimum :
 
 ```text
 arena_duel/
 ├── main.py
+├── main_lan.py
 ├── requirements-dev.txt
+├── requirements-lan.txt
 ├── setup_env.bat
+├── setup_env_lan.bat
 ├── run_local.bat
+├── run_lan_ui.bat
 ├── run_server.bat
 ├── run_client_lan.bat
+├── schema_v2.sql
 ├── shema.sql
+├── build_presentation.bat
+├── ArenaDuel.spec
+├── requirements-arduino.txt
 ├── ui/
 ├── game/
+├── hardware/
 ├── db/
 ├── network/
+├── docs/
 └── assets/
 ```
+
+Notes V1 :
+
+- schema_v2.sql est le bootstrap SQL canonique pour une base neuve
+- shema.sql est conserve comme alias legacy pour compatibilite avec d'anciens guides
+- run_lan_ui.bat est le point d'entree recommande pour le hall LAN graphique
+- run_client_lan.bat reste un outil CLI de diagnostic reseau
+- requirements-arduino.txt contient uniquement la dependance optionnelle pyserial
 
 ---
 
@@ -114,17 +132,37 @@ Ce script doit :
 run_local.bat
 ```
 
-#### Serveur LAN
+#### Hall LAN graphique
+
+```powershell
+run_lan_ui.bat
+```
+
+#### Serveur LAN CLI
 
 ```powershell
 run_server.bat
 ```
 
-#### Client LAN CLI
+#### Client LAN CLI de diagnostic
 
 ```powershell
 run_client_lan.bat
 ```
+
+#### Build presentation EXE
+
+```powershell
+build_presentation.bat
+```
+
+#### Option Arduino facultative
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-arduino.txt
+```
+
+Puis activez le bridge dans `app_runtime.json` seulement si vous branchez le montage.
 
 ---
 
@@ -138,6 +176,14 @@ Créez ce fichier à la racine du projet :
 customtkinter==5.2.2
 pygame-ce==2.5.7
 mariadb
+```
+
+### `requirements-arduino.txt`
+
+Fichier optionnel pour le pont série Arduino :
+
+```txt
+pyserial>=3.5,<4
 ```
 
 ---

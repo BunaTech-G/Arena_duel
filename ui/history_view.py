@@ -11,6 +11,7 @@ from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
     enable_large_window,
+    present_window,
     style_window,
     style_frame,
     create_button,
@@ -373,17 +374,11 @@ class HistoryView(ctk.CTkToplevel):
         _ico = resource_path("assets", "icons", "app.ico")
         self.after(200, lambda: self._apply_icon(_ico))
 
-        # IMPORTANT : forcer l'ouverture au premier plan
-        self.transient(parent)
         self.lift()
         self.focus_force()
-        self.grab_set()
-
-        # Petit hack Windows pour être sûr que ça passe devant
-        self.after(100, lambda: self.attributes("-topmost", True))
-        self.after(200, lambda: self.attributes("-topmost", False))
 
         self._build_ui()
+        present_window(self)
         self.refresh_history()
 
     def _apply_icon(self, path: str):

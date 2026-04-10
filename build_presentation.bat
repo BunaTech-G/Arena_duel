@@ -5,6 +5,9 @@ echo =========================================
 echo   Arena Duel - Build Presentation EXE
 echo =========================================
 echo.
+echo [INFO] Script canonique de build V1.
+echo [INFO] Le spec versionne ArenaDuel.spec fait foi pour l EXE.
+echo.
 
 set "PYTHON_EXE=.\.venv\Scripts\python.exe"
 set "DIST_DIR=dist_release"
@@ -39,6 +42,8 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+
+  copy /y "app_runtime.json" "%DIST_DIR%\ArenaDuel\app_runtime.json" >nul
 
 echo.
 echo [OK] Build terminé.
