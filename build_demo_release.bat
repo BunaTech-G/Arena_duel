@@ -55,14 +55,18 @@ if errorlevel 1 (
 
 copy /y "README_DEMO.txt" "%DEMO_DIR%\README_DEMO.txt" >nul
 
+set "ISCC_EXE="
 where ISCC >nul 2>nul
-if errorlevel 1 (
+if not errorlevel 1 set "ISCC_EXE=ISCC"
+if not defined ISCC_EXE if exist "C:\Program Files\Inno Setup 7\ISCC.exe" set "ISCC_EXE=C:\Program Files\Inno Setup 7\ISCC.exe"
+if not defined ISCC_EXE if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set "ISCC_EXE=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+if not defined ISCC_EXE (
     echo.
     echo [INFO] Inno Setup n est pas detecte sur ce poste.
     echo [INFO] Le plan B installateur n a pas ete genere.
 ) else (
     echo [INFO] Generation du plan B installateur...
-    ISCC installer\arena_duel.iss
+    "%ISCC_EXE%" installer\arena_duel.iss
     if errorlevel 1 (
         echo.
         echo [ERREUR] La generation de l installateur a echoue.
