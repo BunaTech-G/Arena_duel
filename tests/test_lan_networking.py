@@ -22,15 +22,16 @@ if "mariadb" not in sys.modules:
 NetworkClient = importlib.import_module("network.client").NetworkClient
 ASSIGN_SLOT = importlib.import_module("network.messages").ASSIGN_SLOT
 START = importlib.import_module("network.messages").START
-get_lan_address_info = importlib.import_module(
-    "network.net_utils"
-).get_lan_address_info
+get_lan_address_info = importlib.import_module("network.net_utils").get_lan_address_info
 parse_server_invitation = importlib.import_module(
     "network.net_utils"
 ).parse_server_invitation
 start_server_in_background = importlib.import_module(
     "network.server"
 ).start_server_in_background
+GameState = importlib.import_module("network.server").GameState
+ORB_RARE_SCORE_VALUE = importlib.import_module("game.settings").ORB_RARE_SCORE_VALUE
+TRAP_SLOW_DURATION_MS = importlib.import_module("game.settings").TRAP_SLOW_DURATION_MS
 
 
 def _reserve_free_port() -> int:
@@ -178,9 +179,7 @@ class LanNetworkingTests(unittest.TestCase):
         deadline = time.time() + 2
         assigned_slots = set()
         while time.time() < deadline and len(assigned_slots) < 2:
-            messages = (
-                host_client.poll_messages() + guest_client.poll_messages()
-            )
+            messages = host_client.poll_messages() + guest_client.poll_messages()
             for message in messages:
                 if message.get("type") == ASSIGN_SLOT:
                     assigned_slots.add(message.get("client_id"))
@@ -195,9 +194,7 @@ class LanNetworkingTests(unittest.TestCase):
         deadline = time.time() + 3
         start_seen = False
         while time.time() < deadline and not start_seen:
-            messages = (
-                host_client.poll_messages() + guest_client.poll_messages()
-            )
+            messages = host_client.poll_messages() + guest_client.poll_messages()
             for message in messages:
                 if message.get("type") == START:
                     start_seen = True
@@ -210,6 +207,175 @@ class LanNetworkingTests(unittest.TestCase):
         with server.game_lock:
             server.match_running = False
             server.game_state = None
+
+    def test_game_state_exports_rare_orb_value_and_variant(self):
+        lobby_snapshot = {
+            "host": {
+                "slot": 1,
+                "name": "Gardien",
+                "team": "A",
+                "ready": True,
+                "input": {},
+            }
+        }
+
+        with patch("network.server.random_free_point", return_value=(128, 144)):
+            with patch("network.server.random.random", return_value=0.0):
+                game_state = GameState(lobby_snapshot, match_duration_seconds=60)
+
+        exported_state = game_state.export_state()
+
+        self.assertEqual(exported_state["orbs"][0]["variant"], "rare")
+        self.assertEqual(
+            exported_state["orbs"][0]["value"],
+            ORB_RARE_SCORE_VALUE,
+        )
+
+    def test_game_state_respawn_preserves_orb_id_and_increments_serial(self):
+        lobby_snapshot = {
+            "host": {
+                "slot": 1,
+                "name": "Gardien",
+                "team": "A",
+                "ready": True,
+                "input": {},
+            }
+        }
+
+        spawn_points = [(128, 144), (216, 244)]
+        with patch("network.server.ORB_COUNT", 1):
+            with patch("network.server.random_free_point", side_effect=spawn_points):
+                with patch("network.server.random.random", side_effect=[0.5, 0.0]):
+                    game_state = GameState(lobby_snapshot, match_duration_seconds=60)
+                    first_orb = game_state.orbs[0]
+                    game_state.players["host"]["x"] = first_orb["x"]
+                    game_state.players["host"]["y"] = first_orb["y"]
+                    original_orb_id = first_orb["orb_id"]
+                    original_serial = first_orb["spawn_serial"]
+                    game_state._handle_orbs()
+
+        self.assertEqual(game_state.orbs[0]["orb_id"], original_orb_id)
+        self.assertEqual(game_state.orbs[0]["spawn_serial"], original_serial + 1)
+        self.assertEqual(game_state.orbs[0]["variant"], "rare")
+        self.assertEqual(game_state.orbs[0]["value"], ORB_RARE_SCORE_VALUE)
+
+    def test_game_state_exports_active_combo_state(self):
+        lobby_snapshot = {
+            "host": {
+                "slot": 1,
+                "name": "Gardien",
+                "team": "A",
+                "ready": True,
+                "input": {},
+            }
+        }
+
+        with patch("network.server.ORB_COUNT", 1):
+            with patch("network.server.random_free_point", return_value=(128, 144)):
+                with patch("network.server.random.random", return_value=0.5):
+                    game_state = GameState(lobby_snapshot, match_duration_seconds=60)
+
+        with patch("network.server.time.monotonic", return_value=1.0):
+            awarded_value, combo_bonus = game_state._register_orb_pickup(
+                game_state.players["host"],
+                1,
+            )
+        with patch("network.server.time.monotonic", return_value=1.4):
+            exported_state = game_state.export_state()
+
+        self.assertEqual((awarded_value, combo_bonus), (1, 0))
+        self.assertEqual(exported_state["players"][0]["combo_count"], 1)
+        self.assertGreater(exported_state["players"][0]["combo_remaining_ms"], 0)
+
+    def test_game_state_exports_last_pickup_payload(self):
+        lobby_snapshot = {
+            "host": {
+                "slot": 1,
+                "name": "Gardien",
+                "team": "A",
+                "ready": True,
+                "input": {},
+            }
+        }
+
+        with patch("network.server.ORB_COUNT", 1):
+            with patch(
+                "network.server.random_free_point", side_effect=[(128, 144), (220, 240)]
+            ):
+                with patch("network.server.random.random", side_effect=[0.5, 0.5]):
+                    game_state = GameState(lobby_snapshot, match_duration_seconds=60)
+
+        game_state.players["host"]["x"] = 128
+        game_state.players["host"]["y"] = 144
+
+        with patch("network.server.time.monotonic", return_value=1.0):
+            game_state._handle_orbs()
+        with patch("network.server.time.monotonic", return_value=1.2):
+            exported_state = game_state.export_state()
+
+        last_pickup = exported_state["players"][0]["last_pickup"]
+        self.assertEqual(exported_state["players"][0]["last_pickup_serial"], 1)
+        self.assertEqual(last_pickup["x"], 128.0)
+        self.assertEqual(last_pickup["y"], 144.0)
+        self.assertEqual(last_pickup["value"], 1)
+        self.assertEqual(last_pickup["combo_count"], 1)
+        self.assertEqual(last_pickup["combo_bonus"], 0)
+
+    def test_game_state_trap_breaks_combo_and_applies_slow(self):
+        lobby_snapshot = {
+            "host": {
+                "slot": 1,
+                "name": "Gardien",
+                "team": "A",
+                "ready": True,
+                "input": {},
+            }
+        }
+
+        with patch("network.server.ORB_COUNT", 0):
+            game_state = GameState(lobby_snapshot, match_duration_seconds=60)
+
+        trap_rect = game_state.layout.traps[0].rect
+        game_state.traps[0].active = True
+        game_state.traps[0].slow_duration_ms = TRAP_SLOW_DURATION_MS
+        game_state.traps[0].slow_multiplier = 0.5
+        player = game_state.players["host"]
+        player["x"] = trap_rect[0] + trap_rect[2] / 2
+        player["y"] = trap_rect[1] + trap_rect[3] / 2
+        player["combo_count"] = 3
+        player["combo_expires_at_ms"] = 5000.0
+
+        game_state._handle_traps(1000.0)
+        first_slow_until = player["trap_slowed_until_ms"]
+        game_state._handle_traps(1100.0)
+
+        self.assertEqual(player["combo_count"], 0)
+        self.assertEqual(player["combo_expires_at_ms"], 0.0)
+        self.assertEqual(first_slow_until, 1000.0 + TRAP_SLOW_DURATION_MS)
+        self.assertEqual(player["trap_slowed_until_ms"], first_slow_until)
+
+    def test_game_state_exports_dynamic_traps(self):
+        lobby_snapshot = {
+            "host": {
+                "slot": 1,
+                "name": "Gardien",
+                "team": "A",
+                "ready": True,
+                "input": {},
+            }
+        }
+
+        with patch("network.server.ORB_COUNT", 0):
+            game_state = GameState(lobby_snapshot, match_duration_seconds=60)
+
+        game_state.update(6.0, lobby_snapshot)
+        exported_state = game_state.export_state()
+
+        self.assertTrue(exported_state["traps"])
+        self.assertGreaterEqual(
+            len({trap["kind"] for trap in exported_state["traps"]}), 3
+        )
+        self.assertTrue(all("presence" in trap for trap in exported_state["traps"]))
 
 
 if __name__ == "__main__":

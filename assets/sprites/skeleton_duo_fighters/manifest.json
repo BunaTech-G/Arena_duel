@@ -1,0 +1,92 @@
+{
+  "id": "skeleton_duo_fighters",
+  "label": "Skeleton Duo Fighters",
+  "status": "classified_and_runtime_ready",
+  "style": "fantasy arcade skeleton fighters with old-school action RPG readability",
+  "render_mode": "top_down_or_pseudo_top_down",
+  "source_drop": "../../../Perso.png",
+  "detected_asset": {
+    "canvas_size": [1024, 1024],
+    "mode": "RGBA",
+    "transparent_background": true,
+    "structure_note": "automatic alpha scan suggests 4 horizontal direction bands and several animation columns; visual confirmation still required before slicing"
+  },
+  "sheet_format": {
+    "master_sheet": "skeleton_duo_master_sheet.png",
+    "character_sheets": [
+      "skeleton_fighter_ember_sheet.png",
+      "skeleton_fighter_aether_sheet.png"
+    ],
+    "frame_size": [64, 64],
+    "frame_padding": 8,
+    "anchor": "center_bottom",
+    "row_order": ["front", "back", "left", "right"],
+    "column_order": ["walk_0", "walk_1", "walk_2", "walk_3"]
+  },
+  "auto_extraction": {
+    "directory": "extracted/perso_auto",
+    "manifest": "extracted/perso_auto/extraction_manifest.json",
+    "classification_manifest": "extracted/perso_auto/classification_manifest.json",
+    "runtime_build_manifest": "extracted/perso_auto/runtime_build_manifest.json",
+    "preview": "extracted/perso_auto/atlas_preview.png",
+    "extracted_frame_size": [219, 254],
+    "detected_grid": {
+      "rows": 4,
+      "columns": 5
+    },
+    "naming_scheme": "row##_col##.png"
+  },
+  "derived_runtime_packs": [
+    {
+      "id": "skeleton_fighter_ember",
+      "manifest": "../skeleton_fighter_ember/manifest.json",
+      "portrait": "../../portraits/skeleton_fighter_ember_portrait.png"
+    },
+    {
+      "id": "skeleton_fighter_aether",
+      "manifest": "../skeleton_fighter_aether/manifest.json",
+      "portrait": "../../portraits/skeleton_fighter_aether_portrait.png"
+    }
+  ],
+  "characters": {
+    "ember": {
+      "label": "Skeleton Fighter Ember",
+      "role": "agile duelist",
+      "accent_hex": "#f3c96b",
+      "secondary_hex": "#c8884a",
+      "silhouette_rules": [
+        "narrower lower body",
+        "sharper shoulder line",
+        "small asymmetrical armor accent",
+        "short sword readable from gameplay distance"
+      ]
+    },
+    "aether": {
+      "label": "Skeleton Fighter Aether",
+      "role": "sturdy guardian",
+      "accent_hex": "#64d7ff",
+      "secondary_hex": "#2d758e",
+      "silhouette_rules": [
+        "broader rib cage",
+        "heavier forearm silhouette",
+        "more square grounded stance",
+        "compact blunt weapon readable from gameplay distance"
+      ]
+    }
+  },
+  "directions": {
+    "front": { "frames": 4 },
+    "back": { "frames": 4 },
+    "left": { "frames": 4 },
+    "right": { "frames": 4 }
+  },
+  "runtime_expectations": {
+    "transparent_background": true,
+    "consistent_alignment": true,
+    "silhouette_priority": true,
+    "no_blur": true,
+    "no_realism": true,
+    "combat_readability": true
+  },
+  "source_prompt_file": "../../prompts/SKELETON_DUO_SPRITESHEET_BRIEF.md"
+}

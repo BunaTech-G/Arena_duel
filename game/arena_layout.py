@@ -33,6 +33,7 @@ class ArenaLayout:
     playable_rect: RectTuple
     spawn_groups: dict[str, tuple[PointTuple, ...]]
     obstacles: tuple[ArenaElement, ...]
+    traps: tuple[ArenaElement, ...]
     decor: tuple[ArenaElement, ...]
 
     @property
@@ -61,6 +62,9 @@ class ArenaLayout:
 
     def collision_rects(self) -> tuple[RectTuple, ...]:
         return tuple(element.rect for element in self.obstacles if element.collision)
+
+    def trap_rects(self) -> tuple[RectTuple, ...]:
+        return tuple(element.rect for element in self.traps)
 
     def spawn_positions(self, team_code: str) -> tuple[PointTuple, ...]:
         return self.spawn_groups.get(team_code, ())
@@ -106,12 +110,17 @@ def load_arena_layout(map_id: str = DEFAULT_MAP_ID) -> ArenaLayout:
     layout = ArenaLayout(
         map_id=str(raw_data.get("id", map_id)),
         label=str(raw_data.get("label", map_id.replace("_", " ").title())),
-        window_size=tuple(int(value) for value in arena_data.get("window_size", [1280, 720])),
+        window_size=tuple(
+            int(value) for value in arena_data.get("window_size", [1280, 720])
+        ),
         hud_height=int(arena_data.get("hud_height", 80)),
         margin=int(arena_data.get("margin", 60)),
-        playable_rect=_coerce_rect(arena_data.get("playable_rect", [60, 80, 1160, 580])),
+        playable_rect=_coerce_rect(
+            arena_data.get("playable_rect", [60, 80, 1160, 580])
+        ),
         spawn_groups=spawn_groups,
         obstacles=tuple(_build_element(item) for item in raw_data.get("obstacles", [])),
+        traps=tuple(_build_element(item) for item in raw_data.get("traps", [])),
         decor=tuple(_build_element(item) for item in raw_data.get("decor", [])),
     )
     _LAYOUT_CACHE[map_id] = layout
@@ -122,13 +131,17 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
-def clamp_position_to_arena(layout: ArenaLayout, x: float, y: float, radius: float) -> tuple[float, float]:
+def clamp_position_to_arena(
+    layout: ArenaLayout, x: float, y: float, radius: float
+) -> tuple[float, float]:
     clamped_x = clamp(x, layout.left + radius, layout.right - radius)
     clamped_y = clamp(y, layout.top + radius, layout.bottom - radius)
     return clamped_x, clamped_y
 
 
-def circle_collides_with_rect(x: float, y: float, radius: float, rect: RectTuple) -> bool:
+def circle_collides_with_rect(
+    x: float, y: float, radius: float, rect: RectTuple
+) -> bool:
     rect_x, rect_y, rect_w, rect_h = rect
     nearest_x = clamp(x, rect_x, rect_x + rect_w)
     nearest_y = clamp(y, rect_y, rect_y + rect_h)
@@ -173,13 +186,18 @@ def resolve_movement(
 def pick_spawn_position(layout: ArenaLayout, team_code: str, index: int) -> PointTuple:
     spawn_list = layout.spawn_positions(team_code)
     if not spawn_list:
-        return (layout.left + layout.playable_rect[2] // 2, layout.top + layout.playable_rect[3] // 2)
+        return (
+            layout.left + layout.playable_rect[2] // 2,
+            layout.top + layout.playable_rect[3] // 2,
+        )
 
     clamped_index = max(0, min(index, len(spawn_list) - 1))
     return spawn_list[clamped_index]
 
 
-def get_team_spawn_positions(layout: ArenaLayout, team_code: str, count: int) -> list[PointTuple]:
+def get_team_spawn_positions(
+    layout: ArenaLayout, team_code: str, count: int
+) -> list[PointTuple]:
     spawn_list = list(layout.spawn_positions(team_code))
     if count <= 0:
         return []
@@ -206,6 +224,7 @@ def random_free_point(
     padding: int = 0,
 ) -> PointTuple:
     blocked_rects = tuple(obstacle_rects or layout.collision_rects())
+    blocked_rects += layout.trap_rects()
     min_x = layout.left + radius + padding
     max_x = layout.right - radius - padding
     min_y = layout.top + radius + padding
@@ -218,7 +237,10 @@ def random_free_point(
             return x, y
 
     fallback_points = [
-        (layout.left + layout.playable_rect[2] // 2, layout.top + layout.playable_rect[3] // 2),
+        (
+            layout.left + layout.playable_rect[2] // 2,
+            layout.top + layout.playable_rect[3] // 2,
+        ),
         *layout.spawn_positions("A"),
         *layout.spawn_positions("B"),
     ]

@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
+USER_RUNTIME_OVERRIDE_FILENAME = "app_runtime.user.json"
 
 # override runtime temporaire (en mémoire)
 _RUNTIME_OVERRIDES = {}
@@ -55,8 +56,7 @@ def runtime_user_dir() -> Path:
     """
     if sys.platform.startswith("win"):
         base_dir = Path(
-            os.environ.get("APPDATA")
-            or (Path.home() / "AppData" / "Roaming")
+            os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")
         )
     else:
         base_dir = Path(
@@ -77,6 +77,10 @@ def runtime_user_dir() -> Path:
 
 def runtime_user_file_path(filename: str) -> str:
     return str(runtime_user_dir() / filename)
+
+
+def runtime_user_config_path() -> str:
+    return runtime_user_file_path(USER_RUNTIME_OVERRIDE_FILENAME)
 
 
 def is_runtime_flag_enabled(
@@ -110,7 +114,42 @@ def get_runtime_overrides() -> dict:
     return dict(_RUNTIME_OVERRIDES)
 
 
-def load_runtime_config() -> dict:
+def load_runtime_user_overrides() -> dict:
+    return _load_runtime_json_file(Path(runtime_user_config_path()))
+
+
+def load_persisted_runtime_config() -> dict:
+    return load_runtime_config(include_session_overrides=False)
+
+
+def save_runtime_user_overrides(overrides: dict) -> str:
+    path = Path(runtime_user_config_path())
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    serializable_overrides = dict(overrides or {})
+    with open(path, "w", encoding="utf-8") as file_handle:
+        json.dump(
+            serializable_overrides,
+            file_handle,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    return str(path)
+
+
+def clear_runtime_user_overrides() -> str:
+    path = Path(runtime_user_config_path())
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    return str(path)
+
+
+def load_runtime_config(include_session_overrides: bool = True) -> dict:
     default_config = {
         "db_host": "localhost",
         "db_port": 3306,
@@ -118,6 +157,7 @@ def load_runtime_config() -> dict:
         "db_password": "",
         "db_name": "arena_duel_v2_db",
         "db_connect_timeout": 3,
+        "gameplay_backend": "pygame",
         "lan_bind_host": "0.0.0.0",
         "tcp_port": 5000,
         "lan_connect_timeout_seconds": 4,
@@ -134,16 +174,28 @@ def load_runtime_config() -> dict:
         "demo_seed_players": [],
     }
 
-    path = Path(runtime_file_path("app_runtime.json"))
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            default_config.update(data)
-        except (OSError, json.JSONDecodeError):
-            pass
+    default_config.update(
+        _load_runtime_json_file(Path(runtime_file_path("app_runtime.json")))
+    )
+    default_config.update(load_runtime_user_overrides())
 
-    # appliquer les overrides runtime en dernier
-    default_config.update(_RUNTIME_OVERRIDES)
+    if include_session_overrides:
+        # appliquer les overrides runtime en dernier
+        default_config.update(_RUNTIME_OVERRIDES)
 
     return default_config
+
+
+def _load_runtime_json_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+
+    try:
+        with open(path, "r", encoding="utf-8") as file_handle:
+            raw_data = json.load(file_handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    if isinstance(raw_data, dict):
+        return raw_data
+    return {}

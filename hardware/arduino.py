@@ -195,6 +195,10 @@ def describe_arduino_runtime_status(config):
     }
 
 
+def list_available_serial_ports() -> list[str]:
+    return _list_available_ports()
+
+
 def _resolve_serial_port(config: HardwareRuntimeConfig) -> str | None:
     if config.serial_port:
         return config.serial_port

@@ -14,38 +14,40 @@ Référence ergonomique : lisibilité Battlerite, ambiance fantasy RO.
 import pygame
 
 from game.asset_pipeline import load_sprite_portrait
+
 PG_SRCALPHA = getattr(pygame, "SRCALPHA")
 
 # ── Palette HUD ──────────────────────────────────────────────────────────────
-_BG = (10, 14, 22, 220)         # fond panneau principal
-_BG_ROW = (14, 20, 32, 210)     # fond rangée joueur
-_BG_BADGE = (18, 26, 42, 230)   # fond badge score
-_BORDER = (52, 68, 98, 255)     # bordure neutre
-_TEXT = (240, 240, 240, 255)    # texte principal
+_BG = (10, 14, 22, 220)  # fond panneau principal
+_BG_ROW = (14, 20, 32, 210)  # fond rangée joueur
+_BG_BADGE = (18, 26, 42, 230)  # fond badge score
+_BORDER = (52, 68, 98, 255)  # bordure neutre
+_TEXT = (240, 240, 240, 255)  # texte principal
 _TEXT_MUTED = (165, 182, 208, 255)  # texte secondaire / labels
-_TRACK = (26, 36, 52, 255)      # fond barre de progression
-_TIMER_OK = (100, 210, 255, 255)    # timer normal  (bleu ciel)
-_TIMER_WARN = (255, 185, 55, 255)   # timer < 30 s  (or chaud)
-_TIMER_URG = (255, 65, 65, 255)     # timer < 10 s  (rouge urgence)
+_TRACK = (26, 36, 52, 255)  # fond barre de progression
+_TIMER_OK = (100, 210, 255, 255)  # timer normal  (bleu ciel)
+_TIMER_WARN = (255, 185, 55, 255)  # timer < 30 s  (or chaud)
+_TIMER_URG = (255, 65, 65, 255)  # timer < 10 s  (rouge urgence)
 
 # ── Constantes de mise en page ──────────────────────────────────────────────
-_RADIUS = 14     # arrondi principal des panneaux
+_RADIUS = 14  # arrondi principal des panneaux
 _RADIUS_ROW = 10  # arrondi rangée joueur
-_RADIUS_BAR = 4   # arrondi barre de progression
-_ACCENT_W = 5     # largeur barre accent équipe
-_ROW_H = 40       # hauteur rangée joueur dans le roster
-_PAD = 8          # padding interne de base
+_RADIUS_BAR = 4  # arrondi barre de progression
+_ACCENT_W = 5  # largeur barre accent équipe
+_ROW_H = 40  # hauteur rangée joueur dans le roster
+_PAD = 8  # padding interne de base
 # hauteur fixe du bloc score/timer (indépendant de layout.hud_height)
 _SCORE_H = 78
 
 
 # ── Helpers texte ────────────────────────────────────────────────────────────
 
+
 def trim_player_name(name: str, max_chars: int = 14) -> str:
     clean = str(name or "").strip()
     if len(clean) <= max_chars:
         return clean
-    return clean[:max_chars - 3] + "..."
+    return clean[: max_chars - 3] + "..."
 
 
 def fit_text_to_width(font, text: str, max_width: int) -> str:
@@ -77,6 +79,7 @@ def _timer_color(remaining: int) -> tuple:
 
 # ── Primitives de dessin ────────────────────────────────────────────────
 
+
 def _panel(
     surface: pygame.Surface,
     rect: pygame.Rect,
@@ -89,8 +92,11 @@ def _panel(
     surf = pygame.Surface(rect.size, PG_SRCALPHA)
     pygame.draw.rect(surf, fill, surf.get_rect(), border_radius=radius)
     pygame.draw.rect(
-        surf, border, surf.get_rect(),
-        width=border_width, border_radius=radius,
+        surf,
+        border,
+        surf.get_rect(),
+        width=border_width,
+        border_radius=radius,
     )
     surface.blit(surf, rect.topleft)
 
@@ -123,13 +129,15 @@ def _progress_bar(
     if ratio > 0.002:
         fw = max(_RADIUS_BAR * 2, int(rect.width * min(ratio, 1.0)))
         pygame.draw.rect(
-            surface, color[:3],
+            surface,
+            color[:3],
             pygame.Rect(rect.x, rect.y, fw, rect.height),
             border_radius=_RADIUS_BAR,
         )
 
 
 # ── Bloc Timer ───────────────────────────────────────────────────────────────
+
 
 def _draw_timer_block(
     surface: pygame.Surface,
@@ -149,15 +157,18 @@ def _draw_timer_block(
 
     # Label "SABLIER"
     label = small_font.render("TEMPS", True, _TEXT_MUTED[:3])
-    surface.blit(label, (
-        rect.centerx - label.get_width() // 2,
-        rect.y + _PAD,
-    ))
+    surface.blit(
+        label,
+        (
+            rect.centerx - label.get_width() // 2,
+            rect.y + _PAD,
+        ),
+    )
 
     # Valeur MM:SS — gros et centré dans la zone centrale
     val_surf = big_font.render(format_timer_value(remaining), True, tc[:3])
     inner_top = rect.y + _PAD + label.get_height() + 2
-    inner_bot = rect.bottom - 18   # laisse place à la barre
+    inner_bot = rect.bottom - 18  # laisse place à la barre
     cy = (inner_top + inner_bot) // 2
     val_rect = val_surf.get_rect(center=(rect.centerx, cy))
     surface.blit(val_surf, val_rect)
@@ -176,6 +187,7 @@ def _draw_timer_block(
 
 
 # ── Bloc score équipe ─────────────────────────────────────────────────────
+
 
 def _draw_team_score_block(
     surface: pygame.Surface,
@@ -216,13 +228,16 @@ def _draw_team_score_block(
     score_str = str(score)
     score_surf = big_font.render(score_str, True, _TEXT[:3])
     score_rect = score_surf.get_rect(
-        center=(rect.centerx, rect.y + _PAD + label.get_height() + 4
-                + score_surf.get_height() // 2)
+        center=(
+            rect.centerx,
+            rect.y + _PAD + label.get_height() + 4 + score_surf.get_height() // 2,
+        )
     )
     surface.blit(score_surf, score_rect)
 
 
 # ── Rangée joueur (roster) ──────────────────────────────────────────────
+
 
 def draw_player_summary_row(
     surface,
@@ -233,6 +248,7 @@ def draw_player_summary_row(
     name: str,
     score: int,
     accent_color,
+    sprite_id: str = "skeleton_mascot",
     panel_width: int = 260,
     portrait_size: int = 26,
 ):
@@ -243,8 +259,11 @@ def draw_player_summary_row(
     row_h = portrait_size + 12
     row_rect = pygame.Rect(x, y, panel_width, row_h)
     _panel(
-        surface, row_rect,
-        fill=_BG_ROW, border=accent_color, radius=_RADIUS_ROW,
+        surface,
+        row_rect,
+        fill=_BG_ROW,
+        border=accent_color,
+        radius=_RADIUS_ROW,
     )
 
     # Portrait avec cadre coloré équipe
@@ -253,11 +272,10 @@ def draw_player_summary_row(
     portrait_rect = pygame.Rect(px, py, portrait_size, portrait_size)
     frame = portrait_rect.inflate(4, 4)
     pygame.draw.rect(surface, (14, 20, 32), frame, border_radius=8)
-    pygame.draw.rect(
-        surface, accent_color[:3], frame, width=2, border_radius=8
-    )
+    pygame.draw.rect(surface, accent_color[:3], frame, width=2, border_radius=8)
 
     portrait = load_sprite_portrait(
+        sprite_id=sprite_id,
         size=(portrait_size, portrait_size),
         allow_placeholder=True,
     )
@@ -274,23 +292,25 @@ def draw_player_summary_row(
         badge_h,
     )
     _panel(
-        surface, badge_rect,
-        fill=_BG_BADGE, border=accent_color, radius=8,
+        surface,
+        badge_rect,
+        fill=_BG_BADGE,
+        border=accent_color,
+        radius=8,
     )
     sc_surf = small_font.render(str(score), True, _TEXT[:3])
     surface.blit(sc_surf, sc_surf.get_rect(center=badge_rect.center))
 
     # Nom (entre portrait et badge)
     name_max_w = badge_rect.x - portrait_rect.right - 16
-    trimmed = fit_text_to_width(
-        small_font, trim_player_name(name), name_max_w
-    )
+    trimmed = fit_text_to_width(small_font, trim_player_name(name), name_max_w)
     nm_surf = small_font.render(trimmed, True, _TEXT[:3])
     ny = row_rect.centery - nm_surf.get_height() // 2
     surface.blit(nm_surf, (portrait_rect.right + 10, ny))
 
 
 # ── Panneau roster équipe ─────────────────────────────────────────────────
+
 
 def draw_team_summary_panel(
     surface,
@@ -322,17 +342,21 @@ def draw_team_summary_panel(
     for idx, row in enumerate(rows):
         ry = panel_rect.y + header_h + idx * _ROW_H
         draw_player_summary_row(
-            surface, small_font,
-            panel_rect.x + 6, ry,
+            surface,
+            small_font,
+            panel_rect.x + 6,
+            ry,
             name=row["name"],
             score=row["score"],
             accent_color=row["accent_color"],
+            sprite_id=row.get("sprite_id", "skeleton_mascot"),
             panel_width=panel_width - 12,
             portrait_size=26,
         )
 
 
 # ── Point d'entrée principal ──────────────────────────────────────────────
+
 
 def draw_match_hud(
     surface: pygame.Surface,
@@ -361,7 +385,7 @@ def draw_match_hud(
     """
     sw, _ = surface.get_size()
     margin = max(16, getattr(layout, "margin", 60) // 2)
-    hud_h = _SCORE_H   # hauteur fixe des blocs score/timer
+    hud_h = _SCORE_H  # hauteur fixe des blocs score/timer
     top_y = 8
 
     # Dimensions des blocs
@@ -375,22 +399,22 @@ def draw_match_hud(
     b_x = sw - margin - panel_w
 
     # Couleurs d'accent
-    a_accent = (
-        team_a_rows[0]["accent_color"] if team_a_rows else (224, 105, 92)
-    )
-    b_accent = (
-        team_b_rows[0]["accent_color"] if team_b_rows else (100, 186, 255)
-    )
+    a_accent = team_a_rows[0]["accent_color"] if team_a_rows else (224, 105, 92)
+    b_accent = team_b_rows[0]["accent_color"] if team_b_rows else (100, 186, 255)
 
     # ── Bande supérieure ─────────────────────────────────────────────────────
     _draw_timer_block(
-        surface, big_font, small_font,
+        surface,
+        big_font,
+        small_font,
         pygame.Rect(timer_x, top_y, timer_w, hud_h),
         remaining=remaining_time,
         total=match_duration,
     )
     _draw_team_score_block(
-        surface, big_font, small_font,
+        surface,
+        big_font,
+        small_font,
         pygame.Rect(a_x, top_y, panel_w, hud_h),
         title=team_a_title,
         score=team_a_score,
@@ -399,7 +423,9 @@ def draw_match_hud(
         align="left",
     )
     _draw_team_score_block(
-        surface, big_font, small_font,
+        surface,
+        big_font,
+        small_font,
         pygame.Rect(b_x, top_y, panel_w, hud_h),
         title=team_b_title,
         score=team_b_score,
@@ -411,14 +437,22 @@ def draw_match_hud(
     # ── Rosters sous les blocs score ─────────────────────────────────────────
     roster_y = top_y + hud_h + 8
     draw_team_summary_panel(
-        surface, small_font,
-        a_x, roster_y,
-        team_a_title, team_a_rows,
-        align="left", panel_width=panel_w,
+        surface,
+        small_font,
+        a_x,
+        roster_y,
+        team_a_title,
+        team_a_rows,
+        align="left",
+        panel_width=panel_w,
     )
     draw_team_summary_panel(
-        surface, small_font,
-        b_x, roster_y,
-        team_b_title, team_b_rows,
-        align="right", panel_width=panel_w,
+        surface,
+        small_font,
+        b_x,
+        roster_y,
+        team_b_title,
+        team_b_rows,
+        align="right",
+        panel_width=panel_w,
     )

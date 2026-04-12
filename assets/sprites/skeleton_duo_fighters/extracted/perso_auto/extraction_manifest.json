@@ -1,0 +1,257 @@
+{
+  "source": "C:\\Dev\\arena_duel_clean\\Perso.png",
+  "output_dir": "C:\\Dev\\arena_duel_clean\\assets\\sprites\\skeleton_duo_fighters\\extracted\\perso_auto",
+  "source_size": [
+    1024,
+    1024
+  ],
+  "frame_size": [
+    219,
+    254
+  ],
+  "row_count": 4,
+  "max_columns": 5,
+  "frames": [
+    {
+      "name": "row01_col01.png",
+      "row": 1,
+      "column": 1,
+      "bbox": [
+        85,
+        4,
+        248,
+        233
+      ],
+      "pixel_count": 24326
+    },
+    {
+      "name": "row01_col02.png",
+      "row": 1,
+      "column": 2,
+      "bbox": [
+        280,
+        4,
+        473,
+        234
+      ],
+      "pixel_count": 24730
+    },
+    {
+      "name": "row01_col03.png",
+      "row": 1,
+      "column": 3,
+      "bbox": [
+        528,
+        4,
+        671,
+        232
+      ],
+      "pixel_count": 22711
+    },
+    {
+      "name": "row01_col04.png",
+      "row": 1,
+      "column": 4,
+      "bbox": [
+        702,
+        5,
+        840,
+        234
+      ],
+      "pixel_count": 22389
+    },
+    {
+      "name": "row01_col05.png",
+      "row": 1,
+      "column": 5,
+      "bbox": [
+        863,
+        3,
+        1000,
+        233
+      ],
+      "pixel_count": 22257
+    },
+    {
+      "name": "row02_col01.png",
+      "row": 2,
+      "column": 1,
+      "bbox": [
+        51,
+        248,
+        227,
+        472
+      ],
+      "pixel_count": 24318
+    },
+    {
+      "name": "row02_col02.png",
+      "row": 2,
+      "column": 2,
+      "bbox": [
+        277,
+        248,
+        419,
+        472
+      ],
+      "pixel_count": 21883
+    },
+    {
+      "name": "row02_col03.png",
+      "row": 2,
+      "column": 3,
+      "bbox": [
+        516,
+        248,
+        668,
+        472
+      ],
+      "pixel_count": 24343
+    },
+    {
+      "name": "row02_col04.png",
+      "row": 2,
+      "column": 4,
+      "bbox": [
+        704,
+        248,
+        840,
+        472
+      ],
+      "pixel_count": 22459
+    },
+    {
+      "name": "row02_col05.png",
+      "row": 2,
+      "column": 5,
+      "bbox": [
+        860,
+        248,
+        1003,
+        472
+      ],
+      "pixel_count": 23157
+    },
+    {
+      "name": "row03_col01.png",
+      "row": 3,
+      "column": 1,
+      "bbox": [
+        56,
+        512,
+        232,
+        737
+      ],
+      "pixel_count": 26529
+    },
+    {
+      "name": "row03_col02.png",
+      "row": 3,
+      "column": 2,
+      "bbox": [
+        276,
+        512,
+        471,
+        736
+      ],
+      "pixel_count": 26754
+    },
+    {
+      "name": "row03_col03.png",
+      "row": 3,
+      "column": 3,
+      "bbox": [
+        523,
+        512,
+        680,
+        736
+      ],
+      "pixel_count": 24839
+    },
+    {
+      "name": "row03_col04.png",
+      "row": 3,
+      "column": 4,
+      "bbox": [
+        696,
+        512,
+        848,
+        736
+      ],
+      "pixel_count": 23537
+    },
+    {
+      "name": "row03_col05.png",
+      "row": 3,
+      "column": 5,
+      "bbox": [
+        864,
+        512,
+        1008,
+        736
+      ],
+      "pixel_count": 23253
+    },
+    {
+      "name": "row04_col01.png",
+      "row": 4,
+      "column": 1,
+      "bbox": [
+        51,
+        760,
+        238,
+        986
+      ],
+      "pixel_count": 26919
+    },
+    {
+      "name": "row04_col02.png",
+      "row": 4,
+      "column": 2,
+      "bbox": [
+        272,
+        760,
+        461,
+        986
+      ],
+      "pixel_count": 26111
+    },
+    {
+      "name": "row04_col03.png",
+      "row": 4,
+      "column": 3,
+      "bbox": [
+        518,
+        760,
+        678,
+        986
+      ],
+      "pixel_count": 25923
+    },
+    {
+      "name": "row04_col04.png",
+      "row": 4,
+      "column": 4,
+      "bbox": [
+        704,
+        760,
+        848,
+        984
+      ],
+      "pixel_count": 23715
+    },
+    {
+      "name": "row04_col05.png",
+      "row": 4,
+      "column": 5,
+      "bbox": [
+        864,
+        760,
+        1008,
+        989
+      ],
+      "pixel_count": 23864
+    }
+  ],
+  "preview": "atlas_preview.png"
+}

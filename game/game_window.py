@@ -31,11 +31,13 @@ from game.orb import Orb
 from game.arena import (
     draw_background,
     draw_arena,
+    draw_orb_collection_effect,
     get_arena_rect,
     get_map_layout,
     get_obstacles,
     get_team_spawn_positions_for_layout,
 )
+from game.traps import build_match_traps, snapshot_match_traps, update_match_traps
 from game.audio import init_audio, play_draw, play_win, stop_music
 from game.audio import play_lose, play_pickup, start_match_music
 
@@ -62,9 +64,7 @@ def get_local_focus_team(players):
         if player.control_mode == HUMAN_CONTROL_MODE
     }
     ai_teams = {
-        player.team_code
-        for player in players
-        if player.control_mode == AI_CONTROL_MODE
+        player.team_code for player in players if player.control_mode == AI_CONTROL_MODE
     }
 
     if len(human_teams) == 1 and len(ai_teams) == 1:
@@ -93,9 +93,7 @@ def build_runtime_players(players_config, layout):
 
     for idx, player_data in enumerate(team_a):
         slot_index = player_data["slot"] - 1
-        control_mode = str(
-            player_data.get("control_mode", HUMAN_CONTROL_MODE)
-        ).lower()
+        control_mode = str(player_data.get("control_mode", HUMAN_CONTROL_MODE)).lower()
         controls = None
         if control_mode == HUMAN_CONTROL_MODE:
             controls = PLAYER_SLOT_CONTROLS[slot_index]
@@ -110,6 +108,7 @@ def build_runtime_players(players_config, layout):
             controls=controls,
             team_code="A",
             control_mode=control_mode,
+            sprite_id=player_data.get("sprite_id"),
         )
         players.append(player)
         if control_mode == AI_CONTROL_MODE:
@@ -121,9 +120,7 @@ def build_runtime_players(players_config, layout):
 
     for idx, player_data in enumerate(team_b):
         slot_index = player_data["slot"] - 1
-        control_mode = str(
-            player_data.get("control_mode", HUMAN_CONTROL_MODE)
-        ).lower()
+        control_mode = str(player_data.get("control_mode", HUMAN_CONTROL_MODE)).lower()
         controls = None
         if control_mode == HUMAN_CONTROL_MODE:
             controls = PLAYER_SLOT_CONTROLS[slot_index]
@@ -138,6 +135,7 @@ def build_runtime_players(players_config, layout):
             controls=controls,
             team_code="B",
             control_mode=control_mode,
+            sprite_id=player_data.get("sprite_id"),
         )
         players.append(player)
         if control_mode == AI_CONTROL_MODE:
@@ -182,11 +180,21 @@ def draw_hud(
         team_b_score=team_b_score,
         remaining_time=remaining_time,
         team_a_rows=[
-            {"name": p.name, "score": p.score, "accent_color": p.color}
+            {
+                "name": p.name,
+                "score": p.score,
+                "accent_color": p.color,
+                "sprite_id": p.sprite_id,
+            }
             for p in team_a_players
         ],
         team_b_rows=[
-            {"name": p.name, "score": p.score, "accent_color": p.color}
+            {
+                "name": p.name,
+                "score": p.score,
+                "accent_color": p.color,
+                "sprite_id": p.sprite_id,
+            }
             for p in team_b_players
         ],
         match_duration=match_duration,
@@ -306,6 +314,7 @@ def draw_end_overlay(
             name=p.name,
             score=p.score,
             accent_color=p.color,
+            sprite_id=p.sprite_id,
             panel_width=team_a_rect.width - 20,
             portrait_size=40,
         )
@@ -319,6 +328,7 @@ def draw_end_overlay(
             name=p.name,
             score=p.score,
             accent_color=p.color,
+            sprite_id=p.sprite_id,
             panel_width=team_b_rect.width - 20,
             portrait_size=40,
         )
@@ -348,12 +358,7 @@ def draw_end_overlay(
     for key_text, label_text in instruction_specs:
         key_surface = small_font.render(key_text, True, (28, 28, 32))
         label_surface = small_font.render(label_text, True, (228, 230, 236))
-        chip_width = (
-            36
-            + key_surface.get_width()
-            + label_surface.get_width()
-            + 36
-        )
+        chip_width = 36 + key_surface.get_width() + label_surface.get_width() + 36
         chips.append((key_surface, label_surface, chip_width))
         total_width += chip_width
 
@@ -445,9 +450,7 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
             pygame.display.set_icon(pygame.image.load(_icon_path))
         except OSError:
             pass
-    screen = pygame.display.set_mode(
-        layout.window_size, getattr(pygame, "RESIZABLE")
-    )
+    screen = pygame.display.set_mode(layout.window_size, getattr(pygame, "RESIZABLE"))
     pygame.display.set_caption("Arena Duel - Joute locale")
     clock = pygame.time.Clock()
 
@@ -490,6 +493,8 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                 Orb(arena_rect, obstacles, layout=layout)
                 for _ in range(ORB_SPAWN_COUNT)
             ]
+            trap_states = build_match_traps(layout)
+            orb_effects = []
             start_match_music(restart=True)
             hardware_service.reset()
             hardware_service.emit_state("COMBAT")
@@ -541,9 +546,7 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                                 pg_quit()
                                 return None
 
-                elapsed_seconds = (
-                    pygame.time.get_ticks() - start_ticks
-                ) // 1000
+                elapsed_seconds = (pygame.time.get_ticks() - start_ticks) // 1000
                 remaining_time = max(
                     0,
                     active_match_duration - elapsed_seconds,
@@ -561,14 +564,15 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                     winner_text = format_winner_text(winner_team)
 
                 keys = pygame.key.get_pressed()
-                elapsed_ms = pygame.time.get_ticks()
+                current_ticks = pygame.time.get_ticks()
+                elapsed_ms = current_ticks
+                match_elapsed_ms = current_ticks - start_ticks
+                update_match_traps(trap_states, match_elapsed_ms)
 
                 if not game_over:
                     for player in players:
                         if player.control_mode == AI_CONTROL_MODE:
-                            intent = ai_controllers[
-                                player
-                            ].get_movement_intent(
+                            intent = ai_controllers[player].get_movement_intent(
                                 player=player,
                                 players=players,
                                 orbs=orbs,
@@ -579,14 +583,45 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                                 intent,
                                 arena_rect,
                                 obstacles,
+                                elapsed_ms=elapsed_ms,
                             )
                         else:
-                            player.update(keys, arena_rect, obstacles)
+                            player.update(
+                                keys,
+                                arena_rect,
+                                obstacles,
+                                elapsed_ms=elapsed_ms,
+                            )
+
+                    for player in players:
+                        for trap_state in trap_states:
+                            if not trap_state.active:
+                                continue
+                            if player.collides_with_trap(trap_state.rect):
+                                player.trigger_trap(
+                                    elapsed_ms,
+                                    slow_duration_ms=trap_state.slow_duration_ms,
+                                    slow_multiplier=trap_state.slow_multiplier,
+                                )
+                                break
 
                     for orb in orbs:
                         for player in players:
                             if player.collides_with_orb(orb):
-                                player.score += orb.value
+                                awarded_value, combo_bonus = player.register_orb_pickup(
+                                    elapsed_ms,
+                                    orb.value,
+                                )
+                                orb_effects.append(
+                                    {
+                                        "x": orb.x,
+                                        "y": orb.y,
+                                        "value": awarded_value,
+                                        "combo_count": player.combo_count,
+                                        "combo_bonus": combo_bonus,
+                                        "started_at_ms": elapsed_ms,
+                                    }
+                                )
                                 play_pickup()
                                 orb.respawn(arena_rect, obstacles)
                                 break
@@ -621,6 +656,7 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                     arena_rect,
                     obstacles,
                     layout=layout,
+                    trap_states=snapshot_match_traps(trap_states, match_elapsed_ms),
                     elapsed_ms=elapsed_ms,
                 )
 
@@ -629,6 +665,21 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
 
                 for player in players:
                     player.draw(game_surface, name_font)
+
+                active_orb_effects = []
+                for effect in orb_effects:
+                    if draw_orb_collection_effect(
+                        game_surface,
+                        x=effect["x"],
+                        y=effect["y"],
+                        value=effect["value"],
+                        elapsed_ms=elapsed_ms,
+                        started_at_ms=effect["started_at_ms"],
+                        combo_count=effect.get("combo_count", 0),
+                        combo_bonus=effect.get("combo_bonus", 0),
+                    ):
+                        active_orb_effects.append(effect)
+                orb_effects = active_orb_effects
 
                 draw_hud(
                     game_surface,

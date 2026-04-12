@@ -1,5 +1,6 @@
 customtkinter==5.2.2
 pygame-ce==2.5.7
+arcade
 mariadb
 pyinstaller
 Pillow

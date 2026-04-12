@@ -1,8 +1,10 @@
+from collections import deque
 import customtkinter as ctk
 from pathlib import Path
 from tkinter import TclError
+from typing import cast
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 from runtime_utils import resource_path
 
@@ -10,21 +12,31 @@ from runtime_utils import resource_path
 PALETTE = {
     "bg": "#0f131a",
     "bg_alt": "#131924",
+    "bg_glow": "#182233",
     "panel": "#1a2130",
     "panel_alt": "#212a3b",
+    "panel_deep": "#141b27",
+    "panel_highlight": "#2a3549",
     "panel_soft": "#161d29",
     "surface": "#273246",
+    "surface_alt": "#33445f",
+    "sidebar": "#101723",
+    "sidebar_active": "#263247",
     "border": "#32435e",
     "border_strong": "#4a6387",
+    "divider": "#243246",
     "text": "#f5efdf",
     "text_muted": "#d1dbed",
     "text_soft": "#a3aec4",
+    "text_faint": "#8391ab",
     "gold": "#f3c96b",
     "gold_hover": "#ffda88",
     "gold_dim": "#9d7c37",
+    "ember": "#c8884a",
     "cyan": "#64d7ff",
     "cyan_hover": "#91e3ff",
     "cyan_dim": "#2d758e",
+    "steel": "#89a2c7",
     "success": "#79d59c",
     "success_dim": "#1f5d3b",
     "danger": "#e06b78",
@@ -93,6 +105,27 @@ BUTTON_VARIANTS = {
         "hover_color": PALETTE["panel_alt"],
         "text_color": PALETTE["text_muted"],
         "border_color": PALETTE["border"],
+        "border_width": 1,
+    },
+    "nav": {
+        "fg_color": PALETTE["sidebar"],
+        "hover_color": PALETTE["sidebar_active"],
+        "text_color": PALETTE["text_muted"],
+        "border_color": PALETTE["sidebar"],
+        "border_width": 1,
+    },
+    "nav_active": {
+        "fg_color": PALETTE["sidebar_active"],
+        "hover_color": PALETTE["surface_alt"],
+        "text_color": PALETTE["text"],
+        "border_color": PALETTE["gold_dim"],
+        "border_width": 1,
+    },
+    "subtle": {
+        "fg_color": PALETTE["panel"],
+        "hover_color": PALETTE["panel_highlight"],
+        "text_color": PALETTE["text_muted"],
+        "border_color": PALETTE["divider"],
         "border_width": 1,
     },
 }
@@ -339,7 +372,11 @@ def enable_large_window(
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     value = hex_color.lstrip("#")
-    return tuple(int(value[index:index + 2], 16) for index in (0, 2, 4))
+    return (
+        int(value[0:2], 16),
+        int(value[2:4], 16),
+        int(value[4:6], 16),
+    )
 
 
 def make_ui_placeholder_image(
@@ -376,19 +413,214 @@ def load_ctk_image(
     size: tuple[int, int],
     fallback_label: str | None = None,
     brightness: float = 1.0,
+    blur_radius: float = 0.0,
+    remove_edge_dark_regions: bool = False,
+    crop_to_visible_bounds: bool = False,
 ) -> ctk.CTkImage:
-    from PIL import ImageEnhance
     image_path = Path(resource_path(*parts))
     try:
         image = Image.open(image_path).convert("RGBA")
-        if brightness != 1.0:
-            image = ImageEnhance.Brightness(image).enhance(brightness)
     except (FileNotFoundError, OSError):
         image = make_ui_placeholder_image(
             size,
             fallback_label or image_path.stem or "asset",
         )
+
+    if remove_edge_dark_regions:
+        image = _remove_edge_connected_dark_regions(image)
+    if crop_to_visible_bounds:
+        image = _crop_to_visible_bounds(image)
+    if brightness != 1.0:
+        image = ImageEnhance.Brightness(image).enhance(brightness)
+    if blur_radius > 0:
+        image = image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
     return ctk.CTkImage(light_image=image, dark_image=image, size=size)
+
+
+def load_launcher_background_image(
+    *parts: str,
+    size: tuple[int, int],
+    fallback_label: str | None = None,
+) -> ctk.CTkImage:
+    image_path = Path(resource_path(*parts))
+    image = _load_rgba_asset(
+        image_path,
+        size=size,
+        fallback_label=fallback_label,
+    )
+    image = _fit_image_to_cover(image, size)
+    image = _add_launcher_side_glow(image)
+    image = _lift_dark_regions(
+        image,
+        threshold=64,
+        strength=0.62,
+        target_color=(28, 58, 108),
+    )
+    image = ImageEnhance.Brightness(image).enhance(1.12)
+    image = ImageEnhance.Color(image).enhance(1.12)
+    image = image.filter(ImageFilter.GaussianBlur(radius=8))
+    return ctk.CTkImage(light_image=image, dark_image=image, size=size)
+
+
+def _load_rgba_asset(
+    image_path: Path,
+    *,
+    size: tuple[int, int],
+    fallback_label: str | None = None,
+) -> Image.Image:
+    try:
+        return Image.open(image_path).convert("RGBA")
+    except (FileNotFoundError, OSError):
+        return make_ui_placeholder_image(
+            size,
+            fallback_label or image_path.stem or "asset",
+        )
+
+
+def _fit_image_to_cover(
+    image: Image.Image,
+    size: tuple[int, int],
+) -> Image.Image:
+    return ImageOps.fit(
+        image,
+        size,
+        method=Image.LANCZOS,
+        centering=(0.5, 0.5),
+    )
+
+
+def _add_launcher_side_glow(image: Image.Image) -> Image.Image:
+    width, height = image.size
+    ambient = Image.new("RGBA", image.size, (22, 48, 86, 48))
+    draw = ImageDraw.Draw(ambient)
+    draw.ellipse(
+        (
+            int(-0.10 * width),
+            0,
+            int(0.42 * width),
+            int(1.05 * height),
+        ),
+        fill=(42, 96, 170, 90),
+    )
+    draw.ellipse(
+        (
+            int(0.58 * width),
+            0,
+            int(1.10 * width),
+            int(1.05 * height),
+        ),
+        fill=(38, 92, 164, 82),
+    )
+    draw.ellipse(
+        (
+            int(0.18 * width),
+            int(-0.15 * height),
+            int(0.82 * width),
+            int(0.55 * height),
+        ),
+        fill=(18, 54, 110, 40),
+    )
+    ambient = ambient.filter(ImageFilter.GaussianBlur(radius=110))
+    return Image.alpha_composite(image, ambient)
+
+
+def _lift_dark_regions(
+    image: Image.Image,
+    *,
+    threshold: float,
+    strength: float,
+    target_color: tuple[int, int, int],
+) -> Image.Image:
+    processed_image = image.copy()
+    pixels = processed_image.load()
+    if pixels is None:
+        return processed_image
+
+    width, height = processed_image.size
+    target_red, target_green, target_blue = target_color
+    for x_pos in range(width):
+        for y_pos in range(height):
+            red, green, blue, alpha = cast(
+                tuple[int, int, int, int],
+                pixels[x_pos, y_pos],
+            )
+            if alpha <= 0:
+                continue
+
+            luminance = (
+                0.2126 * red
+                + 0.7152 * green
+                + 0.0722 * blue
+            )
+            if luminance >= threshold:
+                continue
+
+            blend_strength = (threshold - luminance) / threshold * strength
+            pixels[x_pos, y_pos] = (
+                round(red * (1 - blend_strength) + target_red * blend_strength),
+                round(
+                    green * (1 - blend_strength)
+                    + target_green * blend_strength
+                ),
+                round(blue * (1 - blend_strength) + target_blue * blend_strength),
+                alpha,
+            )
+
+    return processed_image
+
+
+def _remove_edge_connected_dark_regions(image: Image.Image) -> Image.Image:
+    processed_image = image.copy()
+    pixels = processed_image.load()
+    if pixels is None:
+        return processed_image
+    width, height = processed_image.size
+    pending_pixels: deque[tuple[int, int]] = deque()
+    visited_pixels: set[tuple[int, int]] = set()
+
+    for x_pos in range(width):
+        pending_pixels.append((x_pos, 0))
+        pending_pixels.append((x_pos, height - 1))
+    for y_pos in range(1, height - 1):
+        pending_pixels.append((0, y_pos))
+        pending_pixels.append((width - 1, y_pos))
+
+    while pending_pixels:
+        x_pos, y_pos = pending_pixels.popleft()
+        if (x_pos, y_pos) in visited_pixels:
+            continue
+        visited_pixels.add((x_pos, y_pos))
+
+        pixel_value = cast(tuple[int, int, int, int], pixels[x_pos, y_pos])
+        red, green, blue, alpha = pixel_value
+        if not _is_edge_dark_pixel(red, green, blue, alpha):
+            continue
+
+        pixels[x_pos, y_pos] = (red, green, blue, 0)
+        for x_offset in (-1, 0, 1):
+            for y_offset in (-1, 0, 1):
+                if x_offset == 0 and y_offset == 0:
+                    continue
+                next_x = x_pos + x_offset
+                next_y = y_pos + y_offset
+                if 0 <= next_x < width and 0 <= next_y < height:
+                    pending_pixels.append((next_x, next_y))
+
+    return processed_image
+
+
+def _is_edge_dark_pixel(red: int, green: int, blue: int, alpha: int) -> bool:
+    if alpha <= 0:
+        return False
+    return red <= 14 and green <= 20 and blue <= 42
+
+
+def _crop_to_visible_bounds(image: Image.Image) -> Image.Image:
+    visible_bounds = image.getbbox()
+    if visible_bounds is None:
+        return image
+    return image.crop(visible_bounds)
 
 
 # --- Tokens HUD / layout utilitaires (Pygame) ---
