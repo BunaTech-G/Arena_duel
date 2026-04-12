@@ -7,6 +7,7 @@ from game.hud_panels import draw_match_hud, draw_team_summary_panel
 from game.arena import (
     draw_arena,
     draw_background,
+    draw_orb_collection_effect,
     draw_orb_visual,
     draw_player_avatar,
     get_arena_rect,
@@ -114,6 +115,10 @@ def run_network_match(client, my_slot, my_name, my_team):
 
     previous_positions = {}
     previous_scores = {}
+    previous_pickup_serials = {}
+    previous_orbs = {}
+    orb_effects = []
+    orb_spawn_times = {}
     latest_movement = {}
     end_sound_played = False
 
@@ -146,20 +151,34 @@ def run_network_match(client, my_slot, my_name, my_team):
                 latest_movement = {}
                 score_changed = False
                 current_scores = {}
+                next_pickup_serials = {}
+                current_ticks = pygame.time.get_ticks()
                 for player_state in msg.get("players", []):
                     slot = player_state["slot"]
                     score = int(player_state.get("score", 0))
+                    pickup_serial = int(player_state.get("last_pickup_serial", 0))
                     previous_pos = previous_positions.get(player_state["slot"])
-                    latest_movement[slot] = (
-                        previous_pos is not None
-                        and (
-                            abs(player_state["x"] - previous_pos[0]) > 0.5
-                            or abs(player_state["y"] - previous_pos[1]) > 0.5
-                        )
+                    latest_movement[slot] = previous_pos is not None and (
+                        abs(player_state["x"] - previous_pos[0]) > 0.5
+                        or abs(player_state["y"] - previous_pos[1]) > 0.5
                     )
                     current_scores[slot] = score
+                    next_pickup_serials[slot] = pickup_serial
                     if score > previous_scores.get(slot, score):
                         score_changed = True
+                    if pickup_serial > previous_pickup_serials.get(slot, 0):
+                        pickup = player_state.get("last_pickup") or {}
+                        if int(pickup.get("value", 0)) > 0:
+                            orb_effects.append(
+                                {
+                                    "x": float(pickup.get("x", player_state["x"])),
+                                    "y": float(pickup.get("y", player_state["y"])),
+                                    "value": int(pickup.get("value", 0)),
+                                    "combo_count": int(pickup.get("combo_count", 0)),
+                                    "combo_bonus": int(pickup.get("combo_bonus", 0)),
+                                    "started_at_ms": current_ticks,
+                                }
+                            )
                 previous_positions = {
                     player_state["slot"]: (
                         player_state["x"],
@@ -168,12 +187,37 @@ def run_network_match(client, my_slot, my_name, my_team):
                     for player_state in msg.get("players", [])
                 }
                 previous_scores = current_scores
+                previous_pickup_serials = next_pickup_serials
                 if score_changed:
                     play_pickup()
+
+                next_spawn_times = {}
+                next_previous_orbs = {}
+                for fallback_index, orb_state in enumerate(msg.get("orbs", [])):
+                    orb_id = int(orb_state.get("orb_id", fallback_index))
+                    previous_orb = previous_orbs.get(orb_id)
+                    spawned_at_ms = orb_spawn_times.get(orb_id, current_ticks)
+                    if previous_orb is None:
+                        spawned_at_ms = current_ticks
+                    else:
+                        previous_serial = int(
+                            previous_orb.get(
+                                "spawn_serial",
+                                orb_state.get("spawn_serial", 0),
+                            )
+                        )
+                        current_serial = int(orb_state.get("spawn_serial", 0))
+                        if current_serial != previous_serial:
+                            spawned_at_ms = current_ticks
+
+                    orb_state["_local_spawned_at_ms"] = spawned_at_ms
+                    next_spawn_times[orb_id] = spawned_at_ms
+                    next_previous_orbs[orb_id] = dict(orb_state)
+
+                previous_orbs = next_previous_orbs
+                orb_spawn_times = next_spawn_times
                 latest_state = msg
-                active_layout = get_map_layout(
-                    msg.get("map_id", DEFAULT_MAP_ID)
-                )
+                active_layout = get_map_layout(msg.get("map_id", DEFAULT_MAP_ID))
 
             elif msg_type == END:
                 end_message = msg
@@ -210,6 +254,7 @@ def run_network_match(client, my_slot, my_name, my_team):
                 small_font,
                 active_layout,
                 latest_movement,
+                orb_effects,
             )
 
         if end_message:
@@ -264,9 +309,7 @@ def run_network_match(client, my_slot, my_name, my_team):
         "end_message": None,
         "deferred_messages": deferred_messages,
         "disconnect_message": (
-            disconnect_message
-            or last_error_message
-            or "Le lien au hall s'est rompu."
+            disconnect_message or last_error_message or "Le lien au hall s'est rompu."
         ),
     }
 
@@ -281,8 +324,11 @@ def draw_state(
     small_font,
     layout,
     movement_flags=None,
+    orb_effects=None,
 ):
     movement_flags = movement_flags or {}
+    orb_effects = orb_effects or []
+    elapsed_ms = pygame.time.get_ticks()
     arena_rect = get_arena_rect(layout)
     obstacles = get_obstacles(layout)
     draw_arena(
@@ -290,7 +336,8 @@ def draw_state(
         arena_rect,
         obstacles,
         layout=layout,
-        elapsed_ms=pygame.time.get_ticks(),
+        trap_states=state.get("traps"),
+        elapsed_ms=elapsed_ms,
     )
 
     team_a = state.get("team_a_score", 0)
@@ -303,10 +350,15 @@ def draw_state(
         state.get("players", []),
         key=lambda item: item.get("slot", 0),
     ):
+        if p["team"] == "A":
+            sprite_id = "skeleton_fighter_ember"
+        else:
+            sprite_id = "skeleton_fighter_aether"
         row = {
             "name": p["name"],
             "score": p["score"],
             "accent_color": get_team_color(p["team"], max(0, p["slot"] - 1)),
+            "sprite_id": sprite_id,
         }
         if p["team"] == "A":
             team_a_rows.append(row)
@@ -333,11 +385,18 @@ def draw_state(
             orb["x"],
             orb["y"],
             ORB_RADIUS,
-            elapsed_ms=pygame.time.get_ticks(),
+            elapsed_ms=elapsed_ms,
+            value=int(orb.get("value", 1)),
+            variant=str(orb.get("variant", "common")),
+            spawned_at_ms=orb.get("_local_spawned_at_ms"),
         )
 
     for p in state.get("players", []):
         accent_color = get_team_color(p["team"], max(0, p["slot"] - 1))
+        if p["team"] == "A":
+            sprite_id = "skeleton_fighter_ember"
+        else:
+            sprite_id = "skeleton_fighter_aether"
         draw_player_avatar(
             screen,
             name=p["name"],
@@ -346,12 +405,30 @@ def draw_state(
             radius=PLAYER_RADIUS,
             accent_color=accent_color,
             name_font=font,
+            sprite_id=sprite_id,
             highlight=p["slot"] == my_slot,
             team_code=p["team"],
             facing=1 if p["team"] == "A" else -1,
-            elapsed_ms=pygame.time.get_ticks(),
+            elapsed_ms=elapsed_ms,
             moving=movement_flags.get(p["slot"], False),
+            combo_count=int(p.get("combo_count", 0)),
+            combo_remaining_ms=int(p.get("combo_remaining_ms", 0)),
         )
+
+    active_orb_effects = []
+    for effect in orb_effects:
+        if draw_orb_collection_effect(
+            screen,
+            x=effect["x"],
+            y=effect["y"],
+            value=effect["value"],
+            elapsed_ms=elapsed_ms,
+            started_at_ms=effect["started_at_ms"],
+            combo_count=effect.get("combo_count", 0),
+            combo_bonus=effect.get("combo_bonus", 0),
+        ):
+            active_orb_effects.append(effect)
+    orb_effects[:] = active_orb_effects
 
 
 def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
@@ -402,6 +479,11 @@ def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
     team_a_rows = []
     team_b_rows = []
     for player in players:
+        sprite_id = (
+            "skeleton_fighter_ember"
+            if player.get("team") == "A"
+            else "skeleton_fighter_aether"
+        )
         row = {
             "name": player.get("name", "Combattant"),
             "score": player.get("score", 0),
@@ -409,6 +491,7 @@ def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
                 player.get("team", "A"),
                 max(0, player.get("slot", 1) - 1),
             ),
+            "sprite_id": sprite_id,
         }
         if player.get("team") == "A":
             team_a_rows.append(row)

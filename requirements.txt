@@ -1,4 +1,5 @@
 pygame-ce
+arcade
 customtkinter
 mariadb
 Pillow

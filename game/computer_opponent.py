@@ -29,6 +29,11 @@ AI_TEAM_NAMES = {
     ),
 }
 
+AI_TEAM_DEFAULT_SPRITES = {
+    "A": "skeleton_fighter_ember",
+    "B": "skeleton_fighter_aether",
+}
+
 AI_DIFFICULTY_SETTINGS = {
     "cadet": {
         "retarget_delay_ms": 420,
@@ -122,10 +127,7 @@ def _build_ai_team(
     ]
     available_slots = preferred_slots + fallback_slots
 
-    used_names = {
-        str(player.get("name", "")).strip()
-        for player in human_players
-    }
+    used_names = {str(player.get("name", "")).strip() for player in human_players}
     roster = []
     for index in range(team_size):
         slot = available_slots[index]
@@ -139,6 +141,10 @@ def _build_ai_team(
                 "control_mode": AI_CONTROL_MODE,
                 "ai_profile": "orb_hunter",
                 "ai_difficulty": difficulty,
+                "sprite_id": AI_TEAM_DEFAULT_SPRITES.get(
+                    ai_team,
+                    AI_TEAM_DEFAULT_SPRITES["B"],
+                ),
             }
         )
 
@@ -209,9 +215,7 @@ class BotController:
 
         if self.target_orb is None or elapsed_ms >= self.retarget_at_ms:
             self.target_orb = self._pick_target_orb(player, players, orbs)
-            self.retarget_at_ms = (
-                elapsed_ms + self.settings["retarget_delay_ms"]
-            )
+            self.retarget_at_ms = elapsed_ms + self.settings["retarget_delay_ms"]
 
         if self.target_orb is None:
             self.last_intent = MovementIntent()
@@ -267,11 +271,7 @@ class BotController:
         self.last_position = (float(player.x), float(player.y))
 
     def _pick_target_orb(self, player, players, orbs):
-        enemies = [
-            other
-            for other in players
-            if other.team_code != player.team_code
-        ]
+        enemies = [other for other in players if other.team_code != player.team_code]
         best_orb = None
         best_score = None
 
@@ -294,6 +294,7 @@ class BotController:
                 self.settings["contest_cap"],
                 enemy_distance * self.settings["contest_weight"],
             )
+            score -= max(0, int(getattr(orb, "value", 1)) - 1) * 32.0
 
             if best_score is None or score < best_score:
                 best_score = score
@@ -420,9 +421,7 @@ class BotController:
     def _pick_vertical_avoidance(self, player, obstacle, dy: float) -> int:
         clearance_padding = player.radius + 12
         top_clearance = abs(player.y - (obstacle.top - clearance_padding))
-        bottom_clearance = abs(
-            (obstacle.bottom + clearance_padding) - player.y
-        )
+        bottom_clearance = abs((obstacle.bottom + clearance_padding) - player.y)
 
         if abs(dy) > self.settings["axis_threshold"]:
             return -1 if dy < 0 else 1
@@ -478,10 +477,7 @@ class BotController:
         intent: MovementIntent,
         obstacles,
     ) -> bool:
-        return (
-            self._get_colliding_obstacle(player, intent, obstacles)
-            is not None
-        )
+        return self._get_colliding_obstacle(player, intent, obstacles) is not None
 
     def _enter_escape_mode(
         self,
@@ -506,6 +502,4 @@ class BotController:
                 right=not go_left,
             )
 
-        self.escape_until_ms = (
-            elapsed_ms + self.settings["escape_duration_ms"]
-        )
+        self.escape_until_ms = elapsed_ms + self.settings["escape_duration_ms"]

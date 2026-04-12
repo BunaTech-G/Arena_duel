@@ -1,0 +1,43 @@
+{
+  "id": "skeleton_fighter_ember",
+  "label": "Skeleton Fighter Ember",
+  "style": "fantasy arcade skeleton duelist with warm ember accents",
+  "base_frame_size": [
+    96,
+    96
+  ],
+  "anchor": "center_bottom",
+  "render_mode": "semi_top_down_front_weighted",
+  "source_character": "ember",
+  "source_sheet": "../skeleton_duo_fighters/skeleton_duo_master_sheet.png",
+  "source_classification": "../skeleton_duo_fighters/extracted/perso_auto/classification_manifest.json",
+  "runtime_note": "Front-biased 4-frame cycle derived from visually validated extracted poses because the imported sheet is not directional runtime-ready.",
+  "animations": {
+    "idle": [
+      "idle_0.png",
+      "idle_1.png",
+      "idle_2.png",
+      "idle_3.png"
+    ],
+    "walk": [
+      "walk_0.png",
+      "walk_1.png",
+      "walk_2.png",
+      "walk_3.png"
+    ]
+  },
+  "directional_frames": {
+    "down": "../skeleton_duo_fighters/extracted/perso_auto/classified/ember/front_idle_a.png",
+    "up": "../skeleton_duo_fighters/extracted/perso_auto/classified/ember/back_idle_a.png",
+    "right": "../skeleton_duo_fighters/extracted/perso_auto/classified/ember/side_right_blade_a.png"
+  },
+  "portrait": "../../portraits/skeleton_fighter_ember_portrait.png",
+  "accent_hex": "#f3c96b",
+  "secondary_hex": "#c8884a",
+  "silhouette_rules": [
+    "front-weighted readable silhouette",
+    "short curved blade readable at gameplay distance",
+    "narrower stance than aether",
+    "no black background or matte halo"
+  ]
+}

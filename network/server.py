@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import random
 import socketserver
 import threading
 import time
@@ -10,6 +11,7 @@ from datetime import datetime
 from hardware.service import create_match_hardware_service
 from game.arena_layout import (
     DEFAULT_MAP_ID,
+    circle_collides_with_rect,
     get_team_spawn_positions,
     load_arena_layout,
     random_free_point,
@@ -18,11 +20,19 @@ from game.arena_layout import (
 from game.match_text import format_winner_text, get_winner_team
 from game.settings import (
     MATCH_DURATION_SECONDS,
+    ORB_COMBO_BONUS_CAP,
+    ORB_COMBO_WINDOW_MS,
     ORB_RADIUS,
+    ORB_RARE_SCORE_VALUE,
+    ORB_RARE_SPAWN_CHANCE,
+    ORB_SCORE_VALUE,
     ORB_SPAWN_COUNT,
     PLAYER_RADIUS,
+    TRAP_SLOW_DURATION_MS,
+    TRAP_SLOW_MULTIPLIER,
     coerce_match_duration,
 )
+from game.traps import build_match_traps, snapshot_match_traps, update_match_traps
 from network.messages import (
     HELLO,
     ASSIGN_SLOT,
@@ -154,15 +164,10 @@ class LobbyState:
         duration_seconds: int,
     ) -> bool:
         with self.lock:
-            if (
-                self.host_client_id is not None
-                and client_id != self.host_client_id
-            ):
+            if self.host_client_id is not None and client_id != self.host_client_id:
                 return False
 
-            self.match_duration_seconds = coerce_match_duration(
-                duration_seconds
-            )
+            self.match_duration_seconds = coerce_match_duration(duration_seconds)
             return True
 
     def set_ready(self, client_id: str, ready: bool):
@@ -241,17 +246,19 @@ class GameState:
         self.map_id = DEFAULT_MAP_ID
         self.layout = load_arena_layout(self.map_id)
         self.obstacle_rects = self.layout.collision_rects()
+        self.trap_rects = self.layout.trap_rects()
         self.lobby_session_id = lobby_session_id
-        self.match_duration_seconds = coerce_match_duration(
-            match_duration_seconds
-        )
+        self.match_duration_seconds = coerce_match_duration(match_duration_seconds)
         self.started_at = time.time()
         self.ends_at = self.started_at + self.match_duration_seconds
+        self.match_elapsed_ms = 0.0
         self.team_a_score = 0
         self.team_b_score = 0
 
         self.players = {}
         self.orbs = []
+        self.traps = build_match_traps(self.layout)
+        self._orb_spawn_serials = {}
         self._spawn_players(lobby_snapshot)
         self._spawn_orbs()
 
@@ -263,9 +270,7 @@ class GameState:
 
         players_by_team = {"A": [], "B": []}
         for client_id, info in sorted_players:
-            players_by_team.setdefault(info["team"], []).append(
-                (client_id, info)
-            )
+            players_by_team.setdefault(info["team"], []).append((client_id, info))
 
         for team_code, team_players in players_by_team.items():
             spawn_positions = get_team_spawn_positions(
@@ -285,39 +290,134 @@ class GameState:
                     "x": float(x),
                     "y": float(y),
                     "score": 0,
+                    "combo_count": 0,
+                    "combo_expires_at_ms": 0.0,
+                    "trap_slowed_until_ms": 0.0,
+                    "trap_slow_multiplier": 1.0,
+                    "last_pickup_serial": 0,
+                    "last_pickup_value": 0,
+                    "last_pickup_x": 0.0,
+                    "last_pickup_y": 0.0,
+                    "last_pickup_combo_count": 0,
+                    "last_pickup_combo_bonus": 0,
                     "disconnected": False,
                 }
 
     def _spawn_orbs(self):
         self.orbs.clear()
-        for _ in range(ORB_COUNT):
-            self.orbs.append(self._random_orb())
+        self._orb_spawn_serials.clear()
+        for orb_id in range(ORB_COUNT):
+            self._orb_spawn_serials[orb_id] = 0
+            self.orbs.append(
+                self._random_orb(
+                    orb_id=orb_id,
+                    spawn_serial=0,
+                )
+            )
 
-    def _random_orb(self):
+    def _random_orb(self, orb_id: int, spawn_serial: int):
         x, y = random_free_point(
             self.layout,
             ORB_RADIUS,
             self.obstacle_rects,
             padding=20,
         )
-        return {"x": x, "y": y}
+        is_rare = random.random() < ORB_RARE_SPAWN_CHANCE
+        return {
+            "orb_id": orb_id,
+            "spawn_serial": spawn_serial,
+            "x": x,
+            "y": y,
+            "variant": "rare" if is_rare else "common",
+            "value": ORB_RARE_SCORE_VALUE if is_rare else ORB_SCORE_VALUE,
+        }
+
+    def _respawn_orb(self, orb: dict) -> None:
+        orb_id = int(orb.get("orb_id", 0))
+        spawn_serial = self._orb_spawn_serials.get(orb_id, 0) + 1
+        self._orb_spawn_serials[orb_id] = spawn_serial
+        orb.clear()
+        orb.update(
+            self._random_orb(
+                orb_id=orb_id,
+                spawn_serial=spawn_serial,
+            )
+        )
+
+    def _register_orb_pickup(self, player: dict, base_value: int) -> tuple[int, int]:
+        now_ms = time.monotonic() * 1000.0
+        if now_ms <= float(player.get("combo_expires_at_ms", 0.0)):
+            player["combo_count"] = int(player.get("combo_count", 0)) + 1
+        else:
+            player["combo_count"] = 1
+
+        player["combo_expires_at_ms"] = now_ms + ORB_COMBO_WINDOW_MS
+        combo_bonus = min(
+            ORB_COMBO_BONUS_CAP,
+            max(0, int(player["combo_count"]) - 1),
+        )
+        awarded_value = int(base_value) + combo_bonus
+        player["score"] += awarded_value
+        return awarded_value, combo_bonus
+
+    def _trigger_trap(
+        self,
+        player: dict,
+        current_time_ms: float,
+        *,
+        slow_duration_ms: int = TRAP_SLOW_DURATION_MS,
+        slow_multiplier: float = TRAP_SLOW_MULTIPLIER,
+    ) -> bool:
+        if current_time_ms < float(player.get("trap_slowed_until_ms", 0.0)):
+            return False
+
+        player["trap_slowed_until_ms"] = current_time_ms + max(0, int(slow_duration_ms))
+        player["trap_slow_multiplier"] = max(0.25, min(1.0, float(slow_multiplier)))
+        player["combo_count"] = 0
+        player["combo_expires_at_ms"] = 0.0
+        return True
+
+    def _handle_traps(self, current_time_ms: float) -> None:
+        if not self.traps:
+            return
+
+        for player in self.players.values():
+            for trap_state in self.traps:
+                if not trap_state.active:
+                    continue
+                if circle_collides_with_rect(
+                    player["x"],
+                    player["y"],
+                    PLAYER_RADIUS,
+                    trap_state.rect,
+                ):
+                    self._trigger_trap(
+                        player,
+                        current_time_ms,
+                        slow_duration_ms=trap_state.slow_duration_ms,
+                        slow_multiplier=trap_state.slow_multiplier,
+                    )
+                    break
 
     def update(self, dt: float, lobby_snapshot: dict):
+        current_time_ms = time.monotonic() * 1000.0
+        self.match_elapsed_ms += dt * 1000.0
+        update_match_traps(self.traps, self.match_elapsed_ms)
         for client_id, player in self.players.items():
             if client_id not in lobby_snapshot:
                 continue
 
-            inp = lobby_snapshot[client_id]["input"]
+            inp = lobby_snapshot[client_id].get("input", {})
             dx = 0
             dy = 0
 
-            if inp["up"]:
+            if inp.get("up"):
                 dy -= 1
-            if inp["down"]:
+            if inp.get("down"):
                 dy += 1
-            if inp["left"]:
+            if inp.get("left"):
                 dx -= 1
-            if inp["right"]:
+            if inp.get("right"):
                 dx += 1
 
             length = math.hypot(dx, dy)
@@ -325,16 +425,23 @@ class GameState:
                 dx /= length
                 dy /= length
 
+            speed_multiplier = 1.0
+            if current_time_ms < float(player.get("trap_slowed_until_ms", 0.0)):
+                speed_multiplier = float(player.get("trap_slow_multiplier", 1.0))
+            else:
+                player["trap_slow_multiplier"] = 1.0
+
             player["x"], player["y"] = resolve_movement(
                 self.layout,
                 player["x"],
                 player["y"],
-                dx * PLAYER_SPEED * dt,
-                dy * PLAYER_SPEED * dt,
+                dx * PLAYER_SPEED * speed_multiplier * dt,
+                dy * PLAYER_SPEED * speed_multiplier * dt,
                 PLAYER_RADIUS,
                 self.obstacle_rects,
             )
 
+        self._handle_traps(current_time_ms)
         self._handle_orbs()
 
     def _handle_orbs(self):
@@ -345,20 +452,40 @@ class GameState:
                     player["y"] - orb["y"],
                 )
                 if dist <= PLAYER_RADIUS + ORB_RADIUS:
-                    player["score"] += 1
+                    collected_value = int(orb.get("value", ORB_SCORE_VALUE))
+                    awarded_value, _combo_bonus = self._register_orb_pickup(
+                        player,
+                        collected_value,
+                    )
+                    player["last_pickup_serial"] = (
+                        int(player.get("last_pickup_serial", 0)) + 1
+                    )
+                    player["last_pickup_value"] = awarded_value
+                    player["last_pickup_x"] = float(orb["x"])
+                    player["last_pickup_y"] = float(orb["y"])
+                    player["last_pickup_combo_count"] = int(
+                        player.get("combo_count", 0)
+                    )
+                    player["last_pickup_combo_bonus"] = max(
+                        0,
+                        awarded_value - collected_value,
+                    )
                     if player["team"] == "A":
-                        self.team_a_score += 1
+                        self.team_a_score += awarded_value
                     else:
-                        self.team_b_score += 1
+                        self.team_b_score += awarded_value
 
-                    replacement = self._random_orb()
-                    orb["x"] = replacement["x"]
-                    orb["y"] = replacement["y"]
+                    self._respawn_orb(orb)
 
     def export_state(self):
         remaining = max(0, int(self.ends_at - time.time()))
+        current_combo_time_ms = time.monotonic() * 1000.0
         players = []
         for p in self.players.values():
+            combo_remaining_ms = int(
+                p.get("combo_expires_at_ms", 0.0) - current_combo_time_ms
+            )
+            combo_count = int(p.get("combo_count", 0)) if combo_remaining_ms > 0 else 0
             players.append(
                 {
                     "client_id": p["client_id"],
@@ -368,6 +495,16 @@ class GameState:
                     "x": round(p["x"], 1),
                     "y": round(p["y"], 1),
                     "score": p["score"],
+                    "combo_count": combo_count,
+                    "combo_remaining_ms": max(0, combo_remaining_ms),
+                    "last_pickup_serial": int(p.get("last_pickup_serial", 0)),
+                    "last_pickup": {
+                        "x": round(float(p.get("last_pickup_x", p["x"])), 1),
+                        "y": round(float(p.get("last_pickup_y", p["y"])), 1),
+                        "value": int(p.get("last_pickup_value", 0)),
+                        "combo_count": int(p.get("last_pickup_combo_count", 0)),
+                        "combo_bonus": int(p.get("last_pickup_combo_bonus", 0)),
+                    },
                 }
             )
         players.sort(key=lambda x: x["slot"])
@@ -384,6 +521,7 @@ class GameState:
             "team_a_score": self.team_a_score,
             "team_b_score": self.team_b_score,
             "players": players,
+            "traps": snapshot_match_traps(self.traps, self.match_elapsed_ms),
             "orbs": list(self.orbs),
         }
 
@@ -591,9 +729,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                     end_message["history_error"] = save_error
 
                 self.hardware_service.emit_state("RESULT")
-                self.hardware_service.emit_winner(
-                    end_message.get("winner_team")
-                )
+                self.hardware_service.emit_winner(end_message.get("winner_team"))
 
                 self.broadcast(end_message)
 
@@ -644,9 +780,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
             is_host=is_host,
         )
         if info is None:
-            self.safe_send(
-                {"type": ERROR, "message": "Serveur plein (6 joueurs max)."}
-            )
+            self.safe_send({"type": ERROR, "message": "Serveur plein (6 joueurs max)."})
             return False
 
         self.client_info = info
@@ -729,9 +863,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                 self.safe_send(
                     {
                         "type": ERROR,
-                        "message": (
-                            "Un message reseau recu par le hall est invalide."
-                        ),
+                        "message": ("Un message reseau recu par le hall est invalide."),
                     }
                 )
                 break
@@ -779,9 +911,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                     self.client_info["name"],
                 )
                 rows = get_serializable_match_history()
-                self.safe_send(
-                    {"type": HISTORY_DATA, "ok": True, "rows": rows}
-                )
+                self.safe_send({"type": HISTORY_DATA, "ok": True, "rows": rows})
 
             elif msg_type == SET_MATCH_DURATION:
                 requested_duration = message.get(

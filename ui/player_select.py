@@ -45,6 +45,8 @@ from ui.theme import (
     create_button,
     create_option_menu,
     create_badge,
+    load_ctk_image,
+    load_launcher_background_image,
     present_window,
     update_badge,
 )
@@ -54,9 +56,7 @@ TEAM_DISPLAY_BY_CODE = {
     "A": get_team_label("A"),
     "B": get_team_label("B"),
 }
-TEAM_CODE_BY_DISPLAY = {
-    label: code for code, label in TEAM_DISPLAY_BY_CODE.items()
-}
+TEAM_CODE_BY_DISPLAY = {label: code for code, label in TEAM_DISPLAY_BY_CODE.items()}
 MATCH_MODE_DISPLAY_BY_CODE = {
     "human": "Joute locale",
     "ai": "Contre l'ordinateur",
@@ -65,11 +65,21 @@ MATCH_MODE_CODE_BY_DISPLAY = {
     label: code for code, label in MATCH_MODE_DISPLAY_BY_CODE.items()
 }
 AI_SIDE_DISPLAY_BY_CODE = {
-    code: TEAM_DISPLAY_BY_CODE[code]
-    for code in TEAM_DISPLAY_BY_CODE
+    code: TEAM_DISPLAY_BY_CODE[code] for code in TEAM_DISPLAY_BY_CODE
 }
 AI_SIDE_CODE_BY_DISPLAY = {
     label: code for code, label in AI_SIDE_DISPLAY_BY_CODE.items()
+}
+FIGHTER_DISPLAY_BY_SPRITE_ID = {
+    "skeleton_fighter_ember": "Ember · dueliste",
+    "skeleton_fighter_aether": "Aether · gardien",
+}
+FIGHTER_SPRITE_ID_BY_DISPLAY = {
+    label: sprite_id for sprite_id, label in FIGHTER_DISPLAY_BY_SPRITE_ID.items()
+}
+DEFAULT_FIGHTER_BY_TEAM = {
+    "A": "skeleton_fighter_ember",
+    "B": "skeleton_fighter_aether",
 }
 
 FORGE_RULES_TEXT_HUMAN = (
@@ -84,6 +94,13 @@ FORGE_RULES_TEXT_HUMAN = (
 )
 
 
+def get_default_fighter_id(team_code: str) -> str:
+    return DEFAULT_FIGHTER_BY_TEAM.get(
+        str(team_code or "A").upper(),
+        DEFAULT_FIGHTER_BY_TEAM["A"],
+    )
+
+
 class PlayerSlotRow(ctk.CTkFrame):
     def __init__(self, master, slot_number, player_values, on_change=None):
         super().__init__(master, corner_radius=12)
@@ -96,6 +113,9 @@ class PlayerSlotRow(ctk.CTkFrame):
         self.default_team_label = TEAM_DISPLAY_BY_CODE[
             "A" if slot_number % 2 == 1 else "B"
         ]
+        self.default_fighter_id = get_default_fighter_id(
+            "A" if slot_number % 2 == 1 else "B"
+        )
 
         self.grid_columnconfigure(2, weight=1)
 
@@ -144,6 +164,28 @@ class PlayerSlotRow(ctk.CTkFrame):
         )
         self.player_combo.grid(row=0, column=2, padx=10, pady=12, sticky="ew")
 
+        self.fighter_combo = ctk.CTkComboBox(
+            self,
+            values=list(FIGHTER_SPRITE_ID_BY_DISPLAY.keys()),
+            width=190,
+            state="disabled",
+            font=TYPOGRAPHY["body_bold"],
+            dropdown_font=TYPOGRAPHY["body"],
+            fg_color=PALETTE["panel_soft"],
+            border_color=PALETTE["border"],
+            button_color=PALETTE["surface"],
+            button_hover_color=PALETTE["border_strong"],
+            text_color=PALETTE["text_muted"],
+            command=self._handle_fighter_change,
+        )
+        self.fighter_combo.grid(
+            row=0,
+            column=3,
+            padx=10,
+            pady=12,
+            sticky="ew",
+        )
+
         self.team_combo = ctk.CTkComboBox(
             self,
             values=list(TEAM_CODE_BY_DISPLAY.keys()),
@@ -160,28 +202,23 @@ class PlayerSlotRow(ctk.CTkFrame):
         )
         self.team_combo.grid(
             row=0,
-            column=3,
+            column=4,
             padx=(10, 14),
             pady=12,
             sticky="e",
         )
         self._apply_slot_state(False)
         self.team_combo.set(self.default_team_label)
+        self.set_fighter_id(self.default_fighter_id)
 
     def _apply_slot_state(self, is_active: bool):
         team_code = self._current_team_code()
         team_state = "disabled" if self.team_locked else "readonly"
         accent_color = PALETTE["gold"] if team_code == "A" else PALETTE["cyan"]
         accent_hover = (
-            PALETTE["gold_hover"]
-            if team_code == "A"
-            else PALETTE["cyan_hover"]
+            PALETTE["gold_hover"] if team_code == "A" else PALETTE["cyan_hover"]
         )
-        accent_border = (
-            PALETTE["gold_dim"]
-            if team_code == "A"
-            else PALETTE["cyan_dim"]
-        )
+        accent_border = PALETTE["gold_dim"] if team_code == "A" else PALETTE["cyan_dim"]
 
         self.active_checkbox.configure(
             fg_color=accent_color,
@@ -196,6 +233,10 @@ class PlayerSlotRow(ctk.CTkFrame):
             )
             self.player_combo.configure(
                 state="normal",
+                text_color=PALETTE["text"],
+            )
+            self.fighter_combo.configure(
+                state="readonly",
                 text_color=PALETTE["text"],
             )
             self.team_combo.configure(
@@ -216,6 +257,10 @@ class PlayerSlotRow(ctk.CTkFrame):
                 state="disabled",
                 text_color=PALETTE["text_soft"],
             )
+            self.fighter_combo.configure(
+                state="disabled",
+                text_color=PALETTE["text_soft"],
+            )
             self.team_combo.configure(
                 state=team_state,
                 text_color=PALETTE["text_soft"],
@@ -231,6 +276,11 @@ class PlayerSlotRow(ctk.CTkFrame):
             button_color=accent_border,
             button_hover_color=accent_color,
         )
+        self.fighter_combo.configure(
+            border_color=accent_border,
+            button_color=accent_border,
+            button_hover_color=accent_color,
+        )
         self.team_combo.configure(
             border_color=accent_border,
             button_color=accent_border,
@@ -242,13 +292,29 @@ class PlayerSlotRow(ctk.CTkFrame):
         self._apply_slot_state(is_active)
         if not self.team_combo.get().strip():
             self.team_combo.set(self.default_team_label)
+        if not self.fighter_combo.get().strip():
+            self.set_fighter_id(self._default_fighter_id_for_current_team())
         self._notify_change()
 
     def _current_team_code(self) -> str:
         return TEAM_CODE_BY_DISPLAY.get(self.team_combo.get().strip(), "A")
 
+    def _default_fighter_id_for_current_team(self) -> str:
+        return get_default_fighter_id(self._current_team_code())
+
+    def _current_fighter_id(self) -> str:
+        return FIGHTER_SPRITE_ID_BY_DISPLAY.get(
+            self.fighter_combo.get().strip(),
+            self._default_fighter_id_for_current_team(),
+        )
+
     def _handle_team_change(self, _choice=None):
+        if self.active_checkbox.get() != 1:
+            self.set_fighter_id(self._default_fighter_id_for_current_team())
         self._apply_slot_state(self.active_checkbox.get() == 1)
+        self._notify_change()
+
+    def _handle_fighter_change(self, _choice=None):
         self._notify_change()
 
     def _notify_change(self):
@@ -272,6 +338,13 @@ class PlayerSlotRow(ctk.CTkFrame):
         self.team_locked = False
         self._apply_slot_state(self.active_checkbox.get() == 1)
 
+    def set_fighter_id(self, sprite_id: str):
+        fighter_label = FIGHTER_DISPLAY_BY_SPRITE_ID.get(
+            sprite_id,
+            FIGHTER_DISPLAY_BY_SPRITE_ID[self.default_fighter_id],
+        )
+        self.fighter_combo.set(fighter_label)
+
     def set_player_values(self, values):
         self.player_values = values if values else [""]
         self.player_combo.configure(values=self.player_values)
@@ -291,6 +364,7 @@ class PlayerSlotRow(ctk.CTkFrame):
                 self.team_combo.get().strip(),
                 "A",
             ),
+            "sprite_id": self._current_fighter_id(),
         }
 
 
@@ -310,20 +384,30 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.history_window = None
         self.player_options = []
         self.registry_available = None
-        self.duration_values = [
-            str(duration) for duration in MATCH_DURATION_OPTIONS
-        ]
-        self.match_mode_var = ctk.StringVar(
-            value=MATCH_MODE_DISPLAY_BY_CODE["human"]
-        )
-        self.human_team_var = ctk.StringVar(
-            value=AI_SIDE_DISPLAY_BY_CODE["A"]
-        )
+        self.duration_values = [str(duration) for duration in MATCH_DURATION_OPTIONS]
+        self.match_mode_var = ctk.StringVar(value=MATCH_MODE_DISPLAY_BY_CODE["human"])
+        self.human_team_var = ctk.StringVar(value=AI_SIDE_DISPLAY_BY_CODE["A"])
         self.ai_difficulty_var = ctk.StringVar(
             value=AI_DIFFICULTY_DISPLAY_BY_CODE["standard"]
         )
-        self.match_duration_var = ctk.StringVar(
-            value=str(MATCH_DURATION_SECONDS)
+        self.match_duration_var = ctk.StringVar(value=str(MATCH_DURATION_SECONDS))
+        screen_width = max(1360, self.winfo_screenwidth())
+        screen_height = max(860, self.winfo_screenheight())
+        self.background_image = load_launcher_background_image(
+            "assets",
+            "backgrounds",
+            "launcher_twilight_bastion_bg.png",
+            size=(screen_width, screen_height),
+            fallback_label="forge locale",
+        )
+        self.logo_image = load_ctk_image(
+            "assets",
+            "icons",
+            "icon_preview_256.png",
+            size=(104, 104),
+            fallback_label="arena duel",
+            remove_edge_dark_regions=True,
+            crop_to_visible_bounds=True,
         )
         self.title("Arena Duel - Forge locale")
         self.geometry("1380x900")
@@ -335,6 +419,11 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.focus_force()
 
         self._build_ui()
+        self._set_info(
+            "Ouverture de la forge et lecture du registre...",
+            badge_text="Forge en ouverture",
+            tone="info",
+        )
         present_window(self)
         self._trace_perf("ui-shell-ready")
         self._render_registry_loading_state(
@@ -382,34 +471,20 @@ class PlayerSelectView(ctk.CTkToplevel):
         registry_busy = self._registry_loading
         add_busy = self._add_player_in_progress
         launch_busy = self._launch_in_progress
-        entry_enabled = (
-            not registry_busy
-            and not add_busy
-            and not launch_busy
-        )
+        entry_enabled = not registry_busy and not add_busy and not launch_busy
 
-        self.new_player_entry.configure(
-            state="normal" if entry_enabled else "disabled"
-        )
+        self.new_player_entry.configure(state="normal" if entry_enabled else "disabled")
 
         self.add_button.configure(
-            text=(
-                "Enrôlement..."
-                if add_busy
-                else "Enrôler ce nouveau combattant"
-            ),
+            text=("Enrôlement..." if add_busy else "Enrôler ce nouveau combattant"),
             state="normal" if entry_enabled else "disabled",
         )
         self.refresh_button.configure(
             text=(
-                "Lecture du registre..."
-                if registry_busy
-                else "Actualiser le registre"
+                "Lecture du registre..." if registry_busy else "Actualiser le registre"
             ),
             state=(
-                "disabled"
-                if registry_busy or add_busy or launch_busy
-                else "normal"
+                "disabled" if registry_busy or add_busy or launch_busy else "normal"
             ),
         )
         self.launch_button.configure(
@@ -419,26 +494,33 @@ class PlayerSelectView(ctk.CTkToplevel):
                 else self._get_idle_launch_button_text()
             ),
             state=(
-                "disabled"
-                if registry_busy or add_busy or launch_busy
-                else "normal"
+                "disabled" if registry_busy or add_busy or launch_busy else "normal"
             ),
         )
-        self.history_button.configure(
-            state="disabled" if launch_busy else "normal"
-        )
-        self.close_button.configure(
-            state="disabled" if launch_busy else "normal"
-        )
+        self.history_button.configure(state="disabled" if launch_busy else "normal")
+        self.close_button.configure(state="disabled" if launch_busy else "normal")
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=2)
         self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(1, weight=0)
         self.grid_rowconfigure(2, weight=1)
         self.grid_rowconfigure(3, weight=0)
 
+        backdrop = ctk.CTkLabel(
+            self,
+            text="",
+            image=self.background_image,
+            fg_color="transparent",
+        )
+        backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+
         header = ctk.CTkFrame(self, corner_radius=22)
-        style_frame(header, tone="panel", border_color=PALETTE["gold_dim"])
+        style_frame(
+            header,
+            tone="panel_deep",
+            border_color=PALETTE["gold_dim"],
+        )
         header.grid(
             row=0,
             column=0,
@@ -450,42 +532,126 @@ class PlayerSelectView(ctk.CTkToplevel):
         header.grid_columnconfigure(0, weight=1)
         header.grid_columnconfigure(1, weight=0)
 
-        title = ctk.CTkLabel(
-            header,
-            text="Forge de la joute",
-            font=TYPOGRAPHY["title"],
-            text_color=PALETTE["text"],
+        hero_panel = ctk.CTkFrame(header, fg_color="transparent")
+        hero_panel.grid(row=0, column=0, padx=20, pady=18, sticky="ew")
+        hero_panel.grid_columnconfigure(0, weight=1)
+        hero_panel.grid_columnconfigure(1, weight=0)
+
+        create_badge(hero_panel, "Forge locale", tone="gold").grid(
+            row=0,
+            column=0,
+            sticky="w",
         )
-        title.grid(row=0, column=0, padx=20, pady=(18, 6), sticky="w")
 
         self.status_badge = create_badge(
-            header,
+            hero_panel,
             "Forge en veille",
             tone="gold",
         )
         self.status_badge.grid(
             row=0,
-            column=0,
-            padx=20,
-            pady=(18, 6),
+            column=1,
+            padx=(14, 0),
             sticky="e",
         )
 
+        title = ctk.CTkLabel(
+            hero_panel,
+            text="Forge de la joute",
+            font=TYPOGRAPHY["title"],
+            text_color=PALETTE["text"],
+        )
+        title.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            pady=(10, 6),
+            sticky="w",
+        )
+
         subtitle = ctk.CTkLabel(
-            header,
+            hero_panel,
             text=(
-                "Assemble deux bastions équilibrés, choisis les combattants "
-                "et prépare une joute en 1v1, 2v2 ou 3v3."
+                "Assemble deux bastions equilibres, choisis les combattants "
+                "et prepare une joute en 1v1, 2v2 ou 3v3."
             ),
             font=TYPOGRAPHY["subtitle"],
             text_color=PALETTE["text_muted"],
             wraplength=860,
             justify="left",
         )
-        subtitle.grid(row=1, column=0, padx=20, pady=(0, 18), sticky="w")
+        subtitle.grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="w",
+        )
+
+        ctk.CTkLabel(
+            header,
+            text="",
+            image=self.logo_image,
+            fg_color="transparent",
+        ).grid(
+            row=0,
+            column=1,
+            padx=(0, 22),
+            pady=16,
+            sticky="e",
+        )
+
+        self.info_frame = ctk.CTkFrame(self, corner_radius=18)
+        style_frame(
+            self.info_frame,
+            tone="panel_deep",
+            border_color=PALETTE["divider"],
+        )
+        self.info_frame.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            padx=20,
+            pady=(0, 10),
+            sticky="ew",
+        )
+        self.info_frame.grid_columnconfigure(0, weight=0)
+        self.info_frame.grid_columnconfigure(1, weight=1)
+
+        self.info_badge = create_badge(
+            self.info_frame,
+            "Veille de la forge",
+            tone="neutral",
+        )
+        self.info_badge.grid(
+            row=0,
+            column=0,
+            padx=(16, 12),
+            pady=14,
+            sticky="w",
+        )
+
+        self.info_label = ctk.CTkLabel(
+            self.info_frame,
+            text="",
+            font=TYPOGRAPHY["small"],
+            text_color=PALETTE["text_soft"],
+            justify="left",
+            wraplength=1080,
+        )
+        self.info_label.grid(
+            row=0,
+            column=1,
+            padx=(0, 16),
+            pady=14,
+            sticky="ew",
+        )
 
         left_frame = ctk.CTkFrame(self, corner_radius=16)
-        style_frame(left_frame, tone="panel", border_color=PALETTE["border"])
+        style_frame(
+            left_frame,
+            tone="panel_deep",
+            border_color=PALETTE["divider"],
+        )
         left_frame.grid(row=2, column=0, padx=(20, 10), pady=10, sticky="nsew")
         left_frame.grid_rowconfigure(3, weight=1)
         left_frame.grid_columnconfigure(0, weight=1)
@@ -571,7 +737,8 @@ class PlayerSelectView(ctk.CTkToplevel):
             ("Poste", 0, "w"),
             ("Etat", 1, "w"),
             ("Combattant", 2, "w"),
-            ("Bastion", 3, "e"),
+            ("Profil", 3, "w"),
+            ("Bastion", 4, "e"),
         )
         for label_text, column, anchor in column_specs:
             header_label = ctk.CTkLabel(
@@ -612,7 +779,11 @@ class PlayerSelectView(ctk.CTkToplevel):
             self.slot_rows.append(row)
 
         right_frame = ctk.CTkFrame(self, corner_radius=16)
-        style_frame(right_frame, tone="panel", border_color=PALETTE["border"])
+        style_frame(
+            right_frame,
+            tone="panel_deep",
+            border_color=PALETTE["divider"],
+        )
         right_frame.grid(
             row=2,
             column=1,
@@ -1029,7 +1200,11 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.players_list_frame.grid_columnconfigure(0, weight=1)
 
         footer = ctk.CTkFrame(self, corner_radius=16)
-        style_frame(footer, tone="panel", border_color=PALETTE["border"])
+        style_frame(
+            footer,
+            tone="panel_deep",
+            border_color=PALETTE["divider"],
+        )
         footer.grid(
             row=3,
             column=0,
@@ -1097,6 +1272,7 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         self._sync_match_mode_ui()
         self._sync_action_controls()
+        self.after(0, backdrop.lower)
 
     def _build_stat_card(
         self,
@@ -1201,10 +1377,7 @@ class PlayerSelectView(ctk.CTkToplevel):
 
             detail_label = ctk.CTkLabel(
                 player_card,
-                text=(
-                    "Disponible pour la forge locale et les chroniques du "
-                    "bastion."
-                ),
+                text=("Disponible pour la forge locale et les chroniques du bastion."),
                 font=TYPOGRAPHY["small"],
                 text_color=PALETTE["text_soft"],
                 justify="left",
@@ -1260,7 +1433,43 @@ class PlayerSelectView(ctk.CTkToplevel):
         badge_text: str = "Veille de la forge",
         tone: str = "neutral",
     ):
-        pass
+        badge_tone_map = {
+            "neutral": "neutral",
+            "info": "info",
+            "success": "success",
+            "warning": "warning",
+            "danger": "danger",
+            "gold": "gold",
+        }
+        text_color_map = {
+            "neutral": PALETTE["text_soft"],
+            "info": PALETTE["cyan"],
+            "success": PALETTE["success"],
+            "warning": PALETTE["warning"],
+            "danger": PALETTE["danger"],
+            "gold": PALETTE["gold"],
+        }
+        border_color_map = {
+            "neutral": PALETTE["divider"],
+            "info": PALETTE["cyan_dim"],
+            "success": PALETTE["success_dim"],
+            "warning": PALETTE["warning_dim"],
+            "danger": PALETTE["danger_dim"],
+            "gold": PALETTE["gold_dim"],
+        }
+
+        update_badge(
+            self.info_badge,
+            badge_text,
+            badge_tone_map.get(tone, "neutral"),
+        )
+        self.info_label.configure(
+            text=text,
+            text_color=text_color_map.get(tone, PALETTE["text_soft"]),
+        )
+        self.info_frame.configure(
+            border_color=border_color_map.get(tone, PALETTE["divider"])
+        )
 
     def _handle_duration_change(self, _choice=None):
         duration_text = format_match_duration_label(
@@ -1300,9 +1509,7 @@ class PlayerSelectView(ctk.CTkToplevel):
         self._refresh_forge_state()
 
     def _build_vs_ai_rules_text(self) -> str:
-        human_team_label = TEAM_DISPLAY_BY_CODE[
-            self._get_selected_human_team()
-        ]
+        human_team_label = TEAM_DISPLAY_BY_CODE[self._get_selected_human_team()]
         ai_team_label = TEAM_DISPLAY_BY_CODE[self._get_selected_ai_team()]
         return (
             "Formats autorisés contre l'ordinateur :\n"
@@ -1340,9 +1547,7 @@ class PlayerSelectView(ctk.CTkToplevel):
                 )
             )
             self.left_mode_value.configure(text=f"IA · {difficulty_label}")
-            self.launch_button.configure(
-                text=self._get_idle_launch_button_text()
-            )
+            self.launch_button.configure(text=self._get_idle_launch_button_text())
             set_textbox_content(self.rules_box, self._build_vs_ai_rules_text())
             self.human_team_menu.configure(state="normal")
             self.ai_difficulty_menu.configure(state="normal")
@@ -1355,13 +1560,9 @@ class PlayerSelectView(ctk.CTkToplevel):
                     "même nombre de combattants avant l'ouverture de la joute."
                 )
             )
-            self.mode_note.configure(
-                text="Deux bastions humains contrôlés au clavier."
-            )
+            self.mode_note.configure(text="Deux bastions humains contrôlés au clavier.")
             self.left_mode_value.configure(text="Humains")
-            self.launch_button.configure(
-                text=self._get_idle_launch_button_text()
-            )
+            self.launch_button.configure(text=self._get_idle_launch_button_text())
             set_textbox_content(self.rules_box, FORGE_RULES_TEXT_HUMAN)
             self.human_team_menu.configure(state="disabled")
             self.ai_difficulty_menu.configure(state="disabled")
@@ -1381,15 +1582,9 @@ class PlayerSelectView(ctk.CTkToplevel):
         total = len(selected_players)
         match_mode = self._get_selected_match_mode()
         is_vs_ai = match_mode == "ai"
-        team_a_count = sum(
-            1 for player in selected_players if player["team"] == "A"
-        )
-        team_b_count = sum(
-            1 for player in selected_players if player["team"] == "B"
-        )
-        registered_count = len(
-            [name for name in self.player_options if name.strip()]
-        )
+        team_a_count = sum(1 for player in selected_players if player["team"] == "A")
+        team_b_count = sum(1 for player in selected_players if player["team"] == "B")
+        registered_count = len([name for name in self.player_options if name.strip()])
 
         self.active_slots_value.configure(text=str(total))
         self.balance_value.configure(
@@ -1456,9 +1651,7 @@ class PlayerSelectView(ctk.CTkToplevel):
         if total == 0:
             update_badge(self.status_badge, "Forge prete", "gold")
             if is_vs_ai:
-                ai_team_label = TEAM_DISPLAY_BY_CODE[
-                    self._get_selected_ai_team()
-                ]
+                ai_team_label = TEAM_DISPLAY_BY_CODE[self._get_selected_ai_team()]
                 self._set_info(
                     (
                         "Active 1, 2 ou 3 postes humains. La forge générera "
@@ -1554,10 +1747,7 @@ class PlayerSelectView(ctk.CTkToplevel):
         reason: str,
         query_elapsed_ms: float,
     ):
-        if (
-            not self.winfo_exists()
-            or request_token != self._registry_request_token
-        ):
+        if not self.winfo_exists() or request_token != self._registry_request_token:
             return
 
         apply_started_at = time.perf_counter()
@@ -1671,10 +1861,7 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         expected_per_team = total // 2
 
-        if (
-            len(team_a) != expected_per_team
-            or len(team_b) != expected_per_team
-        ):
+        if len(team_a) != expected_per_team or len(team_b) != expected_per_team:
             return False, (
                 f"Formation déséquilibrée : pour {total} combattants, il faut "
                 f"{expected_per_team} combattant(s) dans chacun des deux "
@@ -1683,8 +1870,7 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         return (
             True,
-            "Formation validée. Les deux bastions sont prêts à entrer dans "
-            "l'arène.",
+            "Formation validée. Les deux bastions sont prêts à entrer dans l'arène.",
         )
 
     def _validate_vs_ai_selection(self, players_data):
@@ -1711,15 +1897,13 @@ class PlayerSelectView(ctk.CTkToplevel):
             )
 
         invalid_teams = [
-            player
-            for player in players_data
-            if player.get("team") != human_team
+            player for player in players_data if player.get("team") != human_team
         ]
         if invalid_teams:
             return (
                 False,
                 "En mode contre l'ordinateur, les combattants humains "
-                f"restent dans {human_team_label.lower()}."
+                f"restent dans {human_team_label.lower()}.",
             )
 
         return (
@@ -1780,6 +1964,21 @@ class PlayerSelectView(ctk.CTkToplevel):
             self._get_selected_ai_difficulty()
         ]
         ai_team_label = TEAM_DISPLAY_BY_CODE[self._get_selected_ai_team()]
+        from game.runtime_backend import (
+            get_local_game_backend_status,
+            run_local_game,
+        )
+
+        backend_status = get_local_game_backend_status()
+        backend_message = (
+            f"La joute locale utilisera {backend_status['effective_label']}."
+        )
+        if backend_status["fallback_reason"] == "arcade_unavailable":
+            backend_message = (
+                "Arcade est indisponible dans cet environnement, "
+                "bascule automatique vers Pygame."
+            )
+
         self._set_info(
             (
                 "La forge scelle la formation. "
@@ -1790,7 +1989,8 @@ class PlayerSelectView(ctk.CTkToplevel):
                     else ""
                 )
                 + "La joute va s'ouvrir pour "
-                + f"{format_match_duration_label(selected_duration)}."
+                + f"{format_match_duration_label(selected_duration)}. "
+                + backend_message
             ),
             badge_text="Joute en préparation",
             tone="gold",
@@ -1801,10 +2001,9 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.parent.withdraw()
         self.destroy()
 
-        from game.game_window import run_game
         stop_music(fade_ms=180)
         launch_players = self._build_launch_players(players_data)
-        result = run_game(
+        result = run_local_game(
             launch_players,
             match_duration_seconds=selected_duration,
         )
@@ -1823,16 +2022,8 @@ class PlayerSelectView(ctk.CTkToplevel):
             )
             if not ok:
                 play_error()
-            dialog_title = (
-                "Verdict de la joute"
-                if ok
-                else "Archive indisponible"
-            )
-            dialog_handler = (
-                messagebox.showinfo
-                if ok
-                else messagebox.showwarning
-            )
+            dialog_title = "Verdict de la joute" if ok else "Archive indisponible"
+            dialog_handler = messagebox.showinfo if ok else messagebox.showwarning
             dialog_handler(
                 dialog_title,
                 f"{result['winner_text']}\n\n{save_message}",

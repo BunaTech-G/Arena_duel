@@ -21,6 +21,9 @@ if "mariadb" not in sys.modules:
 create_arduino_hardware_bridge = importlib.import_module(
     "hardware.arduino"
 ).create_arduino_hardware_bridge
+list_available_serial_ports = importlib.import_module(
+    "hardware.arduino"
+).list_available_serial_ports
 bridge_module = importlib.import_module("hardware.bridge")
 service_module = importlib.import_module("hardware.service")
 HardwareRuntimeConfig = bridge_module.HardwareRuntimeConfig
@@ -112,6 +115,16 @@ class HardwareBridgeTests(unittest.TestCase):
                 "CLOSE",
             ],
         )
+
+    def test_list_available_serial_ports_returns_devices(self):
+        fake_port = types.SimpleNamespace(device="COM7")
+
+        with patch("hardware.arduino.list_ports") as mocked_list_ports:
+            mocked_list_ports.comports.return_value = [fake_port]
+
+            ports = list_available_serial_ports()
+
+        self.assertEqual(ports, ["COM7"])
 
 
 class _NullLogger:
