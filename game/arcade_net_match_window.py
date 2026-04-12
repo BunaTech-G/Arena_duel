@@ -67,6 +67,11 @@ LAN_ARCADE_RUNTIME_ERRORS = (
     OSError,
     AttributeError,
 )
+LAN_ARCADE_LAUNCH_ERRORS = (
+    RuntimeError,
+    OSError,
+    AttributeError,
+)
 
 WINDOW_TITLE = "Arena Duel - Joute partagee Arcade"
 NETWORK_UP_KEYS = {
@@ -213,7 +218,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
         )
         stop_music(fade_ms=120)
         self._request_close(
-            self._build_match_summary(completed=False),
+            self.build_match_summary(completed=False),
             close_client=False,
         )
 
@@ -779,7 +784,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
             )
             self._first_state_logged = True
 
-    def _build_match_summary(self, *, completed: bool) -> dict:
+    def build_match_summary(self, *, completed: bool) -> dict:
         if completed:
             return {
                 "completed": True,
@@ -833,7 +838,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
                     "Le lien au hall s'est rompu.",
                 )
                 stop_music(fade_ms=120)
-                self._request_close(self._build_match_summary(completed=False))
+                self._request_close(self.build_match_summary(completed=False))
                 return
             else:
                 self.deferred_messages.append(message)
@@ -898,7 +903,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
                 self._play_final_sound_once()
                 self.end_timer_seconds -= float(delta_time)
                 if self.end_timer_seconds <= 0:
-                    self._request_close(self._build_match_summary(completed=True))
+                    self._request_close(self.build_match_summary(completed=True))
         except LAN_ARCADE_RUNTIME_ERRORS as error:
             self._abort_runtime("on_update", error)
 
@@ -908,7 +913,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
 
         if self.end_message is not None:
             if symbol in {arcade.key.ENTER, arcade.key.ESCAPE}:
-                self._request_close(self._build_match_summary(completed=True))
+                self._request_close(self.build_match_summary(completed=True))
             return
 
         if symbol == arcade.key.ESCAPE:
@@ -917,7 +922,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
                 self.client.close()
             stop_music(fade_ms=120)
             self._request_close(
-                self._build_match_summary(completed=False),
+                self.build_match_summary(completed=False),
                 close_client=False,
             )
 
@@ -933,7 +938,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
                 )
                 if self.client.running:
                     self.client.close()
-                self.result_summary = self._build_match_summary(completed=False)
+                self.result_summary = self.build_match_summary(completed=False)
 
             if self._close_client_on_close and self.client.running:
                 self.client.close()
@@ -947,7 +952,24 @@ class ArcadeNetworkMatchWindow(arcade.Window):
 
 def run_network_match(client, my_slot, my_name, my_team):
     window = ArcadeNetworkMatchWindow(client, my_slot, my_name, my_team)
-    arcade.run()
+    try:
+        window.set_visible(True)
+        activate_window = getattr(window, "activate", None)
+        if callable(activate_window):
+            activate_window()
+        arcade.run()
+    except LAN_ARCADE_LAUNCH_ERRORS as error:
+        LOGGER.exception("Crash pendant arcade.run() du match LAN")
+        window.last_error_message = (
+            f"Le moteur Arcade du match LAN a plante au lancement : {error}"
+        )
+        stop_music(fade_ms=120)
+        try:
+            window.close()
+        except LAN_ARCADE_LAUNCH_ERRORS:
+            pass
+        return window.build_match_summary(completed=False)
+
     LOGGER.info(
         "Fermeture match LAN Arcade (complete=%s, client_running=%s)",
         bool(window.result_summary and window.result_summary.get("completed")),
