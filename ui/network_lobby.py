@@ -136,6 +136,83 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self.info_label.configure(text=self._build_initial_info_text())
 
+    def _resolve_parent_lobby_attr_name(self) -> str | None:
+        parent = self.master
+        for attr_name in ("host_lobby_window", "join_lobby_window"):
+            if getattr(parent, attr_name, None) is self:
+                return attr_name
+        return None
+
+    def hydrate_resumed_session(
+        self,
+        invitation: str,
+        *,
+        client,
+        my_slot,
+        my_team,
+        my_name,
+    ) -> None:
+        self.client = client
+        self.my_slot = my_slot
+        self.my_team = my_team
+        self.my_name = my_name
+        self.ready_state = False
+        self.match_running = False
+
+        if my_name:
+            self.name_entry.delete(0, "end")
+            self.name_entry.insert(0, my_name)
+
+        self.ip_entry.delete(0, "end")
+        self.ip_entry.insert(0, invitation)
+        self._sync_invitation_spotlight(invitation)
+        self._refresh_mode_label()
+        self._sync_controls_state()
+
+    def resume_after_match(self, match_summary: dict) -> None:
+        for msg in match_summary.get("deferred_messages", []):
+            self._handle_message(msg)
+
+        if not match_summary.get("completed"):
+            self._handle_disconnect(
+                match_summary.get(
+                    "disconnect_message",
+                    "Connexion interrompue pendant le match.",
+                )
+            )
+            return
+
+        self.ready_state = False
+        self.match_running = False
+        self._sync_controls_state()
+
+        status_text = self._format_post_match_status(
+            match_summary.get("end_message", {})
+        )
+        self.info_label.configure(text=status_text)
+
+        if self.client and self.client.running:
+            self._start_network_thread()
+        else:
+            self._handle_disconnect("Connexion interrompue à la fin du match.")
+
+    def _build_resumed_lobby(self, invitation: str):
+        parent = self.master
+        resumed_lobby = NetworkLobbyView(
+            parent,
+            default_server_invitation=invitation,
+            server_port=self.server_port,
+            host_mode=self.host_mode,
+        )
+        resumed_lobby.hydrate_resumed_session(
+            invitation,
+            client=self.client,
+            my_slot=self.my_slot,
+            my_team=self.my_team,
+            my_name=self.my_name,
+        )
+        return resumed_lobby
+
     def _apply_icon(self, path: str):
         try:
             self.iconbitmap(path)
@@ -1480,15 +1557,25 @@ class NetworkLobbyView(ctk.CTkToplevel):
         if not self.client or self.my_slot is None or not self.my_name:
             return
 
+        parent = self.master
+        parent_was_visible = False
+        try:
+            parent_was_visible = bool(parent.winfo_viewable())
+        except TclError:
+            parent_was_visible = False
+
+        parent_lobby_attr_name = self._resolve_parent_lobby_attr_name()
+        invitation_text = self.ip_entry.get().strip() or self.local_test_invitation
+
         # on stoppe la boucle lobby pendant le match
         self.running = False
         self.match_running = True
         self._sync_controls_state()
         stop_music(fade_ms=180)
 
-        # on cache le lobby
-        self.withdraw()
-        self.update()
+        # Le hall est detruit avant Arcade pour eviter un rendu noir
+        # lorsque Tk conserve un Toplevel vivant pendant la boucle pyglet.
+        self.destroy()
 
         # on lance le match réseau
         match_summary = run_network_match(
@@ -1498,44 +1585,17 @@ class NetworkLobbyView(ctk.CTkToplevel):
             self.my_team,
         )
 
+        if parent_was_visible:
+            parent.deiconify()
+            present_window(parent)
+
+        resumed_lobby = self._build_resumed_lobby(invitation_text)
+        if parent_lobby_attr_name is not None:
+            setattr(parent, parent_lobby_attr_name, resumed_lobby)
+
         init_audio()
         start_menu_music()
-
-        # retour au lobby après le match
-        self.deiconify()
-        self.lift()
-        self.focus_force()
-        self.attributes("-topmost", True)
-        self.after(200, lambda: self.attributes("-topmost", False))
-        self.match_running = False
-        self._sync_controls_state()
-
-        for msg in match_summary.get("deferred_messages", []):
-            self._handle_message(msg)
-
-        if not match_summary.get("completed"):
-            self._handle_disconnect(
-                match_summary.get(
-                    "disconnect_message",
-                    "Connexion interrompue pendant le match.",
-                )
-            )
-            return
-
-        # reset visuel du ready
-        self.ready_state = False
-        self._sync_controls_state()
-
-        status_text = self._format_post_match_status(
-            match_summary.get("end_message", {})
-        )
-        self.info_label.configure(status_text)
-
-        # relance la boucle réseau lobby
-        if self.client and self.client.running:
-            self._start_network_thread()
-        else:
-            self._handle_disconnect("Connexion interrompue à la fin du match.")
+        resumed_lobby.resume_after_match(match_summary)
 
     def shutdown(self):
         self.running = False
