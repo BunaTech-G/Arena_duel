@@ -871,7 +871,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
 
     def on_draw(self) -> None:
         try:
-            arcade.start_render()
+            self.clear()
             self._draw_background()
             if self.latest_state is None:
                 self._draw_waiting_overlay()

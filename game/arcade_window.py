@@ -780,7 +780,7 @@ class ArcadeMatchWindow(arcade.Window):
             exit_func()
 
     def on_draw(self) -> None:
-        arcade.start_render()
+        self.clear()
         self._draw_vertical_gradient()
         self._draw_arena(self.match_elapsed_ms)
         self._draw_hud()
