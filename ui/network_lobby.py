@@ -36,6 +36,7 @@ from network.messages import (
 )
 from network.net_utils import (
     format_endpoint,
+    get_network_logger,
     get_lan_address_info,
     is_loopback_host,
     load_lan_runtime_config,
@@ -54,6 +55,16 @@ from ui.theme import (
     style_frame,
     style_window,
     update_badge,
+)
+
+
+LOGGER = get_network_logger()
+LAN_MATCH_LAUNCH_ERRORS = (
+    AttributeError,
+    RuntimeError,
+    OSError,
+    TypeError,
+    ValueError,
 )
 
 
@@ -1573,17 +1584,32 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self._sync_controls_state()
         stop_music(fade_ms=180)
 
+        if parent_was_visible:
+            parent.withdraw()
+            parent.update_idletasks()
+
         # Le hall est detruit avant Arcade pour eviter un rendu noir
         # lorsque Tk conserve un Toplevel vivant pendant la boucle pyglet.
         self.destroy()
 
         # on lance le match réseau
-        match_summary = run_network_match(
-            self.client,
-            self.my_slot,
-            self.my_name,
-            self.my_team,
-        )
+        try:
+            match_summary = run_network_match(
+                self.client,
+                self.my_slot,
+                self.my_name,
+                self.my_team,
+            )
+        except LAN_MATCH_LAUNCH_ERRORS as error:
+            LOGGER.exception("Crash pendant le lancement du match LAN Arcade")
+            match_summary = {
+                "completed": False,
+                "end_message": None,
+                "deferred_messages": [],
+                "disconnect_message": (
+                    f"Le match LAN Arcade a plante au lancement : {error}"
+                ),
+            }
 
         if parent_was_visible:
             parent.deiconify()
