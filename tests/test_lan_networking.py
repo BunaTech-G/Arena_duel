@@ -208,6 +208,42 @@ class LanNetworkingTests(unittest.TestCase):
             server.match_running = False
             server.game_state = None
 
+    def test_client_connect_transmits_selected_sprite_to_lobby(self):
+        port = _reserve_free_port()
+        server, _thread, _address_info = start_server_in_background(
+            "127.0.0.1",
+            port,
+        )
+        self.servers.append(server)
+
+        client = NetworkClient()
+        self.clients.append(client)
+        client.connect(
+            "127.0.0.1",
+            port,
+            "Gardien",
+            is_host=True,
+            timeout_seconds=1,
+            sprite_id="skeleton_fighter_aether",
+        )
+
+        deadline = time.time() + 2
+        received_assign_slot = False
+        while time.time() < deadline and not received_assign_slot:
+            for message in client.poll_messages():
+                if message.get("type") == ASSIGN_SLOT:
+                    received_assign_slot = True
+                    break
+            if not received_assign_slot:
+                time.sleep(0.05)
+
+        self.assertTrue(received_assign_slot)
+        public_players = server.lobby.export_public_state()
+        self.assertEqual(
+            public_players[0]["sprite_id"],
+            "skeleton_fighter_aether",
+        )
+
     def test_game_state_exports_rare_orb_value_and_variant(self):
         lobby_snapshot = {
             "host": {
@@ -376,6 +412,38 @@ class LanNetworkingTests(unittest.TestCase):
             len({trap["kind"] for trap in exported_state["traps"]}), 3
         )
         self.assertTrue(all("presence" in trap for trap in exported_state["traps"]))
+
+    def test_game_state_exports_sprite_direction_and_end_payload(self):
+        lobby_snapshot = {
+            "guest": {
+                "slot": 2,
+                "name": "Invite",
+                "team": "B",
+                "ready": True,
+                "input": {
+                    "up": True,
+                    "down": False,
+                    "left": False,
+                    "right": False,
+                },
+                "sprite_id": "skeleton_fighter_ember",
+            }
+        }
+
+        with patch("network.server.ORB_COUNT", 0):
+            game_state = GameState(lobby_snapshot, match_duration_seconds=60)
+
+        game_state.update(0.1, lobby_snapshot)
+        exported_player = game_state.export_state()["players"][0]
+        end_player = game_state.build_end_message()["players"][0]
+
+        self.assertEqual(
+            exported_player["sprite_id"],
+            "skeleton_fighter_ember",
+        )
+        self.assertEqual(exported_player["direction"], "up")
+        self.assertTrue(exported_player["is_moving"])
+        self.assertEqual(end_player["sprite_id"], "skeleton_fighter_ember")
 
 
 if __name__ == "__main__":

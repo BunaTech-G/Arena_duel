@@ -9,8 +9,6 @@ from game.arcade_window import (
     ARENA_FLOOR_ASSET,
     BACKGROUND_BOTTOM,
     BACKGROUND_TOP,
-    HUD_BORDER,
-    HUD_PANEL,
     OBSTACLE_EDGE,
     OBSTACLE_FILL,
     ORB_COMMON,
@@ -52,7 +50,7 @@ from game.match_text import (
     get_team_label,
     get_winner_team,
 )
-from game.settings import FPS
+from game.settings import FPS, ORB_COMBO_WINDOW_MS
 from network.messages import DISCONNECTED, END, ERROR, STATE
 from network.net_utils import get_network_logger
 
@@ -74,6 +72,19 @@ LAN_ARCADE_LAUNCH_ERRORS = (
 )
 
 WINDOW_TITLE = "Arena Duel - Joute partagee Arcade"
+HUD_PANEL_DEEP = (10, 14, 22, 220)
+HUD_PANEL_SOFT = (8, 12, 20, 200)
+HUD_ROW_FILL = (14, 20, 32, 210)
+HUD_BADGE_FILL = (18, 26, 42, 230)
+HUD_TRACK = (26, 36, 52, 255)
+NAME_PANEL_FILL = (16, 19, 28, 210)
+NAME_PANEL_BORDER = (52, 68, 98, 255)
+TIMER_OK = (100, 210, 255, 255)
+TIMER_WARN = (255, 185, 55, 255)
+TIMER_URG = (255, 65, 65, 255)
+SCORE_PANEL_HEIGHT = 78
+ROSTER_ROW_HEIGHT = 44
+VALID_DIRECTION_NAMES = {"up", "down", "left", "right"}
 NETWORK_UP_KEYS = {
     getattr(arcade.key, "Z"),
     getattr(arcade.key, "W"),
@@ -102,6 +113,62 @@ def _build_input_state(
     left = any(key in pressed_keys for key in NETWORK_LEFT_KEYS)
     right = any(key in pressed_keys for key in NETWORK_RIGHT_KEYS)
     return up, down, left, right
+
+
+def _trim_display_name(name: str, max_chars: int = 14) -> str:
+    clean_name = str(name or "").strip()
+    if len(clean_name) <= max_chars:
+        return clean_name
+    return clean_name[: max_chars - 3] + "..."
+
+
+def _resolve_timer_color(remaining_seconds: int):
+    if remaining_seconds <= 10:
+        return TIMER_URG
+    if remaining_seconds <= 30:
+        return TIMER_WARN
+    return TIMER_OK
+
+
+def _resolve_combo_ratio(combo_remaining_ms: int) -> float:
+    return max(
+        0.0,
+        min(1.0, float(combo_remaining_ms) / max(1, ORB_COMBO_WINDOW_MS)),
+    )
+
+
+def _resolve_direction_from_delta(
+    delta_x: float,
+    delta_y: float,
+    fallback: str,
+) -> str:
+    if abs(delta_x) <= 0.5 and abs(delta_y) <= 0.5:
+        return fallback
+    if abs(delta_x) >= abs(delta_y):
+        return "right" if delta_x > 0 else "left"
+    return "down" if delta_y > 0 else "up"
+
+
+def _resolve_network_movement(
+    player_state: dict,
+    delta_x: float,
+    delta_y: float,
+) -> bool:
+    if "is_moving" in player_state:
+        return bool(player_state.get("is_moving"))
+    return abs(delta_x) > 0.5 or abs(delta_y) > 0.5
+
+
+def _resolve_network_direction(
+    player_state: dict,
+    delta_x: float,
+    delta_y: float,
+    fallback: str,
+) -> str:
+    explicit_direction = str(player_state.get("direction") or "").strip().lower()
+    if explicit_direction in VALID_DIRECTION_NAMES:
+        return explicit_direction
+    return _resolve_direction_from_delta(delta_x, delta_y, fallback)
 
 
 def _resolve_network_sprite_id(player_state: dict) -> str:
@@ -187,6 +254,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
         self.orb_effects = []
         self.orb_spawn_times = {}
         self.latest_movement = {}
+        self.latest_direction = {}
         self.end_sound_played = False
         self.result_summary = None
         self._shutdown_complete = False
@@ -295,6 +363,233 @@ class ArcadeNetworkMatchWindow(arcade.Window):
         )
         return True
 
+    def _draw_progress_bar(
+        self,
+        left: float,
+        top: float,
+        width: float,
+        height: float,
+        *,
+        ratio: float,
+        color,
+    ) -> None:
+        clamped_ratio = max(0.0, min(1.0, float(ratio)))
+        self._draw_top_rect(left, top, width, height, HUD_TRACK)
+        if clamped_ratio <= 0.0:
+            return
+
+        filled_width = max(height * 2, int(width * clamped_ratio))
+        self._draw_top_rect(left, top, filled_width, height, color)
+
+    def _draw_team_score_block(
+        self,
+        left: float,
+        top: float,
+        width: float,
+        height: float,
+        *,
+        title: str,
+        score: int,
+        accent_color,
+        align: str,
+    ) -> None:
+        self._draw_top_rect(
+            left,
+            top,
+            width,
+            height,
+            HUD_PANEL_DEEP,
+            outline_color=accent_color,
+            outline_width=2,
+        )
+        stripe_left = left + 2 if align == "left" else left + width - 7
+        self._draw_top_rect(
+            stripe_left,
+            top + 10,
+            5,
+            height - 20,
+            accent_color,
+        )
+
+        title_x = left + 18 if align == "left" else left + width - 18
+        self._draw_top_text(
+            title,
+            title_x,
+            top + 8,
+            TEXT_MUTED,
+            13,
+            anchor_x="left" if align == "left" else "right",
+            bold=True,
+        )
+        self._draw_top_text(
+            str(score),
+            left + width / 2,
+            top + 26,
+            TEXT_PRIMARY,
+            30,
+            anchor_x="center",
+            bold=True,
+        )
+
+    def _draw_team_summary_row(
+        self,
+        left: float,
+        top: float,
+        width: float,
+        *,
+        row: dict,
+        align: str,
+    ) -> None:
+        accent_color = row.get("accent_color", TEAM_A_ACCENT)
+        self._draw_top_rect(
+            left,
+            top,
+            width,
+            ROSTER_ROW_HEIGHT,
+            HUD_ROW_FILL,
+            outline_color=accent_color,
+            outline_width=1,
+        )
+
+        stripe_left = left + 2 if align == "left" else left + width - 5
+        self._draw_top_rect(
+            stripe_left,
+            top + 8,
+            3,
+            ROSTER_ROW_HEIGHT - 16,
+            accent_color,
+        )
+
+        portrait_size = 30
+        badge_width = 38
+        badge_height = ROSTER_ROW_HEIGHT - 12
+        portrait_direction = "right" if align == "left" else "left"
+        portrait_texture = _load_player_texture(
+            row.get("sprite_id", "skeleton_fighter_ember"),
+            portrait_direction,
+        )
+
+        if align == "left":
+            portrait_left = left + 9
+            badge_left = left + width - badge_width - 9
+            name_x = portrait_left + portrait_size + 12
+            anchor_x = "left"
+        else:
+            badge_left = left + 9
+            portrait_left = left + width - portrait_size - 9
+            name_x = portrait_left - 12
+            anchor_x = "right"
+
+        badge_top = top + 6
+        portrait_top = top + (ROSTER_ROW_HEIGHT - portrait_size) / 2
+        available_name_width = max(
+            48,
+            int(width - portrait_size - badge_width - 42),
+        )
+        max_name_chars = max(8, min(18, available_name_width // 8))
+        display_name = _trim_display_name(
+            row.get("name", "Combattant"),
+            max_chars=max_name_chars,
+        )
+        self._draw_top_rect(
+            badge_left,
+            badge_top,
+            badge_width,
+            badge_height,
+            HUD_BADGE_FILL,
+            outline_color=accent_color,
+            outline_width=1,
+        )
+        self._draw_top_text(
+            str(int(row.get("score", 0))),
+            badge_left + badge_width / 2,
+            badge_top + 8,
+            TEXT_PRIMARY,
+            12,
+            anchor_x="center",
+            bold=True,
+        )
+
+        if not self._draw_texture(
+            portrait_texture,
+            left=portrait_left,
+            top=portrait_top,
+            width=portrait_size,
+            height=portrait_size,
+        ):
+            arcade.draw_circle_filled(
+                portrait_left + portrait_size / 2,
+                self.height - portrait_top - portrait_size / 2,
+                portrait_size / 2,
+                accent_color,
+            )
+
+        self._draw_top_text(
+            display_name,
+            name_x,
+            top + 13,
+            TEXT_PRIMARY,
+            12,
+            anchor_x=anchor_x,
+            bold=True,
+        )
+
+    def _draw_team_summary_panel(
+        self,
+        left: float,
+        top: float,
+        *,
+        title: str,
+        rows: list[dict],
+        accent_color,
+        align: str,
+        panel_width: float,
+    ) -> None:
+        header_height = 26
+        row_count = max(1, len(rows))
+        panel_height = header_height + row_count * ROSTER_ROW_HEIGHT + 8
+        self._draw_top_rect(
+            left,
+            top,
+            panel_width,
+            panel_height,
+            HUD_PANEL_SOFT,
+            outline_color=accent_color,
+            outline_width=1,
+        )
+
+        title_x = left + 12 if align == "left" else left + panel_width - 12
+        self._draw_top_text(
+            title,
+            title_x,
+            top + 6,
+            TEXT_MUTED,
+            12,
+            anchor_x="left" if align == "left" else "right",
+            bold=True,
+        )
+
+        if not rows:
+            self._draw_top_text(
+                "Aucun combattant",
+                left + panel_width / 2,
+                top + 44,
+                TEXT_MUTED,
+                12,
+                anchor_x="center",
+            )
+            return
+
+        for index, row in enumerate(rows):
+            row_top = top + header_height + index * ROSTER_ROW_HEIGHT
+            self._draw_team_summary_row(
+                left + 6,
+                row_top,
+                panel_width - 12,
+                row=row,
+                align=align,
+            )
+
     def _draw_background(self) -> None:
         if self._draw_texture(
             self.window_background_texture,
@@ -378,8 +673,19 @@ class ArcadeNetworkMatchWindow(arcade.Window):
                 trap_h,
                 (*base_color[:3], alpha),
                 outline_color=base_color,
-                outline_width=2,
+                outline_width=3 if presence > 0.55 else 2,
             )
+            inner_inset = max(4.0, min(trap_w, trap_h) * 0.18)
+            inner_width = max(0.0, trap_w - inner_inset * 2)
+            inner_height = max(0.0, trap_h - inner_inset * 2)
+            if inner_width > 0 and inner_height > 0 and presence > 0.08:
+                self._draw_top_rect(
+                    trap_x + inner_inset,
+                    trap_y + inner_inset,
+                    inner_width,
+                    inner_height,
+                    (*base_color[:3], max(18, int(44 + presence * 76))),
+                )
 
     def _draw_players(self) -> None:
         for player_state in self.latest_state.get("players", []):
@@ -387,6 +693,10 @@ class ArcadeNetworkMatchWindow(arcade.Window):
             y = float(player_state.get("y", 0.0))
             radius = 20.0
             center_y = self.height - y
+            slot = int(player_state.get("slot", 0))
+            moving = bool(self.latest_movement.get(slot, False))
+            combo_count = int(player_state.get("combo_count", 0))
+            combo_remaining_ms = int(player_state.get("combo_remaining_ms", 0))
             accent_color = get_team_color(
                 player_state.get("team", "A"),
                 max(0, int(player_state.get("slot", 1)) - 1),
@@ -400,10 +710,15 @@ class ArcadeNetworkMatchWindow(arcade.Window):
                 (10, 14, 20, 120),
             )
 
-            direction_name = str(player_state.get("direction", "right") or "right")
+            direction_name = self.latest_direction.get(
+                slot,
+                "right" if player_state.get("team") == "A" else "left",
+            )
             sprite_texture = _load_player_texture(
                 _resolve_network_sprite_id(player_state),
                 direction_name,
+                elapsed_ms=self.render_elapsed_ms,
+                is_moving=moving,
             )
             sprite_size = 96.0
             sprite_drawn = self._draw_texture(
@@ -429,21 +744,102 @@ class ArcadeNetworkMatchWindow(arcade.Window):
                 center_y + radius * 0.2,
                 radius + 3,
                 highlight_color,
-                2,
+                3 if moving else 2,
+            )
+
+            direction_dx, direction_dy = 0.0, 0.0
+            if direction_name == "up":
+                direction_dy = 16.0
+            elif direction_name == "down":
+                direction_dy = -16.0
+            elif direction_name == "left":
+                direction_dx = -16.0
+            else:
+                direction_dx = 16.0
+
+            if moving:
+                arcade.draw_ellipse_filled(
+                    x - direction_dx * 0.35,
+                    center_y - 6 - direction_dy * 0.35,
+                    radius * 1.8,
+                    radius * 0.9,
+                    (10, 14, 20, 90),
+                )
+
+            arcade.draw_line(
+                x,
+                center_y + radius * 0.25,
+                x + direction_dx,
+                center_y + radius * 0.25 + direction_dy,
+                TEXT_PRIMARY if moving else TEXT_MUTED,
+                3 if moving else 2,
+            )
+
+            display_name = _trim_display_name(player_state.get("name", ""), 16)
+            player_score = int(player_state.get("score", 0))
+            score_text = f"Score {player_score}"
+            label_width = max(112, min(184, len(display_name) * 8 + 28))
+            label_height = 38 if combo_remaining_ms > 0 else 34
+            label_left = x - label_width / 2
+            label_top = y - radius - 48
+            self._draw_top_rect(
+                label_left,
+                label_top,
+                label_width,
+                label_height,
+                NAME_PANEL_FILL,
+                outline_color=NAME_PANEL_BORDER,
+                outline_width=1,
             )
 
             self._draw_top_text(
-                (
-                    f"{player_state.get('name', 'Combattant')} "
-                    f"({int(player_state.get('score', 0))})"
-                ),
+                display_name,
                 x,
-                y - radius - 18,
+                label_top + 5,
                 TEXT_PRIMARY,
                 12,
                 anchor_x="center",
                 bold=(int(player_state.get("slot", -1)) == int(self.my_slot or -1)),
             )
+            self._draw_top_text(
+                score_text,
+                x,
+                label_top + 20,
+                TEXT_MUTED,
+                10,
+                anchor_x="center",
+            )
+
+            if combo_count > 1:
+                combo_color = (
+                    TEAM_A_ACCENT if player_state.get("team") == "A" else TEAM_B_ACCENT
+                )
+                self._draw_top_rect(
+                    x - 18,
+                    y + radius + 6,
+                    36,
+                    18,
+                    (*combo_color[:3], 148),
+                    outline_color=combo_color,
+                    outline_width=1,
+                )
+                self._draw_top_text(
+                    f"x{combo_count}",
+                    x,
+                    y + radius + 8,
+                    TEXT_PRIMARY,
+                    11,
+                    anchor_x="center",
+                    bold=True,
+                )
+                self._draw_progress_bar(
+                    label_left + 8,
+                    label_top + label_height - 6,
+                    label_width - 16,
+                    3,
+                    ratio=_resolve_combo_ratio(combo_remaining_ms),
+                    color=combo_color,
+                )
 
     def _draw_orbs(self) -> None:
         for fallback_index, orb_state in enumerate(self.latest_state.get("orbs", [])):
@@ -452,7 +848,8 @@ class ArcadeNetworkMatchWindow(arcade.Window):
                 orb_id,
                 self.render_elapsed_ms,
             )
-            pulse = 2.0 + ((self.render_elapsed_ms - spawned_at_ms) % 900.0) / 900.0
+            orb_age_ms = max(0.0, self.render_elapsed_ms - spawned_at_ms)
+            pulse = 2.0 + (orb_age_ms % 900.0) / 900.0
             orb_color = ORB_RARE if orb_state.get("variant") == "rare" else ORB_COMMON
             orb_x = float(orb_state.get("x", 0.0))
             orb_y = float(orb_state.get("y", 0.0))
@@ -474,6 +871,15 @@ class ArcadeNetworkMatchWindow(arcade.Window):
                     (*orb_color[:3], 48),
                 )
                 arcade.draw_circle_filled(orb_x, draw_y, 12, orb_color)
+            if orb_age_ms <= 440.0:
+                spawn_alpha = max(0, int(210 - orb_age_ms / 2.1))
+                arcade.draw_circle_outline(
+                    orb_x,
+                    draw_y,
+                    16 + orb_age_ms / 36.0,
+                    (*orb_color[:3], spawn_alpha),
+                    2,
+                )
             arcade.draw_circle_outline(orb_x, draw_y, 14, TEXT_PRIMARY, 2)
 
     def _draw_orb_effects(self) -> None:
@@ -503,92 +909,109 @@ class ArcadeNetworkMatchWindow(arcade.Window):
         self.orb_effects = active_effects
 
     def _draw_hud(self) -> None:
-        panel_height = 104
-        self._draw_top_rect(
-            18,
-            18,
-            self.width - 36,
-            panel_height,
-            HUD_PANEL,
-            outline_color=HUD_BORDER,
-            outline_width=2,
-        )
-
         team_a_score = int(self.latest_state.get("team_a_score", 0))
         team_b_score = int(self.latest_state.get("team_b_score", 0))
         remaining_time = int(self.latest_state.get("remaining_time", 0))
+        total_duration = int(self.latest_state.get("duration_seconds", 60))
+        team_a_rows = _resolve_state_team_rows(self.latest_state, "A")
+        team_b_rows = _resolve_state_team_rows(self.latest_state, "B")
+        timer_color = _resolve_timer_color(remaining_time)
+        team_a_accent = team_a_rows[0]["accent_color"] if team_a_rows else TEAM_A_ACCENT
+        team_b_accent = team_b_rows[0]["accent_color"] if team_b_rows else TEAM_B_ACCENT
+        margin = 18
+        timer_width = min(208, max(164, self.width // 8))
+        panel_width = min(
+            286,
+            max(236, int((self.width - margin * 2 - timer_width - 18) / 2)),
+        )
+        timer_left = (self.width - timer_width) / 2
+        left_panel_x = margin
+        right_panel_x = self.width - margin - panel_width
+        top_y = 18
+        roster_y = top_y + SCORE_PANEL_HEIGHT + 8
+        timer_text = f"{remaining_time // 60:02d}:{remaining_time % 60:02d}"
 
+        self._draw_team_score_block(
+            left_panel_x,
+            top_y,
+            panel_width,
+            SCORE_PANEL_HEIGHT,
+            title=get_team_label("A"),
+            score=team_a_score,
+            accent_color=team_a_accent,
+            align="left",
+        )
+        self._draw_team_score_block(
+            right_panel_x,
+            top_y,
+            panel_width,
+            SCORE_PANEL_HEIGHT,
+            title=get_team_label("B"),
+            score=team_b_score,
+            accent_color=team_b_accent,
+            align="right",
+        )
+        self._draw_top_rect(
+            timer_left,
+            top_y,
+            timer_width,
+            SCORE_PANEL_HEIGHT,
+            HUD_PANEL_DEEP,
+            outline_color=timer_color,
+            outline_width=2,
+        )
         self._draw_top_text(
-            get_team_label("A"),
-            42,
-            34,
-            TEAM_A_ACCENT,
-            24,
+            "TEMPS",
+            timer_left + timer_width / 2,
+            top_y + 8,
+            TEXT_MUTED,
+            12,
+            anchor_x="center",
             bold=True,
         )
         self._draw_top_text(
-            str(team_a_score),
-            46,
-            64,
-            TEXT_PRIMARY,
-            28,
-            bold=True,
-        )
-        self._draw_top_text(
-            get_team_label("B"),
-            self.width - 42,
-            34,
-            TEAM_B_ACCENT,
-            24,
-            anchor_x="right",
-            bold=True,
-        )
-        self._draw_top_text(
-            str(team_b_score),
-            self.width - 46,
-            64,
-            TEXT_PRIMARY,
-            28,
-            anchor_x="right",
-            bold=True,
-        )
-        self._draw_top_text(
-            f"Sablier : {remaining_time}s",
-            self.width / 2,
-            32,
-            TEXT_PRIMARY,
+            timer_text,
+            timer_left + timer_width / 2,
+            top_y + 28,
+            timer_color,
             28,
             anchor_x="center",
             bold=True,
         )
         self._draw_top_text(
             "Backend match : Arcade",
-            self.width / 2,
-            68,
+            timer_left + timer_width / 2,
+            top_y + 58,
             TEXT_MUTED,
-            14,
+            11,
             anchor_x="center",
         )
-
-        team_a_rows = _resolve_state_team_rows(self.latest_state, "A")
-        team_b_rows = _resolve_state_team_rows(self.latest_state, "B")
-        for index, row in enumerate(team_a_rows):
-            self._draw_top_text(
-                f"{row['name']}  {row['score']}",
-                190,
-                34 + index * 24,
-                TEXT_MUTED,
-                13,
-            )
-        for index, row in enumerate(team_b_rows):
-            self._draw_top_text(
-                f"{row['score']}  {row['name']}",
-                self.width - 190,
-                34 + index * 24,
-                TEXT_MUTED,
-                13,
-                anchor_x="right",
-            )
+        self._draw_progress_bar(
+            timer_left + 14,
+            top_y + SCORE_PANEL_HEIGHT - 12,
+            timer_width - 28,
+            5,
+            ratio=remaining_time / max(1, total_duration),
+            color=timer_color,
+        )
+        self._draw_team_summary_panel(
+            left_panel_x,
+            roster_y,
+            title=get_team_label("A"),
+            rows=team_a_rows,
+            accent_color=team_a_accent,
+            align="left",
+            panel_width=panel_width,
+        )
+        self._draw_team_summary_panel(
+            right_panel_x,
+            roster_y,
+            title=get_team_label("B"),
+            rows=team_b_rows,
+            accent_color=team_b_accent,
+            align="right",
+            panel_width=panel_width,
+        )
 
     def _draw_waiting_overlay(self) -> None:
         self._draw_top_text(
@@ -615,7 +1038,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
 
         self._draw_top_rect(0, 0, self.width, self.height, OVERLAY_FILL)
         panel_width = min(860, self.width - 120)
-        panel_height = 320
+        panel_height = 360
         panel_x = (self.width - panel_width) / 2
         panel_y = (self.height - panel_height) / 2
         self._draw_top_rect(
@@ -634,6 +1057,17 @@ class ArcadeNetworkMatchWindow(arcade.Window):
                 int(self.end_message.get("team_a_score", 0)),
                 int(self.end_message.get("team_b_score", 0)),
             )
+
+        end_rows_payload = {
+            "players": self.end_message.get("players", []),
+        }
+        team_a_rows = _resolve_state_team_rows(end_rows_payload, "A")
+        team_b_rows = _resolve_state_team_rows(end_rows_payload, "B")
+        team_a_accent = team_a_rows[0]["accent_color"] if team_a_rows else TEAM_A_ACCENT
+        team_b_accent = team_b_rows[0]["accent_color"] if team_b_rows else TEAM_B_ACCENT
+        summary_panel_width = min(248, max(204, int((panel_width - 140) / 2)))
+        left_summary_x = panel_x + 54
+        right_summary_x = panel_x + panel_width - 54 - summary_panel_width
 
         winner_text = self.end_message.get("winner_text") or format_winner_text(
             winner_team
@@ -659,6 +1093,24 @@ class ArcadeNetworkMatchWindow(arcade.Window):
             22,
             anchor_x="center",
         )
+        self._draw_team_summary_panel(
+            left_summary_x,
+            panel_y + 128,
+            title=get_team_label("A"),
+            rows=team_a_rows,
+            accent_color=team_a_accent,
+            align="left",
+            panel_width=summary_panel_width,
+        )
+        self._draw_team_summary_panel(
+            right_summary_x,
+            panel_y + 128,
+            title=get_team_label("B"),
+            rows=team_b_rows,
+            accent_color=team_b_accent,
+            align="right",
+            panel_width=summary_panel_width,
+        )
 
         if self.end_message.get("history_saved", False):
             match_id = self.end_message.get("match_id")
@@ -678,7 +1130,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
         self._draw_top_text(
             history_text,
             self.width / 2,
-            panel_y + 170,
+            panel_y + 316,
             history_color,
             16,
             anchor_x="center",
@@ -686,17 +1138,9 @@ class ArcadeNetworkMatchWindow(arcade.Window):
         self._draw_top_text(
             "Entree ou Echap : retour au hall",
             self.width / 2,
-            panel_y + 212,
+            panel_y + 336,
             TEXT_PRIMARY,
             18,
-            anchor_x="center",
-        )
-        self._draw_top_text(
-            "Retour automatique imminent...",
-            self.width / 2,
-            panel_y + 246,
-            TEXT_MUTED,
-            15,
             anchor_x="center",
         )
 
@@ -716,6 +1160,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
 
     def _handle_state_message(self, message: dict) -> None:
         self.latest_movement = {}
+        next_directions = {}
         score_changed = False
         current_scores = {}
         next_pickup_serials = {}
@@ -726,9 +1171,26 @@ class ArcadeNetworkMatchWindow(arcade.Window):
             score = int(player_state.get("score", 0))
             pickup_serial = int(player_state.get("last_pickup_serial", 0))
             previous_pos = self.previous_positions.get(slot)
-            self.latest_movement[slot] = previous_pos is not None and (
-                abs(float(player_state.get("x", 0.0)) - previous_pos[0]) > 0.5
-                or abs(float(player_state.get("y", 0.0)) - previous_pos[1]) > 0.5
+            delta_x = 0.0
+            delta_y = 0.0
+            if previous_pos is not None:
+                delta_x = float(player_state.get("x", 0.0)) - previous_pos[0]
+                delta_y = float(player_state.get("y", 0.0)) - previous_pos[1]
+
+            fallback_direction = self.latest_direction.get(
+                slot,
+                "right" if player_state.get("team") == "A" else "left",
+            )
+            self.latest_movement[slot] = _resolve_network_movement(
+                player_state,
+                delta_x,
+                delta_y,
+            )
+            next_directions[slot] = _resolve_network_direction(
+                player_state,
+                delta_x,
+                delta_y,
+                fallback_direction,
             )
             current_scores[slot] = score
             next_pickup_serials[slot] = pickup_serial
@@ -747,6 +1209,7 @@ class ArcadeNetworkMatchWindow(arcade.Window):
         }
         self.previous_scores = current_scores
         self.previous_pickup_serials = next_pickup_serials
+        self.latest_direction = next_directions
         if score_changed:
             play_pickup()
 

@@ -66,6 +66,11 @@ from network.net_utils import (
 )
 
 MAX_PLAYERS = 6
+DEFAULT_SPRITE_BY_TEAM = {
+    "A": "skeleton_fighter_ember",
+    "B": "skeleton_fighter_aether",
+}
+VALID_DIRECTION_NAMES = {"up", "down", "left", "right"}
 
 PLAYER_SPEED = 260
 ORB_COUNT = ORB_SPAWN_COUNT
@@ -76,6 +81,45 @@ LOGGER = get_network_logger()
 
 def clamp(value, minimum, maximum):
     return max(minimum, min(maximum, value))
+
+
+def _default_sprite_id_for_team(team_code: str) -> str:
+    return DEFAULT_SPRITE_BY_TEAM.get(
+        str(team_code or "A").strip().upper(),
+        DEFAULT_SPRITE_BY_TEAM["A"],
+    )
+
+
+def _resolve_next_direction_name(
+    current_direction_name: str,
+    dx: float,
+    dy: float,
+) -> str:
+    active_directions = []
+    if dy < 0:
+        active_directions.append("up")
+    elif dy > 0:
+        active_directions.append("down")
+
+    if dx < 0:
+        active_directions.append("left")
+    elif dx > 0:
+        active_directions.append("right")
+
+    if not active_directions:
+        return (
+            current_direction_name
+            if current_direction_name in VALID_DIRECTION_NAMES
+            else "right"
+        )
+
+    if len(active_directions) == 1:
+        return active_directions[0]
+    if current_direction_name in active_directions:
+        return current_direction_name
+    if dx != 0:
+        return "right" if dx > 0 else "left"
+    return "down" if dy > 0 else "up"
 
 
 class LobbyState:
@@ -115,7 +159,13 @@ class LobbyState:
         else:
             return "B"
 
-    def add_client(self, name: str, handler, is_host: bool = False):
+    def add_client(
+        self,
+        name: str,
+        handler,
+        is_host: bool = False,
+        sprite_id: str | None = None,
+    ):
         with self.lock:
             if len(self.clients) >= MAX_PLAYERS:
                 return None
@@ -126,12 +176,16 @@ class LobbyState:
 
             assigned_team = self.get_next_balanced_team()
             client_id = str(uuid.uuid4())[:8]
+            normalized_sprite_id = str(
+                sprite_id or ""
+            ).strip() or _default_sprite_id_for_team(assigned_team)
 
             info = {
                 "client_id": client_id,
                 "name": name,
                 "slot": slot,
                 "team": assigned_team,
+                "sprite_id": normalized_sprite_id,
                 "host": bool(is_host),
                 "ready": False,
                 "handler": handler,
@@ -193,6 +247,7 @@ class LobbyState:
                     "name": info["name"],
                     "slot": info["slot"],
                     "team": info["team"],
+                    "sprite_id": info.get("sprite_id"),
                     "ready": info["ready"],
                     "input": dict(info["input"]),
                     "handler": info["handler"],
@@ -210,6 +265,7 @@ class LobbyState:
                         "name": info["name"],
                         "slot": info["slot"],
                         "team": info["team"],
+                        "sprite_id": info.get("sprite_id"),
                         "ready": info["ready"],
                     }
                 )
@@ -286,9 +342,13 @@ class GameState:
                     "slot": info["slot"],
                     "name": info["name"],
                     "team": info["team"],
+                    "sprite_id": str(info.get("sprite_id") or "").strip()
+                    or _default_sprite_id_for_team(info["team"]),
                     "ready_at_start": bool(info.get("ready", False)),
                     "x": float(x),
                     "y": float(y),
+                    "direction": "right" if info["team"] == "A" else "left",
+                    "is_moving": False,
                     "score": 0,
                     "combo_count": 0,
                     "combo_expires_at_ms": 0.0,
@@ -425,6 +485,13 @@ class GameState:
                 dx /= length
                 dy /= length
 
+            player["is_moving"] = dx != 0 or dy != 0
+            player["direction"] = _resolve_next_direction_name(
+                str(player.get("direction") or "right"),
+                dx,
+                dy,
+            )
+
             speed_multiplier = 1.0
             if current_time_ms < float(player.get("trap_slowed_until_ms", 0.0)):
                 speed_multiplier = float(player.get("trap_slow_multiplier", 1.0))
@@ -492,8 +559,11 @@ class GameState:
                     "slot": p["slot"],
                     "name": p["name"],
                     "team": p["team"],
+                    "sprite_id": p.get("sprite_id"),
                     "x": round(p["x"], 1),
                     "y": round(p["y"], 1),
+                    "direction": str(p.get("direction") or "right"),
+                    "is_moving": bool(p.get("is_moving", False)),
                     "score": p["score"],
                     "combo_count": combo_count,
                     "combo_remaining_ms": max(0, combo_remaining_ms),
@@ -538,6 +608,7 @@ class GameState:
                     "slot": p["slot"],
                     "name": p["name"],
                     "team": p["team"],
+                    "sprite_id": p.get("sprite_id"),
                     "score": p["score"],
                 }
             )
@@ -778,6 +849,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
             name=name,
             handler=self,
             is_host=is_host,
+            sprite_id=message.get("sprite_id"),
         )
         if info is None:
             self.safe_send({"type": ERROR, "message": "Serveur plein (6 joueurs max)."})
@@ -802,6 +874,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                 "slot": info["slot"],
                 "team": info["team"],
                 "name": info["name"],
+                "sprite_id": info.get("sprite_id"),
             }
         )
 

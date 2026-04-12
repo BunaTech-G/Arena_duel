@@ -46,10 +46,10 @@ class NetworkClient:
         name: str,
         is_host: bool = False,
         timeout_seconds: float | None = None,
+        sprite_id: str | None = None,
     ):
         socket_timeout = (
-            timeout_seconds
-            or load_lan_runtime_config().connect_timeout_seconds
+            timeout_seconds or load_lan_runtime_config().connect_timeout_seconds
         )
         endpoint = format_endpoint(host, port)
 
@@ -75,9 +75,7 @@ class NetworkClient:
                 endpoint,
                 error,
             )
-            raise ConnectionError(
-                format_connect_error(host, port, error)
-            ) from error
+            raise ConnectionError(format_connect_error(host, port, error)) from error
 
         self.sock = sock
         self.running = True
@@ -85,15 +83,22 @@ class NetworkClient:
         self.last_input_state = None
         self.last_input_send_time = 0.0
 
-        if not self.send({"type": HELLO, "name": name, "host": is_host}):
+        hello_payload = {
+            "type": HELLO,
+            "name": name,
+            "host": is_host,
+        }
+        normalized_sprite_id = str(sprite_id or "").strip()
+        if normalized_sprite_id:
+            hello_payload["sprite_id"] = normalized_sprite_id
+
+        if not self.send(hello_payload):
             self.close()
             self.logger.error(
                 "Initialisation LAN echouee apres connexion vers %s",
                 endpoint,
             )
-            raise ConnectionError(
-                "Impossible d'initialiser la session réseau."
-            )
+            raise ConnectionError("Impossible d'initialiser la session réseau.")
 
         self.reader_thread = threading.Thread(
             target=self._reader_loop,
@@ -162,9 +167,7 @@ class NetworkClient:
                             self.incoming.put(
                                 {
                                     "type": "ERROR",
-                                    "message": (
-                                        f"Décodage impossible: {error}"
-                                    ),
+                                    "message": (f"Décodage impossible: {error}"),
                                 }
                             )
         except OSError as error:
@@ -203,9 +206,7 @@ class NetworkClient:
                 }
             )
             self._close_socket()
-            self._notify_disconnect(
-                "Connexion perdue pendant l'envoi des données."
-            )
+            self._notify_disconnect("Connexion perdue pendant l'envoi des données.")
             return False
 
     def send_ready(self, ready: bool):
@@ -237,10 +238,7 @@ class NetworkClient:
 
         # envoyer seulement si l'état change
         # ou au moins toutes les 100 ms pour garder la synchro propre
-        if (
-            state != self.last_input_state
-            or (now - self.last_input_send_time) >= 0.1
-        ):
+        if state != self.last_input_state or (now - self.last_input_send_time) >= 0.1:
             self.send(
                 {
                     "type": INPUT,

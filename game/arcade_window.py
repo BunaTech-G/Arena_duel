@@ -25,16 +25,26 @@ from game.game_window import (
     get_local_focus_team,
     get_team_scores,
 )
-from game.match_text import format_winner_text, get_team_label, get_winner_team
+from game.match_text import (
+    format_scoreline,
+    format_winner_text,
+    get_team_label,
+    get_winner_team,
+)
 from game.orb import Orb
 from game.settings import (
     FPS,
     MATCH_DURATION_SECONDS,
+    ORB_COMBO_WINDOW_MS,
     ORB_SPAWN_COUNT,
     coerce_match_duration,
 )
 from game.arena import get_arena_rect, get_map_layout, get_obstacles
-from game.traps import build_match_traps, update_match_traps
+from game.traps import (
+    TRAP_TRANSITION_MS,
+    build_match_traps,
+    update_match_traps,
+)
 
 
 pg_init = getattr(pygame, "init", lambda: None)
@@ -67,6 +77,19 @@ TRAP_COLORS = {
     "ember_trap": (231, 151, 92, 235),
     "rune_trap": (122, 201, 194, 235),
 }
+HUD_PANEL_DEEP = (10, 14, 22, 220)
+HUD_PANEL_SOFT = (8, 12, 20, 200)
+HUD_ROW_FILL = (14, 20, 32, 210)
+HUD_BADGE_FILL = (18, 26, 42, 230)
+HUD_TRACK = (26, 36, 52, 255)
+NAME_PANEL_FILL = (16, 19, 28, 210)
+NAME_PANEL_BORDER = (52, 68, 98, 255)
+TIMER_OK = (100, 210, 255, 255)
+TIMER_WARN = (255, 185, 55, 255)
+TIMER_URG = (255, 65, 65, 255)
+SCORE_PANEL_HEIGHT = 78
+ROSTER_ROW_HEIGHT = 44
+SPRITE_ANIMATION_FRAME_MS = 140
 CONTROL_NAME_BY_KEY = {
     "z": ("Z",),
     "q": ("Q",),
@@ -96,6 +119,7 @@ CONTROL_NAME_BY_KEY = {
 _TEXTURE_CACHE: dict[tuple[str, bool], arcade.Texture] = {}
 _BACKGROUND_TEXTURE_PATH_CACHE: dict[str, Path | None] = {}
 _SPRITE_FRAME_SPEC_CACHE: dict[tuple[str, str], tuple[Path | None, bool]] = {}
+_SPRITE_ANIMATION_SPEC_CACHE: dict[tuple[str, str], tuple[Path, ...]] = {}
 
 
 def _coerce_arcade_color(color_value) -> ArcadeColor:
@@ -190,13 +214,59 @@ def _resolve_sprite_frame_path(
     return resolved_spec
 
 
+def _resolve_sprite_animation_frame_paths(
+    sprite_id: str,
+    animation_name: str,
+) -> tuple[Path, ...]:
+    cache_key = (sprite_id, animation_name)
+    cached_paths = _SPRITE_ANIMATION_SPEC_CACHE.get(cache_key)
+    if cached_paths is not None:
+        return cached_paths
+
+    sprite_manifest = load_sprite_manifest(sprite_id)
+    frame_names = tuple(sprite_manifest.get("animations", {}).get(animation_name, []))
+    resolved_paths = tuple(
+        asset_path("sprites", sprite_id, frame_name) for frame_name in frame_names
+    )
+    _SPRITE_ANIMATION_SPEC_CACHE[cache_key] = resolved_paths
+    return resolved_paths
+
+
+def _resolve_player_frame_spec(
+    sprite_id: str,
+    direction_name: str,
+    *,
+    elapsed_ms: float | None = None,
+    is_moving: bool = False,
+) -> tuple[Path | None, bool]:
+    if elapsed_ms is None:
+        return _resolve_sprite_frame_path(sprite_id, direction_name)
+
+    animation_name = "walk" if is_moving else "idle"
+    animation_paths = _resolve_sprite_animation_frame_paths(
+        sprite_id,
+        animation_name,
+    )
+    if animation_paths:
+        frame_index = int(max(0.0, float(elapsed_ms)) // SPRITE_ANIMATION_FRAME_MS)
+        mirrored = direction_name == "left"
+        return animation_paths[frame_index % len(animation_paths)], mirrored
+
+    return _resolve_sprite_frame_path(sprite_id, direction_name)
+
+
 def _load_player_texture(
     sprite_id: str,
     direction_name: str,
+    *,
+    elapsed_ms: float | None = None,
+    is_moving: bool = False,
 ) -> arcade.Texture | None:
-    texture_path, mirrored = _resolve_sprite_frame_path(
+    texture_path, mirrored = _resolve_player_frame_spec(
         sprite_id,
         direction_name,
+        elapsed_ms=elapsed_ms,
+        is_moving=is_moving,
     )
     if texture_path is None:
         return None
@@ -225,6 +295,73 @@ def _resolve_arcade_key(control_name: str) -> int | None:
         if constant_value is not None:
             return int(constant_value)
     return None
+
+
+def _trim_display_name(name: str, max_chars: int = 14) -> str:
+    clean_name = str(name or "").strip()
+    if len(clean_name) <= max_chars:
+        return clean_name
+    return clean_name[: max_chars - 3] + "..."
+
+
+def _format_timer_value(remaining_seconds: int) -> str:
+    safe_seconds = max(0, int(remaining_seconds))
+    minutes, seconds = divmod(safe_seconds, 60)
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def _resolve_timer_color(remaining_seconds: int):
+    if remaining_seconds <= 10:
+        return TIMER_URG
+    if remaining_seconds <= 30:
+        return TIMER_WARN
+    return TIMER_OK
+
+
+def _resolve_local_team_rows(players, team_code: str) -> list[dict]:
+    rows = []
+    for player in players:
+        if getattr(player, "team_code", None) != team_code:
+            continue
+
+        sprite_id = getattr(player, "sprite_id", None)
+        if not sprite_id:
+            sprite_id = (
+                "skeleton_fighter_ember"
+                if team_code == "A"
+                else "skeleton_fighter_aether"
+            )
+
+        rows.append(
+            {
+                "name": getattr(player, "name", "Combattant"),
+                "score": int(getattr(player, "score", 0)),
+                "accent_color": getattr(player, "color", TEAM_A_ACCENT),
+                "sprite_id": sprite_id,
+            }
+        )
+    return rows
+
+
+def _resolve_combo_ratio(combo_remaining_ms: int) -> float:
+    return max(
+        0.0,
+        min(1.0, float(combo_remaining_ms) / max(1, ORB_COMBO_WINDOW_MS)),
+    )
+
+
+def _resolve_trap_presence(trap_state, elapsed_ms: float) -> float:
+    transition_elapsed_ms = max(
+        0.0,
+        float(elapsed_ms) - float(getattr(trap_state, "last_toggle_ms", 0.0)),
+    )
+    transition_progress = min(
+        1.0,
+        transition_elapsed_ms / max(1.0, TRAP_TRANSITION_MS),
+    )
+    if getattr(trap_state, "active", False):
+        return transition_progress
+    return max(0.0, 1.0 - transition_progress)
 
 
 class ArcadeMatchWindow(arcade.Window):
@@ -259,6 +396,7 @@ class ArcadeMatchWindow(arcade.Window):
         self.game_over = False
         self.winner_text = ""
         self.final_sound_played = False
+        self.orb_effects = []
         self.result = None
         self._shutdown_complete = False
         self._should_reset_hardware = True
@@ -319,6 +457,7 @@ class ArcadeMatchWindow(arcade.Window):
         self.game_over = False
         self.winner_text = ""
         self.final_sound_played = False
+        self.orb_effects = []
         self.pressed_keys.clear()
         self.hardware_service.reset()
         self.hardware_service.emit_state("COMBAT")
@@ -394,6 +533,279 @@ class ArcadeMatchWindow(arcade.Window):
         )
         return True
 
+    def _draw_progress_bar(
+        self,
+        left: float,
+        top: float,
+        width: float,
+        height: float,
+        *,
+        ratio: float,
+        color,
+    ) -> None:
+        clamped_ratio = max(0.0, min(1.0, float(ratio)))
+        self._draw_top_rect(left, top, width, height, HUD_TRACK)
+        if clamped_ratio <= 0.0:
+            return
+
+        filled_width = max(height * 2, int(width * clamped_ratio))
+        self._draw_top_rect(left, top, filled_width, height, color)
+
+    def _draw_team_score_block(
+        self,
+        left: float,
+        top: float,
+        width: float,
+        height: float,
+        *,
+        title: str,
+        score: int,
+        accent_color,
+        align: str,
+    ) -> None:
+        self._draw_top_rect(
+            left,
+            top,
+            width,
+            height,
+            HUD_PANEL_DEEP,
+            outline_color=accent_color,
+            outline_width=2,
+        )
+        stripe_left = left + 2 if align == "left" else left + width - 7
+        self._draw_top_rect(
+            stripe_left,
+            top + 10,
+            5,
+            height - 20,
+            accent_color,
+        )
+
+        title_x = left + 18 if align == "left" else left + width - 18
+        self._draw_top_text(
+            title,
+            title_x,
+            top + 8,
+            TEXT_MUTED,
+            13,
+            anchor_x="left" if align == "left" else "right",
+            bold=True,
+        )
+        self._draw_top_text(
+            str(score),
+            left + width / 2,
+            top + 26,
+            TEXT_PRIMARY,
+            30,
+            anchor_x="center",
+            bold=True,
+        )
+
+    def _draw_team_summary_row(
+        self,
+        left: float,
+        top: float,
+        width: float,
+        *,
+        row: dict,
+        align: str,
+    ) -> None:
+        accent_color = row.get("accent_color", TEAM_A_ACCENT)
+        self._draw_top_rect(
+            left,
+            top,
+            width,
+            ROSTER_ROW_HEIGHT,
+            HUD_ROW_FILL,
+            outline_color=accent_color,
+            outline_width=1,
+        )
+
+        stripe_left = left + 2 if align == "left" else left + width - 5
+        self._draw_top_rect(
+            stripe_left,
+            top + 8,
+            3,
+            ROSTER_ROW_HEIGHT - 16,
+            accent_color,
+        )
+
+        portrait_size = 30
+        badge_width = 38
+        badge_height = ROSTER_ROW_HEIGHT - 12
+        portrait_direction = "right" if align == "left" else "left"
+        portrait_texture = _load_player_texture(
+            row.get("sprite_id", "skeleton_fighter_ember"),
+            portrait_direction,
+        )
+
+        if align == "left":
+            portrait_left = left + 9
+            badge_left = left + width - badge_width - 9
+            name_x = portrait_left + portrait_size + 12
+            anchor_x = "left"
+        else:
+            badge_left = left + 9
+            portrait_left = left + width - portrait_size - 9
+            name_x = portrait_left - 12
+            anchor_x = "right"
+
+        badge_top = top + 6
+        portrait_top = top + (ROSTER_ROW_HEIGHT - portrait_size) / 2
+        available_name_width = max(
+            48,
+            int(width - portrait_size - badge_width - 42),
+        )
+        max_name_chars = max(8, min(18, available_name_width // 8))
+        display_name = _trim_display_name(
+            row.get("name", "Combattant"),
+            max_chars=max_name_chars,
+        )
+        self._draw_top_rect(
+            badge_left,
+            badge_top,
+            badge_width,
+            badge_height,
+            HUD_BADGE_FILL,
+            outline_color=accent_color,
+            outline_width=1,
+        )
+        self._draw_top_text(
+            str(int(row.get("score", 0))),
+            badge_left + badge_width / 2,
+            badge_top + 8,
+            TEXT_PRIMARY,
+            12,
+            anchor_x="center",
+            bold=True,
+        )
+
+        if not self._draw_texture(
+            portrait_texture,
+            left=portrait_left,
+            top=portrait_top,
+            width=portrait_size,
+            height=portrait_size,
+        ):
+            arcade.draw_circle_filled(
+                portrait_left + portrait_size / 2,
+                self.height - portrait_top - portrait_size / 2,
+                portrait_size / 2,
+                accent_color,
+            )
+
+        self._draw_top_text(
+            display_name,
+            name_x,
+            top + 13,
+            TEXT_PRIMARY,
+            12,
+            anchor_x=anchor_x,
+            bold=True,
+        )
+
+    def _draw_team_summary_panel(
+        self,
+        left: float,
+        top: float,
+        *,
+        title: str,
+        rows: list[dict],
+        accent_color,
+        align: str,
+        panel_width: float,
+    ) -> None:
+        header_height = 26
+        row_count = max(1, len(rows))
+        panel_height = header_height + row_count * ROSTER_ROW_HEIGHT + 8
+        self._draw_top_rect(
+            left,
+            top,
+            panel_width,
+            panel_height,
+            HUD_PANEL_SOFT,
+            outline_color=accent_color,
+            outline_width=1,
+        )
+
+        title_x = left + 12 if align == "left" else left + panel_width - 12
+        self._draw_top_text(
+            title,
+            title_x,
+            top + 6,
+            TEXT_MUTED,
+            12,
+            anchor_x="left" if align == "left" else "right",
+            bold=True,
+        )
+
+        if not rows:
+            self._draw_top_text(
+                "Aucun combattant",
+                left + panel_width / 2,
+                top + 44,
+                TEXT_MUTED,
+                12,
+                anchor_x="center",
+            )
+            return
+
+        for index, row in enumerate(rows):
+            row_top = top + header_height + index * ROSTER_ROW_HEIGHT
+            self._draw_team_summary_row(
+                left + 6,
+                row_top,
+                panel_width - 12,
+                row=row,
+                align=align,
+            )
+
+    def _record_orb_effect(
+        self,
+        x: float,
+        y: float,
+        value: int,
+        combo_bonus: int,
+    ) -> None:
+        if int(value) <= 0:
+            return
+
+        self.orb_effects.append(
+            {
+                "x": float(x),
+                "y": float(y),
+                "value": int(value),
+                "combo_bonus": int(combo_bonus),
+                "started_at_ms": self.match_elapsed_ms,
+            }
+        )
+
+    def _draw_orb_effects(self) -> None:
+        active_effects = []
+        for effect in self.orb_effects:
+            age_ms = self.match_elapsed_ms - float(effect["started_at_ms"])
+            if age_ms >= 520:
+                continue
+
+            drift = age_ms / 18.0
+            alpha = max(0, int(255 - age_ms / 2.2))
+            effect_text = f"+{int(effect['value'])}"
+            combo_bonus = int(effect.get("combo_bonus", 0))
+            if combo_bonus > 0:
+                effect_text += f"  combo +{combo_bonus}"
+            self._draw_top_text(
+                effect_text,
+                float(effect["x"]),
+                float(effect["y"]) - 20 - drift,
+                (243, 201, 107, alpha),
+                14,
+                anchor_x="center",
+                bold=True,
+            )
+            active_effects.append(effect)
+
+        self.orb_effects = active_effects
+
     def _draw_vertical_gradient(self) -> None:
         if self._draw_texture(
             self.window_background_texture,
@@ -467,7 +879,8 @@ class ArcadeMatchWindow(arcade.Window):
                 trap_state.kind,
                 TRAP_COLORS["spike_trap"],
             )
-            alpha = 70 if not trap_state.active else 180
+            presence = _resolve_trap_presence(trap_state, elapsed_ms)
+            alpha = max(32, min(200, int(40 + presence * 160)))
             color = (*base_color[:3], alpha)
             self._draw_top_rect(
                 trap_x,
@@ -476,8 +889,19 @@ class ArcadeMatchWindow(arcade.Window):
                 trap_h,
                 color,
                 outline_color=base_color,
-                outline_width=2,
+                outline_width=3 if trap_state.active else 2,
             )
+            inner_inset = max(4.0, min(trap_w, trap_h) * 0.18)
+            inner_width = max(0.0, trap_w - inner_inset * 2)
+            inner_height = max(0.0, trap_h - inner_inset * 2)
+            if inner_width > 0 and inner_height > 0 and presence > 0.08:
+                self._draw_top_rect(
+                    trap_x + inner_inset,
+                    trap_y + inner_inset,
+                    inner_width,
+                    inner_height,
+                    (*base_color[:3], max(18, int(48 + presence * 72))),
+                )
 
         pulse = 2.0 + (elapsed_ms % 900.0) / 900.0
         for orb in self.orbs:
@@ -510,6 +934,12 @@ class ArcadeMatchWindow(arcade.Window):
 
         for player in self.players:
             center_y = self.height - player.y
+            moving = bool(player.is_moving)
+            combo_remaining_ms = player.get_combo_remaining_ms(elapsed_ms)
+            slowed = (
+                elapsed_ms < float(player.trap_slowed_until_ms)
+                and float(player.trap_slow_multiplier) < 1.0
+            )
             arcade.draw_ellipse_filled(
                 player.x,
                 center_y - 2,
@@ -521,6 +951,8 @@ class ArcadeMatchWindow(arcade.Window):
             sprite_texture = _load_player_texture(
                 player.sprite_id,
                 player.direction_name,
+                elapsed_ms=elapsed_ms,
+                is_moving=moving,
             )
             sprite_size = max(88.0, player.radius * 4.8)
             sprite_top = player.y - sprite_size * 0.62
@@ -551,7 +983,7 @@ class ArcadeMatchWindow(arcade.Window):
                     center_y + player.radius * 0.2,
                     player.radius + 3,
                     (*player.color, 210),
-                    2,
+                    3 if moving else 2,
                 )
 
             direction_dx, direction_dy = 0.0, 0.0
@@ -564,126 +996,199 @@ class ArcadeMatchWindow(arcade.Window):
             else:
                 direction_dx = 16.0
 
+            if moving:
+                arcade.draw_ellipse_filled(
+                    player.x - direction_dx * 0.35,
+                    center_y - 6 - direction_dy * 0.35,
+                    player.radius * 1.8,
+                    player.radius * 0.9,
+                    (10, 14, 20, 90),
+                )
+
             arcade.draw_line(
                 player.x,
                 center_y + player.radius * 0.25,
                 player.x + direction_dx,
                 center_y + player.radius * 0.25 + direction_dy,
-                TEXT_PRIMARY,
-                3,
+                TEXT_PRIMARY if moving else TEXT_MUTED,
+                3 if moving else 2,
+            )
+            if slowed:
+                arcade.draw_circle_outline(
+                    player.x,
+                    center_y + player.radius * 0.2,
+                    player.radius + 8,
+                    (122, 201, 194, 180),
+                    2,
+                )
+            display_name = _trim_display_name(player.name, 16)
+            score_text = f"Score {int(player.score)}"
+            label_width = max(112, min(184, len(display_name) * 8 + 28))
+            label_height = 38 if combo_remaining_ms > 0 else 34
+            label_left = player.x - label_width / 2
+            label_top = player.y - player.radius - 48
+            self._draw_top_rect(
+                label_left,
+                label_top,
+                label_width,
+                label_height,
+                NAME_PANEL_FILL,
+                outline_color=NAME_PANEL_BORDER,
+                outline_width=1,
             )
             self._draw_top_text(
-                f"{player.name} ({player.score})",
+                display_name,
                 player.x,
-                player.y - player.radius - 18,
+                label_top + 5,
                 TEXT_PRIMARY,
                 12,
                 anchor_x="center",
-                bold=True,
+                bold=(player.control_mode == HUMAN_CONTROL_MODE),
+            )
+            self._draw_top_text(
+                score_text,
+                player.x,
+                label_top + 20,
+                TEXT_MUTED,
+                10,
+                anchor_x="center",
             )
             if player.combo_count > 1:
                 combo_color = (
                     TEAM_A_ACCENT if player.team_code == "A" else TEAM_B_ACCENT
                 )
+                self._draw_top_rect(
+                    player.x - 18,
+                    player.y + player.radius + 6,
+                    36,
+                    18,
+                    (*combo_color[:3], 148),
+                    outline_color=combo_color,
+                    outline_width=1,
+                )
                 self._draw_top_text(
                     f"x{player.combo_count}",
                     player.x,
                     player.y + player.radius + 8,
-                    combo_color,
-                    12,
+                    TEXT_PRIMARY,
+                    11,
                     anchor_x="center",
                     bold=True,
                 )
+                self._draw_progress_bar(
+                    label_left + 8,
+                    label_top + label_height - 6,
+                    label_width - 16,
+                    3,
+                    ratio=_resolve_combo_ratio(combo_remaining_ms),
+                    color=combo_color,
+                )
 
     def _draw_hud(self) -> None:
-        panel_height = 104
+        team_a_score, team_b_score = get_team_scores(self.players)
+        team_a_rows = _resolve_local_team_rows(self.players, "A")
+        team_b_rows = _resolve_local_team_rows(self.players, "B")
+        timer_color = _resolve_timer_color(self.remaining_time)
+        team_a_accent = team_a_rows[0]["accent_color"] if team_a_rows else TEAM_A_ACCENT
+        team_b_accent = team_b_rows[0]["accent_color"] if team_b_rows else TEAM_B_ACCENT
+        margin = 18
+        timer_width = min(208, max(164, self.width // 8))
+        panel_width = min(
+            286,
+            max(236, int((self.width - margin * 2 - timer_width - 18) / 2)),
+        )
+        timer_left = (self.width - timer_width) / 2
+        left_panel_x = margin
+        right_panel_x = self.width - margin - panel_width
+        top_y = 18
+        roster_y = top_y + SCORE_PANEL_HEIGHT + 8
+
+        self._draw_team_score_block(
+            left_panel_x,
+            top_y,
+            panel_width,
+            SCORE_PANEL_HEIGHT,
+            title=get_team_label("A"),
+            score=team_a_score,
+            accent_color=team_a_accent,
+            align="left",
+        )
+        self._draw_team_score_block(
+            right_panel_x,
+            top_y,
+            panel_width,
+            SCORE_PANEL_HEIGHT,
+            title=get_team_label("B"),
+            score=team_b_score,
+            accent_color=team_b_accent,
+            align="right",
+        )
         self._draw_top_rect(
-            18,
-            18,
-            self.width - 36,
-            panel_height,
-            HUD_PANEL,
-            outline_color=HUD_BORDER,
+            timer_left,
+            top_y,
+            timer_width,
+            SCORE_PANEL_HEIGHT,
+            HUD_PANEL_DEEP,
+            outline_color=timer_color,
             outline_width=2,
         )
-        team_a_score, team_b_score = get_team_scores(self.players)
-
         self._draw_top_text(
-            get_team_label("A"),
-            42,
-            34,
-            TEAM_A_ACCENT,
-            24,
+            "TEMPS",
+            timer_left + timer_width / 2,
+            top_y + 8,
+            TEXT_MUTED,
+            12,
+            anchor_x="center",
             bold=True,
         )
         self._draw_top_text(
-            str(team_a_score),
-            46,
-            64,
-            TEXT_PRIMARY,
-            28,
-            bold=True,
-        )
-        self._draw_top_text(
-            get_team_label("B"),
-            self.width - 42,
-            34,
-            TEAM_B_ACCENT,
-            24,
-            anchor_x="right",
-            bold=True,
-        )
-        self._draw_top_text(
-            str(team_b_score),
-            self.width - 46,
-            64,
-            TEXT_PRIMARY,
-            28,
-            anchor_x="right",
-            bold=True,
-        )
-        self._draw_top_text(
-            f"Sablier : {self.remaining_time}s",
-            self.width / 2,
-            32,
-            TEXT_PRIMARY,
+            _format_timer_value(self.remaining_time),
+            timer_left + timer_width / 2,
+            top_y + 28,
+            timer_color,
             28,
             anchor_x="center",
             bold=True,
         )
         self._draw_top_text(
             "Backend local : Arcade",
-            self.width / 2,
-            68,
+            timer_left + timer_width / 2,
+            top_y + 58,
             TEXT_MUTED,
-            14,
+            11,
             anchor_x="center",
         )
-
-        team_a_rows = [player for player in self.players if player.team_code == "A"]
-        team_b_rows = [player for player in self.players if player.team_code == "B"]
-        for index, player in enumerate(team_a_rows):
-            self._draw_top_text(
-                f"{player.name}  {player.score}",
-                190,
-                34 + index * 24,
-                TEXT_MUTED,
-                13,
-            )
-        for index, player in enumerate(team_b_rows):
-            self._draw_top_text(
-                f"{player.score}  {player.name}",
-                self.width - 190,
-                34 + index * 24,
-                TEXT_MUTED,
-                13,
-                anchor_x="right",
-            )
+        self._draw_progress_bar(
+            timer_left + 14,
+            top_y + SCORE_PANEL_HEIGHT - 12,
+            timer_width - 28,
+            5,
+            ratio=self.remaining_time / max(1, self.active_match_duration),
+            color=timer_color,
+        )
+        self._draw_team_summary_panel(
+            left_panel_x,
+            roster_y,
+            title=get_team_label("A"),
+            rows=team_a_rows,
+            accent_color=team_a_accent,
+            align="left",
+            panel_width=panel_width,
+        )
+        self._draw_team_summary_panel(
+            right_panel_x,
+            roster_y,
+            title=get_team_label("B"),
+            rows=team_b_rows,
+            accent_color=team_b_accent,
+            align="right",
+            panel_width=panel_width,
+        )
 
     def _draw_end_overlay(self) -> None:
         self._draw_top_rect(0, 0, self.width, self.height, OVERLAY_FILL)
-        panel_width = min(760, self.width - 120)
-        panel_height = 260
+        panel_width = min(860, self.width - 120)
+        panel_height = 360
         panel_x = (self.width - panel_width) / 2
         panel_y = (self.height - panel_height) / 2
         self._draw_top_rect(
@@ -697,6 +1202,13 @@ class ArcadeMatchWindow(arcade.Window):
         )
 
         team_a_score, team_b_score = get_team_scores(self.players)
+        team_a_rows = _resolve_local_team_rows(self.players, "A")
+        team_b_rows = _resolve_local_team_rows(self.players, "B")
+        team_a_accent = team_a_rows[0]["accent_color"] if team_a_rows else TEAM_A_ACCENT
+        team_b_accent = team_b_rows[0]["accent_color"] if team_b_rows else TEAM_B_ACCENT
+        summary_panel_width = min(248, max(204, int((panel_width - 140) / 2)))
+        left_summary_x = panel_x + 54
+        right_summary_x = panel_x + panel_width - 54 - summary_panel_width
         self._draw_top_text(
             self.winner_text,
             self.width / 2,
@@ -707,20 +1219,35 @@ class ArcadeMatchWindow(arcade.Window):
             bold=True,
         )
         self._draw_top_text(
-            (
-                f"{get_team_label('A')} : {team_a_score}  |  "
-                f"{get_team_label('B')} : {team_b_score}"
-            ),
+            format_scoreline(team_a_score, team_b_score),
             self.width / 2,
             panel_y + 92,
             TEXT_MUTED,
             22,
             anchor_x="center",
         )
+        self._draw_team_summary_panel(
+            left_summary_x,
+            panel_y + 128,
+            title=get_team_label("A"),
+            rows=team_a_rows,
+            accent_color=team_a_accent,
+            align="left",
+            panel_width=summary_panel_width,
+        )
+        self._draw_team_summary_panel(
+            right_summary_x,
+            panel_y + 128,
+            title=get_team_label("B"),
+            rows=team_b_rows,
+            accent_color=team_b_accent,
+            align="right",
+            panel_width=summary_panel_width,
+        )
         self._draw_top_text(
             "Entree : revenir au bastion",
             self.width / 2,
-            panel_y + 154,
+            panel_y + 316,
             TEXT_PRIMARY,
             18,
             anchor_x="center",
@@ -728,7 +1255,7 @@ class ArcadeMatchWindow(arcade.Window):
         self._draw_top_text(
             "R : relancer la joute   |   Echap : quitter l'arene",
             self.width / 2,
-            panel_y + 188,
+            panel_y + 336,
             TEXT_MUTED,
             16,
             anchor_x="center",
@@ -783,6 +1310,7 @@ class ArcadeMatchWindow(arcade.Window):
         self.clear()
         self._draw_vertical_gradient()
         self._draw_arena(self.match_elapsed_ms)
+        self._draw_orb_effects()
         self._draw_hud()
         if self.game_over:
             self._draw_end_overlay()
@@ -834,8 +1362,17 @@ class ArcadeMatchWindow(arcade.Window):
         for orb in self.orbs:
             for player in self.players:
                 if player.collides_with_orb(orb):
-                    player.register_orb_pickup(elapsed_ms, orb.value)
+                    awarded_value, combo_bonus = player.register_orb_pickup(
+                        elapsed_ms,
+                        orb.value,
+                    )
                     play_pickup()
+                    self._record_orb_effect(
+                        orb.x,
+                        orb.y,
+                        awarded_value,
+                        combo_bonus,
+                    )
                     orb.respawn(
                         self.arena_rect,
                         self.obstacles,
