@@ -44,6 +44,11 @@ from network.net_utils import (
 )
 from runtime_utils import resource_path
 from ui.history_view import HistoryView
+from ui.player_select import (
+    FIGHTER_DISPLAY_BY_SPRITE_ID,
+    FIGHTER_SPRITE_ID_BY_DISPLAY,
+    get_default_fighter_id,
+)
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
@@ -82,6 +87,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.network_config = load_lan_runtime_config()
         self.duration_values = [str(duration) for duration in MATCH_DURATION_OPTIONS]
         self.match_duration_var = ctk.StringVar(value=str(MATCH_DURATION_SECONDS))
+        self.fighter_values = list(FIGHTER_SPRITE_ID_BY_DISPLAY.keys())
+        self._fighter_explicitly_selected = False
+        default_fighter_id = get_default_fighter_id("A")
+        self.fighter_var = ctk.StringVar(
+            value=FIGHTER_DISPLAY_BY_SPRITE_ID[default_fighter_id]
+        )
 
         self.title("Arena Duel - Hall des bastions")
         _ico = resource_path("assets", "icons", "app.ico")
@@ -114,6 +125,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.my_slot = None
         self.my_team = None
         self.my_name = None
+        self.my_sprite_id = default_fighter_id
         self.ready_state = False
         self.match_running = False
         self.history_window = None
@@ -131,6 +143,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.ready_btn = None
         self.history_btn = None
         self.duration_menu = None
+        self.fighter_menu = None
         self.duration_status_label = None
         self.roster_badge = None
         self.roster_total_value = None
@@ -162,17 +175,26 @@ class NetworkLobbyView(ctk.CTkToplevel):
         my_slot,
         my_team,
         my_name,
+        my_sprite_id=None,
     ) -> None:
         self.client = client
         self.my_slot = my_slot
         self.my_team = my_team
         self.my_name = my_name
+        self.my_sprite_id = str(my_sprite_id or self.my_sprite_id or "").strip() or (
+            get_default_fighter_id(my_team) if my_team else get_default_fighter_id("A")
+        )
         self.ready_state = False
         self.match_running = False
 
         if my_name:
             self.name_entry.delete(0, "end")
             self.name_entry.insert(0, my_name)
+
+        self._set_selected_fighter(
+            self.my_sprite_id,
+            mark_manual=self._fighter_explicitly_selected,
+        )
 
         self.ip_entry.delete(0, "end")
         self.ip_entry.insert(0, invitation)
@@ -221,6 +243,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             my_slot=self.my_slot,
             my_team=self.my_team,
             my_name=self.my_name,
+            my_sprite_id=self.my_sprite_id,
         )
         return resumed_lobby
 
@@ -266,6 +289,10 @@ class NetworkLobbyView(ctk.CTkToplevel):
         )
         self.ip_entry.configure(state="disabled" if connect_locked else "normal")
         self.name_entry.configure(state="disabled" if connect_locked else "normal")
+        if self.fighter_menu is not None:
+            self.fighter_menu.configure(
+                state="disabled" if connect_locked else "normal"
+            )
         self.use_local_ip_btn.configure(
             state="disabled" if connect_locked else "normal"
         )
@@ -550,9 +577,50 @@ class NetworkLobbyView(ctk.CTkToplevel):
         )
         self.name_entry.bind("<Return>", lambda _event: self._connect())
 
+        fighter_panel = ctk.CTkFrame(panel, corner_radius=16)
+        style_frame(
+            fighter_panel,
+            tone="panel_soft",
+            border_color=PALETTE["border"],
+        )
+        fighter_panel.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            padx=18,
+            pady=(0, 10),
+            sticky="ew",
+        )
+        fighter_panel.grid_columnconfigure(1, weight=1)
+
+        fighter_title = ctk.CTkLabel(
+            fighter_panel,
+            text="Combattant engage",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_soft"],
+        )
+        fighter_title.grid(row=0, column=0, padx=(16, 10), pady=14, sticky="w")
+
+        self.fighter_menu = create_option_menu(
+            fighter_panel,
+            values=self.fighter_values,
+            variable=self.fighter_var,
+            command=self._handle_fighter_change,
+            width=240,
+            height=40,
+            state="normal",
+        )
+        self.fighter_menu.grid(
+            row=0,
+            column=1,
+            padx=(0, 16),
+            pady=10,
+            sticky="e",
+        )
+
         action_row = ctk.CTkFrame(panel, fg_color="transparent")
         action_row.grid(
-            row=3,
+            row=4,
             column=0,
             columnspan=2,
             padx=18,
@@ -615,7 +683,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         action_row_secondary = ctk.CTkFrame(panel, fg_color="transparent")
         action_row_secondary.grid(
-            row=4,
+            row=5,
             column=0,
             columnspan=2,
             padx=18,
@@ -664,7 +732,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             border_color=PALETTE["border"],
         )
         duration_panel.grid(
-            row=5,
+            row=6,
             column=0,
             columnspan=2,
             padx=18,
@@ -893,11 +961,14 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.my_slot = None
         self.my_team = None
         self.my_name = None
+        self.my_sprite_id = get_default_fighter_id("A")
         self.ready_state = False
         self._connect_in_progress = False
         self._ready_request_pending = False
         self.match_running = False
         self.history_request_pending = False
+        self._fighter_explicitly_selected = False
+        self._set_selected_fighter(self.my_sprite_id, mark_manual=False)
 
         self._clear_roster_display()
         self._sync_controls_state()
@@ -1038,6 +1109,34 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.ip_entry.insert(0, self.local_test_invitation)
         self._sync_invitation_spotlight(self.local_test_invitation)
 
+    def _handle_fighter_change(self, _choice=None):
+        self.my_sprite_id = self._get_selected_fighter_id()
+        self._fighter_explicitly_selected = True
+
+    def _get_selected_fighter_id(self) -> str:
+        return FIGHTER_SPRITE_ID_BY_DISPLAY.get(
+            self.fighter_var.get().strip(),
+            self.my_sprite_id or get_default_fighter_id(self.my_team or "A"),
+        )
+
+    def _set_selected_fighter(
+        self,
+        sprite_id: str,
+        *,
+        mark_manual: bool,
+    ) -> None:
+        normalized_sprite_id = str(sprite_id or "").strip() or get_default_fighter_id(
+            self.my_team or "A"
+        )
+        fallback_fighter_id = get_default_fighter_id(self.my_team or "A")
+        fighter_label = FIGHTER_DISPLAY_BY_SPRITE_ID.get(
+            normalized_sprite_id,
+            FIGHTER_DISPLAY_BY_SPRITE_ID[fallback_fighter_id],
+        )
+        self.my_sprite_id = normalized_sprite_id
+        self.fighter_var.set(fighter_label)
+        self._fighter_explicitly_selected = mark_manual
+
     def _copy_bastion_address(self):
         play_click()
 
@@ -1109,6 +1208,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 name,
                 is_host=self.host_mode,
                 timeout_seconds=self.network_config.connect_timeout_seconds,
+                sprite_id=self._get_selected_fighter_id(),
             )
         except (ConnectionError, OSError) as error:
             self._connect_in_progress = False
@@ -1134,6 +1234,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         )
 
         self.my_name = name
+        self.my_sprite_id = self._get_selected_fighter_id()
         self._save_server_invitation(
             normalized_invitation,
             "local" if is_loopback_host(host) else "lan",
@@ -1211,6 +1312,15 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
             self.my_slot = slot
             self.my_team = team
+            assigned_sprite_id = str(msg.get("sprite_id") or "").strip()
+            if assigned_sprite_id:
+                self.my_sprite_id = assigned_sprite_id
+            elif not self._fighter_explicitly_selected:
+                self.my_sprite_id = get_default_fighter_id(team)
+            self._set_selected_fighter(
+                self.my_sprite_id,
+                mark_manual=self._fighter_explicitly_selected,
+            )
 
             self.info_label.configure(text=format_team_assignment(slot, team))
 
@@ -1342,6 +1452,11 @@ class NetworkLobbyView(ctk.CTkToplevel):
             border_color = (
                 PALETTE["gold_dim"] if player["team"] == "A" else PALETTE["cyan_dim"]
             )
+            fighter_id = str(player.get("sprite_id") or "").strip()
+            fighter_label = FIGHTER_DISPLAY_BY_SPRITE_ID.get(
+                fighter_id,
+                "Combattant du hall",
+            )
 
             player_card = ctk.CTkFrame(
                 self.roster_list_frame,
@@ -1411,9 +1526,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
             )
 
             detail_text = (
-                "Ton poste dans la joute."
+                f"Combattant : {fighter_label}. Ton poste dans la joute."
                 if player["slot"] == self.my_slot
-                else "Compagnon du hall en attente du depart."
+                else (
+                    f"Combattant : {fighter_label}. "
+                    "Compagnon du hall en attente du depart."
+                )
             )
             detail_label = ctk.CTkLabel(
                 player_card,
@@ -1434,6 +1552,20 @@ class NetworkLobbyView(ctk.CTkToplevel):
     def _update_lobby(self, players, match_duration_seconds=None):
         if match_duration_seconds is not None:
             self._apply_match_duration(match_duration_seconds)
+
+        if self.my_slot is not None:
+            for player in players:
+                if int(player.get("slot", 0) or 0) != int(self.my_slot):
+                    continue
+
+                roster_sprite_id = str(player.get("sprite_id") or "").strip()
+                if roster_sprite_id:
+                    self.my_sprite_id = roster_sprite_id
+                    self._set_selected_fighter(
+                        roster_sprite_id,
+                        mark_manual=self._fighter_explicitly_selected,
+                    )
+                break
 
         total_players = len(players)
         ready_players = sum(1 for player in players if player.get("ready"))
