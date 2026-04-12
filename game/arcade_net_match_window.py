@@ -54,10 +54,19 @@ from game.match_text import (
 )
 from game.settings import FPS
 from network.messages import DISCONNECTED, END, ERROR, STATE
+from network.net_utils import get_network_logger
 
 
 pg_init = getattr(pygame, "init", lambda: None)
 pg_quit = getattr(pygame, "quit", lambda: None)
+LOGGER = get_network_logger()
+LAN_ARCADE_RUNTIME_ERRORS = (
+    RuntimeError,
+    ValueError,
+    TypeError,
+    OSError,
+    AttributeError,
+)
 
 WINDOW_TITLE = "Arena Duel - Joute partagee Arcade"
 NETWORK_UP_KEYS = {
@@ -177,12 +186,36 @@ class ArcadeNetworkMatchWindow(arcade.Window):
         self.result_summary = None
         self._shutdown_complete = False
         self._close_client_on_close = False
+        self._first_state_logged = False
 
         pygame.mixer.pre_init(44100, -16, 2, 512)
         pg_init()
         init_audio()
         stop_music(fade_ms=0)
         start_match_music(restart=True)
+        LOGGER.info(
+            "Ouverture match LAN Arcade (joueur=%s, slot=%s, team=%s)",
+            my_name,
+            my_slot,
+            my_team,
+        )
+
+    def _abort_runtime(self, stage: str, error) -> None:
+        if self.result_summary is not None:
+            return
+
+        LOGGER.exception(
+            "Erreur dans la fenetre LAN Arcade pendant %s",
+            stage,
+        )
+        self.last_error_message = (
+            f"Le rendu Arcade du match LAN a echoue pendant {stage}: {error}"
+        )
+        stop_music(fade_ms=120)
+        self._request_close(
+            self._build_match_summary(completed=False),
+            close_client=False,
+        )
 
     def _top_to_bottom(self, y: float, height: float = 0.0) -> float:
         return float(self.height) - float(y) - float(height)
@@ -738,6 +771,13 @@ class ArcadeNetworkMatchWindow(arcade.Window):
         self.orb_spawn_times = next_spawn_times
         self.latest_state = message
         self.active_layout = get_map_layout(message.get("map_id", DEFAULT_MAP_ID))
+        if not self._first_state_logged:
+            LOGGER.info(
+                "Premier etat LAN Arcade recu (joueurs=%s, orbes=%s)",
+                len(message.get("players", [])),
+                len(message.get("orbs", [])),
+            )
+            self._first_state_logged = True
 
     def _build_match_summary(self, *, completed: bool) -> dict:
         if completed:
@@ -825,36 +865,42 @@ class ArcadeNetworkMatchWindow(arcade.Window):
         self.end_sound_played = True
 
     def on_draw(self) -> None:
-        arcade.start_render()
-        self._draw_background()
-        if self.latest_state is None:
-            self._draw_waiting_overlay()
-        else:
-            self._draw_arena()
-            self._draw_orbs()
-            self._draw_players()
-            self._draw_orb_effects()
-            self._draw_hud()
-        if self.end_message is not None:
-            self._draw_end_overlay()
+        try:
+            arcade.start_render()
+            self._draw_background()
+            if self.latest_state is None:
+                self._draw_waiting_overlay()
+            else:
+                self._draw_arena()
+                self._draw_orbs()
+                self._draw_players()
+                self._draw_orb_effects()
+                self._draw_hud()
+            if self.end_message is not None:
+                self._draw_end_overlay()
+        except LAN_ARCADE_RUNTIME_ERRORS as error:
+            self._abort_runtime("on_draw", error)
 
     def on_update(self, delta_time: float) -> None:
-        if self.result_summary is not None:
-            return
+        try:
+            if self.result_summary is not None:
+                return
 
-        self.render_elapsed_ms += float(delta_time) * 1000.0
-        self._process_messages()
-        if self.result_summary is not None:
-            return
+            self.render_elapsed_ms += float(delta_time) * 1000.0
+            self._process_messages()
+            if self.result_summary is not None:
+                return
 
-        if self.end_message is None and self.client.running:
-            up, down, left, right = _build_input_state(self.pressed_keys)
-            self.client.send_input(up, down, left, right)
-        elif self.end_message is not None:
-            self._play_final_sound_once()
-            self.end_timer_seconds -= float(delta_time)
-            if self.end_timer_seconds <= 0:
-                self._request_close(self._build_match_summary(completed=True))
+            if self.end_message is None and self.client.running:
+                up, down, left, right = _build_input_state(self.pressed_keys)
+                self.client.send_input(up, down, left, right)
+            elif self.end_message is not None:
+                self._play_final_sound_once()
+                self.end_timer_seconds -= float(delta_time)
+                if self.end_timer_seconds <= 0:
+                    self._request_close(self._build_match_summary(completed=True))
+        except LAN_ARCADE_RUNTIME_ERRORS as error:
+            self._abort_runtime("on_update", error)
 
     def on_key_press(self, symbol: int, modifiers: int) -> None:
         del modifiers
@@ -902,6 +948,11 @@ class ArcadeNetworkMatchWindow(arcade.Window):
 def run_network_match(client, my_slot, my_name, my_team):
     window = ArcadeNetworkMatchWindow(client, my_slot, my_name, my_team)
     arcade.run()
+    LOGGER.info(
+        "Fermeture match LAN Arcade (complete=%s, client_running=%s)",
+        bool(window.result_summary and window.result_summary.get("completed")),
+        bool(client.running),
+    )
     return window.result_summary or {
         "completed": False,
         "end_message": None,
