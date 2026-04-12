@@ -19,7 +19,7 @@ from game.match_text import (
     format_compact_scoreline,
     format_team_assignment,
 )
-from game.net_match_window import run_network_match
+from game.arcade_net_match_window import run_network_match
 from game.settings import (
     MATCH_DURATION_OPTIONS,
     MATCH_DURATION_SECONDS,
@@ -69,12 +69,8 @@ class NetworkLobbyView(ctk.CTkToplevel):
         style_window(self)
 
         self.network_config = load_lan_runtime_config()
-        self.duration_values = [
-            str(duration) for duration in MATCH_DURATION_OPTIONS
-        ]
-        self.match_duration_var = ctk.StringVar(
-            value=str(MATCH_DURATION_SECONDS)
-        )
+        self.duration_values = [str(duration) for duration in MATCH_DURATION_OPTIONS]
+        self.match_duration_var = ctk.StringVar(value=str(MATCH_DURATION_SECONDS))
 
         self.title("Arena Duel - Hall des bastions")
         _ico = resource_path("assets", "icons", "app.ico")
@@ -92,9 +88,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self._connect_in_progress = False
         self._ready_request_pending = False
         self.history_request_pending = False
-        self.server_port = int(
-            server_port or self.network_config.port
-        )
+        self.server_port = int(server_port or self.network_config.port)
 
         self.config_file = self.network_config.client_state_path
         self.address_info = get_lan_address_info()
@@ -172,28 +166,18 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
     def _sync_controls_state(self):
         connected = bool(self.client and self.client.running)
-        connect_locked = (
-            connected or self._connect_in_progress or self.match_running
-        )
+        connect_locked = connected or self._connect_in_progress or self.match_running
 
         self.connect_btn.configure(
             text=(
                 "Connexion..."
                 if self._connect_in_progress
-                else (
-                    "Dans le hall"
-                    if connected
-                    else "Entrer dans le hall"
-                )
+                else ("Dans le hall" if connected else "Entrer dans le hall")
             ),
             state="disabled" if connect_locked else "normal",
         )
-        self.ip_entry.configure(
-            state="disabled" if connect_locked else "normal"
-        )
-        self.name_entry.configure(
-            state="disabled" if connect_locked else "normal"
-        )
+        self.ip_entry.configure(state="disabled" if connect_locked else "normal")
+        self.name_entry.configure(state="disabled" if connect_locked else "normal")
         self.use_local_ip_btn.configure(
             state="disabled" if connect_locked else "normal"
         )
@@ -210,11 +194,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             text=(
                 "Transmission..."
                 if self._ready_request_pending
-                else (
-                    "Retirer l'état prêt"
-                    if self.ready_state
-                    else "Se déclarer prêt"
-                )
+                else ("Retirer l'état prêt" if self.ready_state else "Se déclarer prêt")
             ),
             state=(
                 "normal"
@@ -359,10 +339,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             text=(
                 "Invitation LAN a partager avec les autres PC"
                 if self.host_mode
-                else (
-                    "Colle l'invitation LAN du gardien "
-                    "ou choisis un test local"
-                )
+                else ("Colle l'invitation LAN du gardien ou choisis un test local")
             ),
             font=TYPOGRAPHY["body"],
             text_color=PALETTE["text_soft"],
@@ -382,9 +359,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             invite_panel,
             tone="panel_soft",
             border_color=(
-                PALETTE["cyan_dim"]
-                if self.host_mode
-                else PALETTE["border_strong"]
+                PALETTE["cyan_dim"] if self.host_mode else PALETTE["border_strong"]
             ),
         )
         invite_panel.grid(
@@ -620,11 +595,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         duration_hint = ctk.CTkLabel(
             duration_panel,
-            text=(
-                "Reglage du gardien"
-                if self.host_mode
-                else "Annonce du gardien"
-            ),
+            text=("Reglage du gardien" if self.host_mode else "Annonce du gardien"),
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
         )
@@ -811,10 +782,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
     def _refresh_mode_label(self):
         if self.host_mode:
             if self.client and self.client.running:
-                text = (
-                    "Hall tenu par le gardien · joute prete · chroniques "
-                    "gardees ici"
-                )
+                text = "Hall tenu par le gardien · joute prete · chroniques gardees ici"
                 update_badge(self.mode_badge, "Gardien", "gold")
             else:
                 if self.detected_local_ip:
@@ -943,15 +911,11 @@ class NetworkLobbyView(ctk.CTkToplevel):
             with open(self.config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            last_mode = str(
-                data.get("last_connection_mode") or ""
-            ).strip().lower()
+            last_mode = str(data.get("last_connection_mode") or "").strip().lower()
             if not self.host_mode and last_mode == "local":
                 return ""
 
-            invitation = str(
-                data.get("last_server_invitation") or ""
-            ).strip()
+            invitation = str(data.get("last_server_invitation") or "").strip()
             if invitation:
                 return invitation
 
@@ -1008,10 +972,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             )
         except (RuntimeError, TclError):
             self.info_label.configure(
-                text=(
-                    "Partage cette invitation LAN : "
-                    f"{shareable_invitation}"
-                )
+                text=(f"Partage cette invitation LAN : {shareable_invitation}")
             )
 
     # =========================
@@ -1047,9 +1008,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             return
 
         self._connect_in_progress = True
-        self.info_label.configure(
-            text="Connexion au hall du bastion en cours..."
-        )
+        self.info_label.configure(text="Connexion au hall du bastion en cours...")
         self._sync_controls_state()
         self.update_idletasks()
 
@@ -1069,10 +1028,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             self._sync_controls_state()
             play_alert()
             self.info_label.configure(
-                text=(
-                    "Impossible de rejoindre le hall du bastion : "
-                    f"{error}"
-                )
+                text=(f"Impossible de rejoindre le hall du bastion : {error}")
             )
             return
 
@@ -1086,10 +1042,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self._sync_controls_state()
 
         self.info_label.configure(
-            text=(
-                f"Lien scelle pour {name}. Le hall prepare ton entree "
-                "dans la joute."
-            )
+            text=(f"Lien scelle pour {name}. Le hall prepare ton entree dans la joute.")
         )
 
         self.my_name = name
@@ -1100,9 +1053,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self._start_network_thread()
         if self.host_mode:
-            if not self.client.send_match_duration(
-                self._get_selected_match_duration()
-            ):
+            if not self.client.send_match_duration(self._get_selected_match_duration()):
                 play_error()
                 self.info_label.configure(
                     text=(
@@ -1200,21 +1151,19 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 self.info_label.configure(
                     text=msg.get(
                         "message",
-                        (
-                            "Les chroniques du hall sont indisponibles "
-                            "pour le moment."
-                        ),
+                        ("Les chroniques du hall sont indisponibles pour le moment."),
                     )
                 )
                 return
 
-            source_label = "Chroniques du hall local" if self.host_mode else (
-                "Chroniques du hall rejoint"
+            source_label = (
+                "Chroniques du hall local"
+                if self.host_mode
+                else ("Chroniques du hall rejoint")
             )
             self.info_label.configure(
                 text=(
-                    f"{len(msg.get('rows', []))} chronique(s) recue(s) "
-                    "depuis le hall."
+                    f"{len(msg.get('rows', []))} chronique(s) recue(s) depuis le hall."
                 )
             )
             self._show_history_window(
@@ -1246,8 +1195,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             active_value = self._get_shareable_invitation_text()
             if self.detected_local_ip:
                 caption = (
-                    "Invitation LAN reelle a transmettre aux autres PC "
-                    "du reseau local."
+                    "Invitation LAN reelle a transmettre aux autres PC du reseau local."
                 )
             else:
                 caption = (
@@ -1256,10 +1204,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 )
         else:
             active_value = ip_value.strip() or "En attente"
-            caption = (
-                "Invitation LAN actuellement preparee "
-                "pour rejoindre le hall."
-            )
+            caption = "Invitation LAN actuellement preparee pour rejoindre le hall."
             try:
                 host, port = parse_server_invitation(
                     active_value,
@@ -1307,9 +1252,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         for index, player in enumerate(players):
             team_tone = "gold" if player["team"] == "A" else "info"
             border_color = (
-                PALETTE["gold_dim"]
-                if player["team"] == "A"
-                else PALETTE["cyan_dim"]
+                PALETTE["gold_dim"] if player["team"] == "A" else PALETTE["cyan_dim"]
             )
 
             player_card = ctk.CTkFrame(
@@ -1406,12 +1349,8 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         total_players = len(players)
         ready_players = sum(1 for player in players if player.get("ready"))
-        team_a_count = sum(
-            1 for player in players if player.get("team") == "A"
-        )
-        team_b_count = sum(
-            1 for player in players if player.get("team") == "B"
-        )
+        team_a_count = sum(1 for player in players if player.get("team") == "A")
+        team_b_count = sum(1 for player in players if player.get("team") == "B")
 
         self.roster_total_value.configure(text=str(total_players))
         self.roster_ready_value.configure(
@@ -1435,9 +1374,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         )
         self._render_roster_cards(players)
         if not self.match_running:
-            self.info_label.configure(
-                text=self._build_lobby_status_text(players)
-            )
+            self.info_label.configure(text=self._build_lobby_status_text(players))
 
     def _handle_duration_change(self, _choice=None):
         duration_seconds = self._get_selected_match_duration()
@@ -1455,9 +1392,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.match_duration_var.set(value)
         self.duration_menu.set(value)
         duration_text = format_match_duration_label(int(duration_seconds))
-        self.duration_status_label.configure(
-            text=f"Durée courante : {duration_text}"
-        )
+        self.duration_status_label.configure(text=f"Durée courante : {duration_text}")
 
     def _get_selected_match_duration(self) -> int:
         try:
@@ -1469,11 +1404,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
     # Ready
     # =========================
     def _toggle_ready(self):
-        if (
-            not self.client
-            or not self.client.running
-            or self._ready_request_pending
-        ):
+        if not self.client or not self.client.running or self._ready_request_pending:
             return
 
         play_select()
@@ -1533,17 +1464,13 @@ class NetworkLobbyView(ctk.CTkToplevel):
         team_a_score = end_message.get("team_a_score", 0)
         team_b_score = end_message.get("team_b_score", 0)
         base_text = (
-            f"Joute close · "
-            f"{format_compact_scoreline(team_a_score, team_b_score)}"
+            f"Joute close · {format_compact_scoreline(team_a_score, team_b_score)}"
         )
 
         if end_message.get("history_saved", False):
             match_id = end_message.get("match_id")
             if match_id is not None:
-                return (
-                    f"{base_text} · chronique du hall archivee "
-                    f"(joute #{match_id})"
-                )
+                return f"{base_text} · chronique du hall archivee (joute #{match_id})"
             return f"{base_text} · chronique du hall archivee"
 
         history_error = end_message.get("history_error", "Erreur inconnue")
@@ -1602,9 +1529,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         status_text = self._format_post_match_status(
             match_summary.get("end_message", {})
         )
-        self.info_label.configure(
-            status_text
-        )
+        self.info_label.configure(status_text)
 
         # relance la boucle réseau lobby
         if self.client and self.client.running:
