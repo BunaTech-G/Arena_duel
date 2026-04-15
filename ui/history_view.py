@@ -86,10 +86,7 @@ def _build_match_footer(row_data: dict) -> str:
         parts.append(f"{ai_participants} IA archivee(s)")
 
     if not parts:
-        return (
-            "Archive complete avec score, verdict et duree reelle de la "
-            "joute."
-        )
+        return "Archive complete avec score, verdict et duree reelle de la joute."
 
     return " · ".join(parts)
 
@@ -368,7 +365,7 @@ class HistoryView(ctk.CTkToplevel):
             fallback_label="mascot",
         )
 
-        self.title("Chroniques de l'arène")
+        self.title("Arena Duel - Chroniques")
         self.geometry("1320x860")
         enable_large_window(self, 1120, 760)
         _ico = resource_path("assets", "icons", "app.ico")
@@ -399,7 +396,7 @@ class HistoryView(ctk.CTkToplevel):
 
         title = ctk.CTkLabel(
             header,
-            text="Chroniques de l'arène",
+            text="Chroniques",
             font=TYPOGRAPHY["title"],
             text_color=PALETTE["text"],
         )
@@ -420,11 +417,7 @@ class HistoryView(ctk.CTkToplevel):
 
         intro = ctk.CTkLabel(
             header,
-            text=(
-                "Lis les joutes déjà disputées, repère le bastion dominant et "
-                "garde les chroniques utiles visibles sans perdre de hauteur "
-                "en en-tête."
-            ),
+            text="Relis vite verdicts, scores et durees sans noyer l'ecran.",
             font=TYPOGRAPHY["body"],
             text_color=PALETTE["text_muted"],
             wraplength=760,
@@ -471,7 +464,7 @@ class HistoryView(ctk.CTkToplevel):
 
         preview_title = ctk.CTkLabel(
             preview_card,
-            text="Archives du sanctum",
+            text="Archives locales",
             font=TYPOGRAPHY["body_bold"],
             text_color=PALETTE["text"],
         )
@@ -485,7 +478,7 @@ class HistoryView(ctk.CTkToplevel):
 
         preview_hint = ctk.CTkLabel(
             preview_card,
-            text="Verdicts locaux\net joutes partagées",
+            text="Locale, LAN\net forge IA",
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_muted"],
             justify="left",
@@ -536,7 +529,7 @@ class HistoryView(ctk.CTkToplevel):
 
         refresh_btn = create_button(
             action_frame,
-            "Rafraîchir les chroniques",
+            "Actualiser",
             self._handle_refresh,
             variant="secondary",
             width=220,
@@ -617,17 +610,17 @@ class HistoryView(ctk.CTkToplevel):
             play_alert()
             self.total_matches_label.configure(text="0")
             self.players_label.configure(text="0")
-            self.top_winner_label.configure(text="-")
+            self.top_winner_label.configure(text="Indisponible")
             self.draws_label.configure(text="0")
             self.status_label.configure(
-                text="Le sanctuaire des chroniques est indisponible."
+                text="Chroniques indisponibles : sanctuaire hors ligne."
             )
             update_badge(self.source_badge, self.source_label, "danger")
             self._render_scroll_message(
-                "Chroniques voilees",
+                "Chroniques indisponibles",
                 (
-                    "La base des chroniques ne répond pas. Rétablis le "
-                    "sanctuaire avant de relire les verdicts archivés."
+                    "La base locale ne repond pas. Relance MariaDB puis "
+                    "rouvre cette vue."
                 ),
                 "danger",
             )
@@ -641,19 +634,13 @@ class HistoryView(ctk.CTkToplevel):
         if not rows:
             self.total_matches_label.configure(text="0")
             self.players_label.configure(text="0")
-            self.top_winner_label.configure(text="-")
+            self.top_winner_label.configure(text="En attente")
             self.draws_label.configure(text="0")
-            self.status_label.configure(
-                text="Aucune chronique archivée pour cette source."
-            )
+            self.status_label.configure(text="Aucune chronique dans cette source.")
             update_badge(self.source_badge, self.source_label, "warning")
             self._render_scroll_message(
-                "Aucune joute scellee",
-                (
-                    "Les prochaines joutes apparaitront ici avec leur "
-                    "verdict, leur duree et le bastion qui a impose son "
-                    "rythme."
-                ),
+                "Aucune joute archivee",
+                "Termine une joute locale ou LAN, puis reviens ici.",
                 "warning",
             )
             return
@@ -683,19 +670,14 @@ class HistoryView(ctk.CTkToplevel):
             top_name, top_count = winner_counter.most_common(1)[0]
             self.top_winner_label.configure(text=f"{top_name} ({top_count})")
         else:
-            self.top_winner_label.configure(text="Aucun avantage net")
+            self.top_winner_label.configure(text="Equilibre")
 
         draws_count = sum(
             1 for row in rows if not _coerce_history_row(row)["winner_display"]
         )
         self.draws_label.configure(text=str(draws_count))
 
-        self.status_label.configure(
-            text=(
-                f"{len(rows)} chronique(s) chargée(s) depuis "
-                f"{self.source_label}."
-            )
-        )
+        self.status_label.configure(text=f"{len(rows)} chronique(s) chargee(s).")
         update_badge(self.source_badge, self.source_label, "success")
 
         # Cartes de matchs

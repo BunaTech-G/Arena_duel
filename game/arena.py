@@ -603,6 +603,10 @@ def draw_arena(
     active_layout = layout or get_map_layout()
     surface.blit(_get_floor_surface(active_layout), arena_rect.topleft)
 
+    floor_veil = pygame.Surface(arena_rect.size, pygame.SRCALPHA)
+    floor_veil.fill((8, 12, 18, 26))
+    surface.blit(floor_veil, arena_rect.topleft)
+
     for decor in active_layout.decor:
         decor_rect = pygame.Rect(*decor.rect)
         if decor.kind == "rune_circle":
@@ -656,7 +660,7 @@ def draw_orb_visual(
     spawned_at_ms: float | None = None,
 ) -> None:
     is_rare = variant == "rare" or value >= ORB_RARE_SCORE_VALUE
-    hover_amplitude = 3.2 if is_rare else 2.4
+    hover_amplitude = 3.4 if is_rare else 2.8
     hover_offset = math.sin((elapsed_ms / 280.0) + x * 0.022 + y * 0.017)
     center_x = int(x)
     center_y = int(y + hover_offset * hover_amplitude)
@@ -668,9 +672,9 @@ def draw_orb_visual(
     spawn_progress = min(1.0, spawn_age / ORB_SPAWN_ANIMATION_MS)
 
     pulse = 1.0 + 0.05 * math.sin((elapsed_ms / 180.0) + x * 0.03)
-    variant_scale = 1.15 if is_rare else 1.0
+    variant_scale = 1.2 if is_rare else 1.08
     pop_scale = 0.78 + (0.22 * spawn_progress)
-    token_size = radius * 3.0 * pulse * variant_scale * pop_scale
+    token_size = radius * 3.35 * pulse * variant_scale * pop_scale
     token_size = max(radius * 3, int(round(token_size / 2.0)) * 2)
 
     shadow_width = max(radius + 2, int(token_size * 0.34))
@@ -692,15 +696,15 @@ def draw_orb_visual(
     )
 
     aura_radius = max(
-        radius + 8,
-        int(token_size * (0.42 if is_rare else 0.36)),
+        radius + 10,
+        int(token_size * (0.46 if is_rare else 0.4)),
     )
     aura_color = (255, 162, 76) if is_rare else (247, 208, 106)
     aura_surface = pygame.Surface(
         (aura_radius * 2, aura_radius * 2),
         PG_SRCALPHA,
     )
-    for factor, alpha in ((1.0, 18), (0.74, 30), (0.48, 52)):
+    for factor, alpha in ((1.0, 24), (0.74, 34), (0.48, 58)):
         boost = 22 if is_rare else 0
         pygame.draw.circle(
             aura_surface,
@@ -1170,6 +1174,7 @@ def draw_player_avatar(
 ) -> None:
     center_x = int(x)
     center_y = int(y)
+    display_radius = max(radius, int(radius * 1.18))
     resolved_direction = direction_name or ("right" if facing >= 0 else "left")
     direction = 1 if facing >= 0 else -1
     accent_bright = tuple(
@@ -1177,7 +1182,10 @@ def draw_player_avatar(
     )
 
     shadow_rect = pygame.Rect(
-        center_x - radius, center_y + radius - 4, radius * 2, max(10, radius // 2 + 4)
+        center_x - display_radius,
+        center_y + display_radius - 4,
+        display_radius * 2,
+        max(10, display_radius // 2 + 4),
     )
     shadow_surface = pygame.Surface(shadow_rect.size, pygame.SRCALPHA)
     pygame.draw.ellipse(shadow_surface, (0, 0, 0, 92), shadow_surface.get_rect())
@@ -1185,7 +1193,10 @@ def draw_player_avatar(
 
     animation_name = "walk" if moving else "idle"
     frame_index = int(elapsed_ms / (120 if moving else 180))
-    sprite_size = (max(52, int(radius * 2.7)), max(52, int(radius * 2.7)))
+    sprite_size = (
+        max(56, int(display_radius * 2.9)),
+        max(56, int(display_radius * 2.9)),
+    )
     sprite = load_sprite_animation_frame(
         sprite_id,
         animation_name,
@@ -1205,7 +1216,7 @@ def draw_player_avatar(
         )
 
     if sprite is not None:
-        aura_radius = int(radius * (1.85 if highlight else 1.45))
+        aura_radius = int(display_radius * (1.85 if highlight else 1.45))
         aura_surface = pygame.Surface(
             (aura_radius * 2, aura_radius * 2), pygame.SRCALPHA
         )
@@ -1216,11 +1227,12 @@ def draw_player_avatar(
             aura_radius,
         )
         surface.blit(
-            aura_surface, (center_x - aura_radius, center_y - aura_radius - radius // 2)
+            aura_surface,
+            (center_x - aura_radius, center_y - aura_radius - display_radius // 2),
         )
 
         sprite_rect = sprite.get_rect(
-            midbottom=(center_x, center_y + int(radius * 1.7))
+            midbottom=(center_x, center_y + int(display_radius * 1.72))
         )
         surface.blit(sprite, sprite_rect)
 
@@ -1228,23 +1240,23 @@ def draw_player_avatar(
             pygame.draw.circle(
                 surface,
                 (244, 241, 223),
-                (center_x, center_y - int(radius * 0.08)),
-                int(radius * 1.55),
+                (center_x, center_y - int(display_radius * 0.08)),
+                int(display_radius * 1.55),
                 width=2,
             )
 
         _draw_nameplate(
             surface,
             center_x=center_x,
-            center_y=center_y - int(radius * 2.0),
+            center_y=center_y - int(display_radius * 2.0),
             name=name,
             name_font=name_font,
             accent_bright=accent_bright,
         )
         _draw_combo_badge(
             surface,
-            center_x=center_x + int(radius * 0.98),
-            center_y=center_y - int(radius * 1.5),
+            center_x=center_x + int(display_radius * 0.98),
+            center_y=center_y - int(display_radius * 1.5),
             combo_count=combo_count,
             combo_remaining_ms=combo_remaining_ms,
             accent_bright=accent_bright,
@@ -1252,18 +1264,21 @@ def draw_player_avatar(
         )
 
         focus_offsets = {
-            "left": (-int(radius * 0.8), int(radius * 0.18)),
-            "right": (int(radius * 0.8), int(radius * 0.18)),
-            "up": (0, -int(radius * 0.32)),
-            "down": (0, int(radius * 0.18)),
+            "left": (-int(display_radius * 0.8), int(display_radius * 0.18)),
+            "right": (int(display_radius * 0.8), int(display_radius * 0.18)),
+            "up": (0, -int(display_radius * 0.32)),
+            "down": (0, int(display_radius * 0.18)),
         }
         offset_x, offset_y = focus_offsets.get(
             resolved_direction,
-            (int(radius * 0.8), int(radius * 0.18)),
+            (int(display_radius * 0.8), int(display_radius * 0.18)),
         )
         focus_pos = (center_x + offset_x, center_y + offset_y)
         pygame.draw.circle(
-            surface, (*accent_bright, 215), focus_pos, max(3, radius // 6)
+            surface,
+            (*accent_bright, 215),
+            focus_pos,
+            max(3, display_radius // 6),
         )
         return
 
@@ -1272,7 +1287,7 @@ def draw_player_avatar(
         name=name,
         x=x,
         y=y,
-        radius=radius,
+        radius=display_radius,
         accent_color=accent_color,
         name_font=name_font,
         highlight=highlight,

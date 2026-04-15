@@ -9,6 +9,7 @@
     "icons": "assets/icons",
     "fonts": "assets/fonts",
     "sounds": "assets/sounds",
+    "collectibles": "assets/collectibles",
     "ui": "assets/ui",
     "maps": "assets/maps",
     "sprites": "assets/sprites",
@@ -43,6 +44,25 @@
       "label": "Skeleton Mascot",
       "manifest": "assets/sprites/skeleton_mascot/manifest.json",
       "status": "placeholder_manifest_ready"
+    },
+    {
+      "id": "skeleton_duo_fighters",
+      "label": "Skeleton Duo Fighters",
+      "manifest": "assets/sprites/skeleton_duo_fighters/manifest.json",
+      "prompt_brief": "assets/prompts/SKELETON_DUO_SPRITESHEET_BRIEF.md",
+      "status": "classified_and_runtime_ready"
+    },
+    {
+      "id": "skeleton_fighter_ember",
+      "label": "Skeleton Fighter Ember",
+      "manifest": "assets/sprites/skeleton_fighter_ember/manifest.json",
+      "status": "runtime_ready_from_user_sheet"
+    },
+    {
+      "id": "skeleton_fighter_aether",
+      "label": "Skeleton Fighter Aether",
+      "manifest": "assets/sprites/skeleton_fighter_aether/manifest.json",
+      "status": "runtime_ready_from_user_sheet"
     }
   ],
   "ui_assets": [
@@ -51,18 +71,24 @@
     "assets/ui/button_glow_cyan.png",
     "assets/ui/banner_filigree_top.png"
   ],
+  "collectible_assets": [
+    "assets/collectibles/jetons.png"
+  ],
   "background_assets": [
     "assets/backgrounds/launcher_twilight_bastion_bg.png",
     "assets/backgrounds/launcher_sanctum_bg.png",
     "assets/backgrounds/arena_forgotten_sanctum_floor.png"
   ],
   "portrait_assets": [
-    "assets/portraits/skeleton_mascot_portrait.png"
+    "assets/portraits/skeleton_mascot_portrait.png",
+    "assets/portraits/skeleton_fighter_ember_portrait.png",
+    "assets/portraits/skeleton_fighter_aether_portrait.png"
   ],
   "replacement_backlog": [
     "final skeleton mascot icon",
     "top-down fantasy ruins arena floor",
     "idle and walk sprite frames",
+    "two skeleton arena fighter sprite sheets",
     "ornamental UI decorations",
     "combat portraits"
   ],
@@ -72,6 +98,10 @@
     "assets/backgrounds/arena_forgotten_sanctum_floor.png",
     "assets/portraits/skeleton_mascot_portrait.png",
     "assets/sprites/skeleton_mascot/idle_0.png",
-    "assets/sprites/skeleton_mascot/walk_0.png"
+    "assets/sprites/skeleton_mascot/walk_0.png",
+    "assets/collectibles/jetons.png",
+    "assets/sprites/skeleton_duo_fighters/skeleton_duo_master_sheet.png",
+    "assets/sprites/skeleton_fighter_ember/idle_0.png",
+    "assets/sprites/skeleton_fighter_aether/idle_0.png"
   ]
 }

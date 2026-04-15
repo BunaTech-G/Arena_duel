@@ -34,10 +34,12 @@ _RADIUS = 14  # arrondi principal des panneaux
 _RADIUS_ROW = 10  # arrondi rangée joueur
 _RADIUS_BAR = 4  # arrondi barre de progression
 _ACCENT_W = 5  # largeur barre accent équipe
-_ROW_H = 40  # hauteur rangée joueur dans le roster
-_PAD = 8  # padding interne de base
-# hauteur fixe du bloc score/timer (indépendant de layout.hud_height)
-_SCORE_H = 78
+_PAD = 7  # padding interne de base
+_ROW_H_MIN = 30
+_ROW_H_MAX = 42
+_SCORE_H_MIN = 60
+_SCORE_H_MAX = 78
+_ROSTER_HEADER_H = 18
 
 
 # ── Helpers texte ────────────────────────────────────────────────────────────
@@ -251,12 +253,13 @@ def draw_player_summary_row(
     sprite_id: str = "skeleton_mascot",
     panel_width: int = 260,
     portrait_size: int = 26,
+    row_height: int | None = None,
 ):
     """
     Rangée joueur compacte : portrait encadré | nom tronqué | badge score.
     Tout le contenu remplit la hauteur — aucun vide.
     """
-    row_h = portrait_size + 12
+    row_h = max(portrait_size + 8, row_height or portrait_size + 8)
     row_rect = pygame.Rect(x, y, panel_width, row_h)
     _panel(
         surface,
@@ -272,7 +275,13 @@ def draw_player_summary_row(
     portrait_rect = pygame.Rect(px, py, portrait_size, portrait_size)
     frame = portrait_rect.inflate(4, 4)
     pygame.draw.rect(surface, (14, 20, 32), frame, border_radius=8)
-    pygame.draw.rect(surface, accent_color[:3], frame, width=2, border_radius=8)
+    pygame.draw.rect(
+        surface,
+        accent_color[:3],
+        frame,
+        width=2,
+        border_radius=8,
+    )
 
     portrait = load_sprite_portrait(
         sprite_id=sprite_id,
@@ -283,11 +292,11 @@ def draw_player_summary_row(
         surface.blit(portrait, portrait_rect)
 
     # Badge score (droite)
-    badge_w = 34
-    badge_h = row_h - 10
+    badge_w = max(30, int(row_h * 0.8))
+    badge_h = row_h - 8
     badge_rect = pygame.Rect(
         row_rect.right - badge_w - 6,
-        y + 5,
+        y + 4,
         badge_w,
         badge_h,
     )
@@ -302,11 +311,11 @@ def draw_player_summary_row(
     surface.blit(sc_surf, sc_surf.get_rect(center=badge_rect.center))
 
     # Nom (entre portrait et badge)
-    name_max_w = badge_rect.x - portrait_rect.right - 16
+    name_max_w = badge_rect.x - portrait_rect.right - 14
     trimmed = fit_text_to_width(small_font, trim_player_name(name), name_max_w)
     nm_surf = small_font.render(trimmed, True, _TEXT[:3])
     ny = row_rect.centery - nm_surf.get_height() // 2
-    surface.blit(nm_surf, (portrait_rect.right + 10, ny))
+    surface.blit(nm_surf, (portrait_rect.right + 8, ny))
 
 
 # ── Panneau roster équipe ─────────────────────────────────────────────────
@@ -321,13 +330,16 @@ def draw_team_summary_panel(
     rows,
     align: str = "left",
     panel_width: int = 260,
+    row_height: int = _ROW_H_MIN,
+    header_height: int = _ROSTER_HEADER_H,
+    portrait_size: int = 26,
 ):
     """
     Panneau roster : header titre + rangées joueurs.
     Fond légèrement plus sombre que les panneaux de score.
     """
-    header_h = 26
-    panel_h = header_h + len(rows) * _ROW_H + 8
+    header_h = header_height
+    panel_h = header_h + len(rows) * row_height + 6
     panel_rect = pygame.Rect(x, y, panel_width, panel_h)
     _panel(surface, panel_rect, fill=(8, 12, 20, 200), radius=12)
 
@@ -337,10 +349,10 @@ def draw_team_summary_panel(
         if align == "left"
         else panel_rect.right - hdr.get_width() - 12
     )
-    surface.blit(hdr, (hx, panel_rect.y + 5))
+    surface.blit(hdr, (hx, panel_rect.y + 4))
 
     for idx, row in enumerate(rows):
-        ry = panel_rect.y + header_h + idx * _ROW_H
+        ry = panel_rect.y + header_h + idx * row_height
         draw_player_summary_row(
             surface,
             small_font,
@@ -351,7 +363,8 @@ def draw_team_summary_panel(
             accent_color=row["accent_color"],
             sprite_id=row.get("sprite_id", "skeleton_mascot"),
             panel_width=panel_width - 12,
-            portrait_size=26,
+            portrait_size=portrait_size,
+            row_height=row_height,
         )
 
 
@@ -374,24 +387,34 @@ def draw_match_hud(
     match_duration: int = 60,
 ) -> None:
     """
-    Orchestre le HUD complet.
+    Orchestre le HUD complet dans la hauteur reservee par le layout.
 
-    Composition (1280×810, hud_height=250) :
-      - Bande top (y=8, h=_SCORE_H) : [score A] [timer centré] [score B]
-      - Bande roster (y=8+_SCORE_H+8) : [roster A gauche] [roster B droite]
-
-    Le timer est toujours centré ; les blocs score s'ancrent aux marges.
-    Les rosters sont positionnés sous les blocs score, dans l'espace HUD.
+    Le timer reste centré, les scores s'ancrent aux marges et les rosters
+    tiennent sous les scores sans repousser la zone de jeu inutilement.
     """
     sw, _ = surface.get_size()
-    margin = max(16, getattr(layout, "margin", 60) // 2)
-    hud_h = _SCORE_H  # hauteur fixe des blocs score/timer
     top_y = 8
+    margin = max(12, min(36, getattr(layout, "margin", 60) // 2))
+    arena_top = int(getattr(layout, "top", 220))
+    configured_hud_h = int(getattr(layout, "hud_height", arena_top))
+    available_h = max(140, min(configured_hud_h, arena_top - top_y))
+    max_rows = max(1, len(team_a_rows), len(team_b_rows))
+    hud_h = max(_SCORE_H_MIN, min(_SCORE_H_MAX, int(available_h * 0.34)))
+    roster_gap = 4
+    available_roster_h = max(40, available_h - hud_h - roster_gap)
+    row_h = max(
+        _ROW_H_MIN,
+        min(
+            _ROW_H_MAX,
+            int((available_roster_h - _ROSTER_HEADER_H - 6) / max_rows),
+        ),
+    )
+    portrait_size = max(22, min(30, row_h - 8))
 
     # Dimensions des blocs
-    timer_w = min(200, max(170, sw // 7))
-    avail = sw - margin * 2 - timer_w - 16
-    panel_w = min(260, max(200, avail // 2))
+    timer_w = min(214, max(180, sw // 7))
+    avail = sw - margin * 2 - timer_w - 18
+    panel_w = min(272, max(216, avail // 2))
 
     # Positions horizontales — symétrie autour du centre
     timer_x = (sw - timer_w) // 2
@@ -435,7 +458,7 @@ def draw_match_hud(
     )
 
     # ── Rosters sous les blocs score ─────────────────────────────────────────
-    roster_y = top_y + hud_h + 8
+    roster_y = top_y + hud_h + roster_gap
     draw_team_summary_panel(
         surface,
         small_font,
@@ -445,6 +468,9 @@ def draw_match_hud(
         team_a_rows,
         align="left",
         panel_width=panel_w,
+        row_height=row_h,
+        header_height=_ROSTER_HEADER_H,
+        portrait_size=portrait_size,
     )
     draw_team_summary_panel(
         surface,
@@ -455,4 +481,7 @@ def draw_match_hud(
         team_b_rows,
         align="right",
         panel_width=panel_w,
+        row_height=row_h,
+        header_height=_ROSTER_HEADER_H,
+        portrait_size=portrait_size,
     )

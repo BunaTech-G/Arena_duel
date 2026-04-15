@@ -157,7 +157,6 @@ def load_runtime_config(include_session_overrides: bool = True) -> dict:
         "db_password": "",
         "db_name": "arena_duel_v2_db",
         "db_connect_timeout": 3,
-        "gameplay_backend": "arcade",
         "lan_bind_host": "0.0.0.0",
         "tcp_port": 5000,
         "lan_connect_timeout_seconds": 4,

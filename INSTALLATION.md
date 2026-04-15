@@ -175,7 +175,6 @@ Créez ce fichier à la racine du projet :
 ```txt
 customtkinter==5.2.2
 pygame-ce==2.5.7
-arcade
 mariadb
 ```
 

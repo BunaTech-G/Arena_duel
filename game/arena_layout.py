@@ -87,11 +87,26 @@ def _coerce_rect(raw_rect: list[int] | tuple[int, int, int, int]) -> RectTuple:
     return tuple(int(value) for value in raw_rect)  # type: ignore[return-value]
 
 
-def _build_element(raw_data: dict) -> ArenaElement:
+def _resolve_playable_rect(
+    base_rect: RectTuple, hud_height: int
+) -> tuple[RectTuple, int]:
+    left, top, width, height = base_rect
+    if hud_height >= top:
+        return base_rect, 0
+
+    lift = top - hud_height
+    return (left, top - lift, width, height + lift), lift
+
+
+def _build_element(raw_data: dict, *, y_offset: int = 0) -> ArenaElement:
+    rect = _coerce_rect(raw_data.get("rect", [0, 0, 0, 0]))
+    if y_offset:
+        rect = (rect[0], rect[1] + y_offset, rect[2], rect[3])
+
     return ArenaElement(
         element_id=str(raw_data.get("id", "element")),
         kind=str(raw_data.get("kind", "generic")),
-        rect=_coerce_rect(raw_data.get("rect", [0, 0, 0, 0])),
+        rect=rect,
         collision=bool(raw_data.get("collision", False)),
     )
 
@@ -102,8 +117,14 @@ def load_arena_layout(map_id: str = DEFAULT_MAP_ID) -> ArenaLayout:
 
     raw_data = _load_raw_layout(map_id)
     arena_data = raw_data.get("arena", {})
+    hud_height = int(arena_data.get("hud_height", 80))
+    playable_rect, playable_lift = _resolve_playable_rect(
+        _coerce_rect(arena_data.get("playable_rect", [60, 80, 1160, 580])),
+        hud_height,
+    )
+    content_y_offset = -playable_lift
     spawn_groups = {
-        str(team_code): tuple((int(x), int(y)) for x, y in positions)
+        str(team_code): tuple((int(x), int(y) + content_y_offset) for x, y in positions)
         for team_code, positions in raw_data.get("spawn_groups", {}).items()
     }
 
@@ -113,15 +134,22 @@ def load_arena_layout(map_id: str = DEFAULT_MAP_ID) -> ArenaLayout:
         window_size=tuple(
             int(value) for value in arena_data.get("window_size", [1280, 720])
         ),
-        hud_height=int(arena_data.get("hud_height", 80)),
+        hud_height=hud_height,
         margin=int(arena_data.get("margin", 60)),
-        playable_rect=_coerce_rect(
-            arena_data.get("playable_rect", [60, 80, 1160, 580])
-        ),
+        playable_rect=playable_rect,
         spawn_groups=spawn_groups,
-        obstacles=tuple(_build_element(item) for item in raw_data.get("obstacles", [])),
-        traps=tuple(_build_element(item) for item in raw_data.get("traps", [])),
-        decor=tuple(_build_element(item) for item in raw_data.get("decor", [])),
+        obstacles=tuple(
+            _build_element(item, y_offset=content_y_offset)
+            for item in raw_data.get("obstacles", [])
+        ),
+        traps=tuple(
+            _build_element(item, y_offset=content_y_offset)
+            for item in raw_data.get("traps", [])
+        ),
+        decor=tuple(
+            _build_element(item, y_offset=content_y_offset)
+            for item in raw_data.get("decor", [])
+        ),
     )
     _LAYOUT_CACHE[map_id] = layout
     return layout

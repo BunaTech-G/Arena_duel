@@ -13,6 +13,7 @@ PALETTE = {
     "bg": "#0f131a",
     "bg_alt": "#131924",
     "bg_glow": "#182233",
+    "launcher_blend": "#152949",
     "panel": "#1a2130",
     "panel_alt": "#212a3b",
     "panel_deep": "#141b27",
@@ -49,18 +50,24 @@ PALETTE = {
 }
 
 
+RESAMPLING_LANCZOS = getattr(
+    getattr(Image, "Resampling", Image),
+    "LANCZOS",
+)
+
+
 TYPOGRAPHY = {
-    "display": ("Palatino Linotype", 42, "bold"),
-    "title": ("Palatino Linotype", 32, "bold"),
-    "section": ("Palatino Linotype", 24, "bold"),
-    "subtitle": ("Segoe UI Semibold", 17),
+    "display": ("Palatino Linotype", 44, "bold"),
+    "title": ("Palatino Linotype", 34, "bold"),
+    "section": ("Palatino Linotype", 26, "bold"),
+    "subtitle": ("Segoe UI Semibold", 18),
     "body": ("Segoe UI", 16),
     "body_bold": ("Segoe UI Semibold", 16),
     "small": ("Segoe UI", 14),
     "small_bold": ("Segoe UI Semibold", 14),
     "button": ("Segoe UI Semibold", 16),
     "button_small": ("Segoe UI Semibold", 14),
-    "stat": ("Palatino Linotype", 22, "bold"),
+    "stat": ("Palatino Linotype", 24, "bold"),
 }
 
 
@@ -150,24 +157,63 @@ def apply_theme_settings():
     ctk.set_default_color_theme("blue")
 
 
+def _resolve_theme_color(color_value):
+    if isinstance(color_value, (list, tuple)):
+        for candidate in reversed(tuple(color_value)):
+            resolved_color = _resolve_theme_color(candidate)
+            if resolved_color is not None:
+                return resolved_color
+        return None
+
+    if color_value is None:
+        return None
+
+    color_text = str(color_value).strip()
+    if not color_text or color_text.lower() == "transparent":
+        return None
+    return color_text
+
+
+def resolve_widget_bg_color(widget, fallback: str | None = None) -> str:
+    current_widget = widget
+    fallback_color = fallback or PALETTE["bg"]
+
+    while current_widget is not None:
+        for attribute_name in ("fg_color", "bg_color"):
+            try:
+                attribute_value = current_widget.cget(attribute_name)
+            except (AttributeError, TclError):
+                continue
+
+            resolved_color = _resolve_theme_color(attribute_value)
+            if resolved_color is not None:
+                return resolved_color
+
+        current_widget = getattr(current_widget, "master", None)
+
+    return fallback_color
+
+
 def style_window(window):
     window.configure(fg_color=PALETTE["bg"])
 
 
-def style_frame(frame, tone="panel", border_color=None):
+def style_frame(frame, tone="panel", border_color=None, border_width=1):
     frame.configure(
+        bg_color=resolve_widget_bg_color(getattr(frame, "master", None)),
         fg_color=PALETTE.get(tone, PALETTE["panel"]),
-        border_width=1,
+        border_width=border_width,
         border_color=border_color or PALETTE["border"],
     )
 
 
 def style_textbox(textbox, tone="panel_soft"):
     textbox.configure(
+        bg_color=resolve_widget_bg_color(getattr(textbox, "master", None)),
         fg_color=PALETTE.get(tone, PALETTE["panel_soft"]),
         border_width=1,
-        border_color=PALETTE["border"],
-        text_color=PALETTE["text_muted"],
+        border_color=PALETTE["divider"],
+        text_color=PALETTE["text"],
         font=TYPOGRAPHY["body"],
     )
 
@@ -190,6 +236,10 @@ def create_button(
     **kwargs,
 ):
     style = BUTTON_VARIANTS[variant]
+    bg_color = kwargs.pop("bg_color", None)
+    if _resolve_theme_color(bg_color) is None:
+        bg_color = resolve_widget_bg_color(master)
+
     return ctk.CTkButton(
         master,
         text=text,
@@ -198,6 +248,7 @@ def create_button(
         height=height,
         corner_radius=14,
         font=font or TYPOGRAPHY["button"],
+        bg_color=bg_color,
         fg_color=style["fg_color"],
         hover_color=style["hover_color"],
         text_color=style["text_color"],
@@ -218,6 +269,10 @@ def create_option_menu(
     dropdown_font=None,
     **kwargs,
 ):
+    bg_color = kwargs.pop("bg_color", None)
+    if _resolve_theme_color(bg_color) is None:
+        bg_color = resolve_widget_bg_color(master)
+
     return ctk.CTkOptionMenu(
         master,
         values=values,
@@ -226,6 +281,7 @@ def create_option_menu(
         width=width,
         height=height,
         corner_radius=14,
+        bg_color=bg_color,
         fg_color=PALETTE["panel_soft"],
         button_color=PALETTE["surface"],
         button_hover_color=PALETTE["border_strong"],
@@ -249,6 +305,7 @@ def create_badge(master, text, tone="neutral"):
         master,
         text=text,
         corner_radius=999,
+        bg_color=resolve_widget_bg_color(master),
         fg_color=fg_color,
         text_color=text_color,
         font=TYPOGRAPHY["small_bold"],
@@ -450,16 +507,19 @@ def load_launcher_background_image(
         fallback_label=fallback_label,
     )
     image = _fit_image_to_cover(image, size)
-    image = _add_launcher_side_glow(image)
     image = _lift_dark_regions(
         image,
         threshold=64,
-        strength=0.62,
-        target_color=(28, 58, 108),
+        strength=0.44,
+        target_color=(30, 56, 102),
     )
-    image = ImageEnhance.Brightness(image).enhance(1.12)
-    image = ImageEnhance.Color(image).enhance(1.12)
-    image = image.filter(ImageFilter.GaussianBlur(radius=8))
+    image = image.filter(ImageFilter.GaussianBlur(radius=14))
+    image = Image.alpha_composite(
+        image,
+        Image.new("RGBA", image.size, (18, 34, 62, 88)),
+    )
+    image = ImageEnhance.Brightness(image).enhance(0.92)
+    image = ImageEnhance.Color(image).enhance(0.82)
     return ctk.CTkImage(light_image=image, dark_image=image, size=size)
 
 
@@ -485,7 +545,7 @@ def _fit_image_to_cover(
     return ImageOps.fit(
         image,
         size,
-        method=Image.LANCZOS,
+        method=RESAMPLING_LANCZOS,
         centering=(0.5, 0.5),
     )
 
@@ -548,21 +608,14 @@ def _lift_dark_regions(
             if alpha <= 0:
                 continue
 
-            luminance = (
-                0.2126 * red
-                + 0.7152 * green
-                + 0.0722 * blue
-            )
+            luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
             if luminance >= threshold:
                 continue
 
             blend_strength = (threshold - luminance) / threshold * strength
             pixels[x_pos, y_pos] = (
                 round(red * (1 - blend_strength) + target_red * blend_strength),
-                round(
-                    green * (1 - blend_strength)
-                    + target_green * blend_strength
-                ),
+                round(green * (1 - blend_strength) + target_green * blend_strength),
                 round(blue * (1 - blend_strength) + target_blue * blend_strength),
                 alpha,
             )

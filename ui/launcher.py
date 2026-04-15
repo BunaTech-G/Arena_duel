@@ -17,11 +17,8 @@ from game.audio import (
     stop_music,
 )
 from game.runtime_backend import (
-    BACKEND_ARCADE,
     BACKEND_LABELS,
     BACKEND_PYGAME,
-    get_local_game_backend_status,
-    normalize_gameplay_backend,
 )
 from hardware.arduino import list_available_serial_ports
 from hardware.bridge import load_hardware_runtime_config
@@ -54,30 +51,13 @@ from ui.theme import (
     load_launcher_background_image,
     load_ctk_image,
     present_window,
+    style_frame,
     style_window,
+    update_badge,
 )
 
 
 apply_theme_settings()
-
-
-GAMEPLAY_BACKEND_LABEL_BY_CODE = {
-    BACKEND_ARCADE: BACKEND_LABELS[BACKEND_ARCADE],
-    BACKEND_PYGAME: BACKEND_LABELS[BACKEND_PYGAME],
-}
-GAMEPLAY_BACKEND_CODE_BY_LABEL = {
-    label: code for code, label in GAMEPLAY_BACKEND_LABEL_BY_CODE.items()
-}
-
-
-def _get_gameplay_backend_label(raw_backend) -> str:
-    backend_code = normalize_gameplay_backend(raw_backend)
-    return GAMEPLAY_BACKEND_LABEL_BY_CODE[backend_code]
-
-
-def _get_gameplay_backend_code(raw_label: str) -> str:
-    clean_label = str(raw_label or "").strip()
-    return GAMEPLAY_BACKEND_CODE_BY_LABEL.get(clean_label, BACKEND_PYGAME)
 
 
 def _parse_int_value(
@@ -150,7 +130,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         self.parent_launcher = parent
         style_window(self)
 
-        self.title("Arena Duel - Parametres")
+        self.title("Arena Duel - Reglages")
         try:
             self.iconbitmap(resource_path("assets", "icons", "app.ico"))
         except (OSError, TclError):
@@ -165,7 +145,6 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         self.vars = self._build_vars(self.runtime_snapshot)
         self.serial_ports_label: ctk.CTkLabel
         self.notice_label: ctk.CTkLabel
-        self.gameplay_backend_notice_label: ctk.CTkLabel | None = None
 
         self._build_ui()
         present_window(self)
@@ -181,9 +160,6 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             ),
             "db_connect_timeout": ctk.StringVar(
                 value=str(config.get("db_connect_timeout") or 3)
-            ),
-            "gameplay_backend": ctk.StringVar(
-                value=_get_gameplay_backend_label(config.get("gameplay_backend"))
             ),
             "lan_bind_host": ctk.StringVar(
                 value=str(config.get("lan_bind_host") or "0.0.0.0")
@@ -231,9 +207,6 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         self.vars["db_password"].set(str(config.get("db_password") or ""))
         self.vars["db_name"].set(str(config.get("db_name") or "arena_duel_v2_db"))
         self.vars["db_connect_timeout"].set(str(config.get("db_connect_timeout") or 3))
-        self.vars["gameplay_backend"].set(
-            _get_gameplay_backend_label(config.get("gameplay_backend"))
-        )
         self.vars["lan_bind_host"].set(str(config.get("lan_bind_host") or "0.0.0.0"))
         self.vars["tcp_port"].set(str(config.get("tcp_port") or 5000))
         self.vars["lan_connect_timeout_seconds"].set(
@@ -269,7 +242,6 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         self.vars["hardware_serial_write_timeout_seconds"].set(
             str(config.get("hardware_serial_write_timeout_seconds") or 0.2)
         )
-        self._refresh_gameplay_backend_notice()
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
@@ -285,7 +257,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         header.grid(row=0, column=0, padx=18, pady=(18, 10), sticky="ew")
         header.grid_columnconfigure(0, weight=1)
 
-        create_badge(header, "Parametres du bastion", tone="gold").grid(
+        create_badge(header, "Reglages du bastion", tone="gold").grid(
             row=0,
             column=0,
             padx=16,
@@ -294,15 +266,15 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         )
         ctk.CTkLabel(
             header,
-            text="Configuration compacte et persistante",
+            text="Joueur, technique et dev separent enfin leurs reglages",
             font=TYPOGRAPHY["section"],
             text_color=PALETTE["text"],
         ).grid(row=1, column=0, padx=16, sticky="w")
         ctk.CTkLabel(
             header,
             text=(
-                "Les reglages sont stockes dans un override utilisateur, "
-                "hors du build distribue."
+                "L'essentiel reste devant. Le rare et le diagnostic "
+                "passent dans leurs onglets."
             ),
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
@@ -310,23 +282,35 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             wraplength=760,
         ).grid(row=2, column=0, padx=16, pady=(8, 16), sticky="w")
 
-        scroll = ctk.CTkScrollableFrame(
+        tabs = ctk.CTkTabview(
             self,
             corner_radius=22,
             fg_color=PALETTE["panel_soft"],
             border_width=1,
             border_color=PALETTE["divider"],
+            segmented_button_fg_color=PALETTE["panel_deep"],
+            segmented_button_selected_color=PALETTE["gold_dim"],
+            segmented_button_selected_hover_color=PALETTE["gold"],
+            segmented_button_unselected_color=PALETTE["panel"],
+            segmented_button_unselected_hover_color=PALETTE["panel_highlight"],
+            text_color=PALETTE["text"],
         )
-        scroll.grid(row=1, column=0, padx=18, pady=(0, 10), sticky="nsew")
-        scroll.grid_columnconfigure(0, weight=1)
-        scroll.grid_columnconfigure(1, weight=1)
+        tabs.grid(row=1, column=0, padx=18, pady=(0, 10), sticky="nsew")
+
+        player_tab = tabs.add("Joueur")
+        tech_tab = tabs.add("Technique")
+        dev_tab = tabs.add("Dev")
+
+        player_content = self._create_tab_content(player_tab)
+        tech_content = self._create_tab_content(tech_tab)
+        dev_content = self._create_tab_content(dev_tab)
 
         network_content = self._create_section(
-            scroll,
+            player_content,
             0,
             0,
             "Hall LAN",
-            "Port, bind host et timeout du hall principal.",
+            "Port et delai utiles pendant les parties en reseau local.",
         )
         self._add_entry_field(
             network_content,
@@ -346,12 +330,39 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             note="En secondes. Les changements impactent les prochains halls.",
         )
 
-        db_content = self._create_section(
-            scroll,
+        demo_content = self._create_section(
+            player_content,
             0,
             1,
+            "Forge locale",
+            "Options visibles pour les joutes locales et les chroniques.",
+        )
+        ctk.CTkLabel(
+            demo_content,
+            text="Backend local : Pygame",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_muted"],
+        ).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(
+            demo_content,
+            text=("Le stockage demo reste optionnel. Les logs passent dans Dev."),
+            font=TYPOGRAPHY["small"],
+            text_color=PALETTE["text_faint"],
+            justify="left",
+            wraplength=320,
+        ).pack(fill="x", pady=(0, 8))
+        self._add_checkbox_field(
+            demo_content,
+            "Activer le stockage demo",
+            self.vars["demo_local_storage_enabled"],
+        )
+
+        db_content = self._create_section(
+            tech_content,
+            0,
+            0,
             "Sanctuaire",
-            "Connexion MariaDB du registre et des chroniques.",
+            "Connexion MariaDB du registre, des chroniques et des halls.",
         )
         self._add_entry_field(db_content, "Hote", self.vars["db_host"])
         self._add_entry_field(db_content, "Port", self.vars["db_port"])
@@ -361,6 +372,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             "Mot de passe",
             self.vars["db_password"],
             show="*",
+            note="Le mot de passe reste masque dans cette fenetre.",
         )
         self._add_entry_field(db_content, "Base", self.vars["db_name"])
         self._add_entry_field(
@@ -369,59 +381,12 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             self.vars["db_connect_timeout"],
         )
 
-        demo_content = self._create_section(
-            scroll,
-            1,
-            0,
-            "Demo, logs et forge locale",
-            "Options utiles pour la presentation et le backend local.",
-        )
-        self._add_option_field(
-            demo_content,
-            "Backend local",
-            self.vars["gameplay_backend"],
-            values=list(GAMEPLAY_BACKEND_CODE_BY_LABEL.keys()),
-            note=("Forge locale uniquement. Le hall LAN conserve son flux actuel."),
-            command=self._handle_gameplay_backend_change,
-        )
-        self.gameplay_backend_notice_label = ctk.CTkLabel(
-            demo_content,
-            text="",
-            font=TYPOGRAPHY["small"],
-            text_color=PALETTE["text_faint"],
-            justify="left",
-            wraplength=320,
-        )
-        self.gameplay_backend_notice_label.pack(fill="x", pady=(0, 8))
-        self._refresh_gameplay_backend_notice()
-        self._add_checkbox_field(
-            demo_content,
-            "Activer le stockage demo",
-            self.vars["demo_local_storage_enabled"],
-        )
-        self._add_checkbox_field(
-            demo_content,
-            "Forcer le stockage demo",
-            self.vars["demo_local_storage_force"],
-        )
-        self._add_checkbox_field(
-            demo_content,
-            "Activer les logs console",
-            self.vars["debug_console_logs"],
-        )
-        self._add_entry_field(
-            demo_content,
-            "Liste seed demo",
-            self.vars["demo_seed_players"],
-            note="Noms separes par des virgules.",
-        )
-
         hardware_content = self._create_section(
-            scroll,
-            1,
+            tech_content,
+            0,
             1,
             "Bonus Arduino",
-            "Le menu principal reste simple, le diagnostic reste ici.",
+            "Bridge materiel et ports serie du bastion.",
         )
         self._add_checkbox_field(
             hardware_content,
@@ -464,6 +429,30 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         )
         self.serial_ports_label.pack(fill="x", pady=(0, 2))
         self._refresh_serial_ports_label()
+
+        developer_content = self._create_section(
+            dev_content,
+            0,
+            0,
+            "Demo et diagnostic",
+            "Options reservees aux demonstrations, seeds et logs console.",
+        )
+        self._add_checkbox_field(
+            developer_content,
+            "Forcer le stockage demo",
+            self.vars["demo_local_storage_force"],
+        )
+        self._add_checkbox_field(
+            developer_content,
+            "Activer les logs console",
+            self.vars["debug_console_logs"],
+        )
+        self._add_entry_field(
+            developer_content,
+            "Liste seed demo",
+            self.vars["demo_seed_players"],
+            note="Noms separes par des virgules.",
+        )
 
         footer = ctk.CTkFrame(
             self,
@@ -513,10 +502,10 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         ).grid(row=0, column=1, padx=(0, 8))
         create_button(
             buttons,
-            "Defaut",
+            "Reinitialiser",
             self._restore_defaults,
             variant="subtle",
-            width=120,
+            width=132,
             height=42,
         ).grid(row=0, column=2, padx=(0, 8))
         create_button(
@@ -527,6 +516,21 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             width=120,
             height=42,
         ).grid(row=0, column=3)
+
+    def _create_tab_content(self, tab):
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
+
+        content = ctk.CTkScrollableFrame(
+            tab,
+            corner_radius=0,
+            fg_color="transparent",
+            border_width=0,
+        )
+        content.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_columnconfigure(1, weight=1)
+        return content
 
     def _create_section(
         self,
@@ -678,41 +682,6 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
 
         return option_menu
 
-    def _handle_gameplay_backend_change(self, _choice=None):
-        self._refresh_gameplay_backend_notice()
-
-    def _refresh_gameplay_backend_notice(self):
-        if self.gameplay_backend_notice_label is None:
-            return
-
-        backend_code = _get_gameplay_backend_code(self.vars["gameplay_backend"].get())
-        backend_status = get_local_game_backend_status(
-            {"gameplay_backend": backend_code}
-        )
-
-        if backend_status["fallback_reason"] == "arcade_unavailable":
-            notice_text = (
-                "Arcade est demande pour la forge locale, mais le prochain "
-                "match restera sur Pygame tant que la dependance n'est pas "
-                "disponible."
-            )
-            notice_color = PALETTE["warning"]
-        elif backend_status["effective"] == BACKEND_ARCADE:
-            notice_text = (
-                "La forge locale utilisera Arcade. Le hall LAN reste inchange."
-            )
-            notice_color = PALETTE["cyan"]
-        else:
-            notice_text = (
-                "La forge locale utilisera Pygame. Le hall LAN reste inchange."
-            )
-            notice_color = PALETTE["text_faint"]
-
-        self.gameplay_backend_notice_label.configure(
-            text=notice_text,
-            text_color=notice_color,
-        )
-
     def _refresh_serial_ports_label(self):
         ports_text = ", ".join(self.serial_ports)
         if not ports_text:
@@ -760,9 +729,6 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
                 self.vars["db_connect_timeout"].get(),
                 minimum=1,
                 maximum=30,
-            ),
-            "gameplay_backend": _get_gameplay_backend_code(
-                self.vars["gameplay_backend"].get()
             ),
             "lan_bind_host": _validate_bind_host(self.vars["lan_bind_host"].get()),
             "tcp_port": _parse_int_value(
@@ -825,21 +791,8 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         self.runtime_snapshot = dict(payload)
 
         restart_note = ""
-        backend_note = ""
         hall_host = self.parent_launcher.get_active_hall_host()
         hall_port = self.parent_launcher.get_active_hall_port()
-        backend_status = get_local_game_backend_status(payload)
-        if previous_config.get("gameplay_backend") != payload["gameplay_backend"]:
-            if backend_status["fallback_reason"] == "arcade_unavailable":
-                backend_note = (
-                    " La forge locale demandera Arcade, mais retombera sur "
-                    "Pygame "
-                    "tant qu'Arcade restera indisponible."
-                )
-            else:
-                backend_note = (
-                    f" La forge locale utilisera {backend_status['effective_label']}."
-                )
         if hall_host is not None and hall_port is not None:
             if (
                 previous_config.get("tcp_port") != payload["tcp_port"]
@@ -853,7 +806,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
 
         self._set_notice("Reglages enregistres.", "success")
         self.parent_launcher.handle_settings_saved(
-            "Reglages enregistres." + backend_note + restart_note,
+            "Reglages enregistres." + restart_note,
             tone="success",
         )
 
@@ -884,7 +837,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             "gold",
         )
         self.parent_launcher.handle_settings_saved(
-            "Parametres revenus aux valeurs du projet.",
+            "Reglages revenus aux valeurs du projet.",
             tone="gold",
         )
 
@@ -900,8 +853,8 @@ class LauncherApp(ctk.CTk):
         except (OSError, TclError):
             pass
 
-        self.geometry("1024x640")
-        enable_large_window(self, 920, 540, start_zoomed=False)
+        self.geometry("1140x700")
+        enable_large_window(self, 1040, 620, start_zoomed=False)
 
         self.embedded_server = None
         self.embedded_server_thread = None
@@ -916,7 +869,13 @@ class LauncherApp(ctk.CTk):
         self.db_status_text = "a verifier"
         self.hall_status_text = "au repos"
         self.hardware_status_text = "en veille"
+        self.hardware_status_tone = "neutral"
+        self.hardware_detail_text = "Bonus materiel desactive dans la configuration."
         self.gameplay_backend_text = BACKEND_LABELS[BACKEND_PYGAME]
+        self.db_badge = None
+        self.hall_badge = None
+        self.forge_badge = None
+        self.runtime_summary_label = None
 
         self.persisted_runtime_config = load_persisted_runtime_config()
         self.network_config = load_lan_runtime_config()
@@ -937,12 +896,13 @@ class LauncherApp(ctk.CTk):
             "assets",
             "icons",
             "icon_preview_256.png",
-            size=(138, 138),
+            size=(224, 224),
             fallback_label="arena duel",
             brightness=1.0,
             remove_edge_dark_regions=True,
             crop_to_visible_bounds=True,
         )
+        self.configure(fg_color=PALETTE["launcher_blend"])
 
         pygame.mixer.pre_init(44100, -16, 2, 512)
         init_audio()
@@ -965,138 +925,322 @@ class LauncherApp(ctk.CTk):
         )
         backdrop.place(x=0, y=0, relwidth=1, relheight=1)
 
-        logo_label = ctk.CTkLabel(
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)
+
+        content_shell = ctk.CTkFrame(
             self,
+            fg_color="transparent",
+            bg_color="transparent",
+        )
+        content_shell.grid(
+            row=0,
+            column=0,
+            padx=28,
+            pady=(28, 16),
+            sticky="nsew",
+        )
+        content_shell.grid_columnconfigure(0, weight=11, uniform="launcher")
+        content_shell.grid_columnconfigure(1, weight=9, uniform="launcher")
+        content_shell.grid_rowconfigure(0, weight=1)
+
+        hero_panel = ctk.CTkFrame(content_shell, corner_radius=32)
+        style_frame(
+            hero_panel,
+            tone="panel_deep",
+            border_color=PALETTE["gold_dim"],
+        )
+        hero_panel.grid(
+            row=0,
+            column=0,
+            padx=(0, 14),
+            sticky="nsew",
+        )
+        hero_panel.grid_columnconfigure(0, weight=1)
+        hero_panel.grid_rowconfigure(0, weight=0)
+        hero_panel.grid_rowconfigure(1, weight=0)
+        hero_panel.grid_rowconfigure(2, weight=1)
+
+        create_badge(hero_panel, "Bastion central", tone="gold").grid(
+            row=0,
+            column=0,
+            padx=24,
+            pady=(24, 12),
+            sticky="w",
+        )
+
+        title_shell = ctk.CTkFrame(hero_panel, fg_color="transparent")
+        title_shell.grid(
+            row=1,
+            column=0,
+            padx=24,
+            pady=(4, 0),
+            sticky="w",
+        )
+        title_shell.grid_propagate(False)
+        title_shell.configure(width=620, height=110)
+
+        ctk.CTkLabel(
+            title_shell,
+            text="ARENA DUEL",
+            font=(TYPOGRAPHY["display"][0], 56, "bold"),
+            text_color=PALETTE["gold_dim"],
+            justify="left",
+        ).place(x=6, y=12)
+
+        ctk.CTkLabel(
+            title_shell,
+            text="ARENA DUEL",
+            font=(TYPOGRAPHY["display"][0], 56, "bold"),
+            text_color=PALETTE["text"],
+            justify="left",
+        ).place(x=0, y=0)
+
+        ctk.CTkFrame(
+            title_shell,
+            width=300,
+            height=6,
+            corner_radius=999,
+            fg_color=PALETTE["gold"],
+            border_width=0,
+        ).place(x=4, y=76)
+
+        logo_shell = ctk.CTkFrame(
+            hero_panel,
+            width=360,
+            height=300,
+            corner_radius=42,
+        )
+        style_frame(
+            logo_shell,
+            tone="panel",
+            border_color=PALETTE["gold_dim"],
+        )
+        logo_shell.grid_propagate(False)
+        logo_shell.place(relx=0.5, rely=0.58, anchor="center")
+
+        logo_halo = ctk.CTkFrame(
+            logo_shell,
+            width=226,
+            height=226,
+            corner_radius=113,
+            fg_color=PALETTE["bg_glow"],
+            border_width=1,
+            border_color=PALETTE["border_strong"],
+        )
+        logo_halo.place(relx=0.5, rely=0.5, anchor="center")
+
+        ctk.CTkLabel(
+            logo_halo,
             text="",
             image=self.logo_image,
             fg_color="transparent",
             bg_color="transparent",
+        ).place(relx=0.5, rely=0.5, anchor="center")
+
+        action_panel = ctk.CTkFrame(content_shell, corner_radius=28)
+        style_frame(
+            action_panel,
+            tone="panel",
+            border_color=PALETTE["border_strong"],
         )
-        logo_label.place(relx=0.5, rely=0.09, anchor="n")
+        action_panel.grid(
+            row=0,
+            column=1,
+            padx=(14, 0),
+            sticky="nsew",
+        )
+        action_panel.grid_columnconfigure(0, weight=1)
+        action_panel.grid_rowconfigure(2, weight=1)
 
-        menu_badge = create_badge(self, "Menu principal", tone="gold")
-        menu_badge.configure(bg_color="transparent")
-        menu_badge.place(relx=0.5, rely=0.255, anchor="n")
+        create_badge(action_panel, "Actions", tone="info").grid(
+            row=0,
+            column=0,
+            padx=24,
+            pady=(24, 10),
+            sticky="w",
+        )
 
-        title_label = ctk.CTkLabel(
-            self,
-            text="Arena Duel",
-            font=(TYPOGRAPHY["display"][0], 56, "bold"),
+        ctk.CTkLabel(
+            action_panel,
+            text="Choisir une porte",
+            font=TYPOGRAPHY["title"],
             text_color=PALETTE["text"],
-            fg_color="transparent",
-            bg_color="transparent",
+        ).grid(
+            row=1,
+            column=0,
+            padx=24,
+            pady=(0, 16),
+            sticky="w",
         )
-        title_label.place(relx=0.5, rely=0.315, anchor="n")
 
-        subtitle_label = ctk.CTkLabel(
-            self,
-            text="Forgotten Bastion - Entrez dans l'arene",
-            font=TYPOGRAPHY["body"],
-            text_color=PALETTE["text_muted"],
-            fg_color="transparent",
-            bg_color="transparent",
+        action_stack = ctk.CTkFrame(action_panel, fg_color="transparent")
+        action_stack.grid(
+            row=2,
+            column=0,
+            padx=24,
+            pady=(0, 20),
         )
-        subtitle_label.place(relx=0.5, rely=0.405, anchor="n")
+        action_stack.grid_columnconfigure(0, minsize=430)
 
         forge_button = create_button(
-            self,
-            "Forge locale",
+            action_stack,
+            "Lancer une joute locale",
             self._handle_new_game,
             variant="primary",
-            width=360,
-            height=52,
+            width=430,
+            height=58,
             bg_color="transparent",
         )
-        forge_button.place(relx=0.5, rely=0.455, anchor="n")
+        forge_button.grid(
+            row=0,
+            column=0,
+            pady=(0, 12),
+            sticky="ew",
+        )
 
         hall_button = create_button(
-            self,
-            "Hall LAN",
+            action_stack,
+            "Ouvrir un hall LAN",
             self._handle_host_lan,
             variant="accent",
-            width=360,
-            height=52,
-            bg_color="transparent",
-        )
-        hall_button.place(relx=0.5, rely=0.535, anchor="n")
-
-        join_button = create_button(
-            self,
-            "Rejoindre un hall",
-            self._handle_join_lan,
-            variant="secondary",
-            width=360,
-            height=52,
-            bg_color="transparent",
-        )
-        join_button.place(relx=0.5, rely=0.615, anchor="n")
-
-        history_button = create_button(
-            self,
-            "Chroniques",
-            self._handle_history,
-            variant="secondary",
-            width=360,
+            width=430,
             height=50,
             bg_color="transparent",
         )
-        history_button.place(relx=0.5, rely=0.695, anchor="n")
+        hall_button.grid(
+            row=1,
+            column=0,
+            pady=(0, 12),
+            sticky="ew",
+        )
 
-        settings_button = create_button(
-            self,
-            "Parametres",
-            self._handle_settings,
-            variant="subtle",
-            width=170,
-            height=40,
+        join_button = create_button(
+            action_stack,
+            "Rejoindre un hall LAN",
+            self._handle_join_lan,
+            variant="secondary",
+            width=430,
+            height=48,
             bg_color="transparent",
         )
-        settings_button.place(relx=0.5, x=-93, rely=0.785, anchor="n")
+        join_button.grid(
+            row=2,
+            column=0,
+            pady=(0, 18),
+            sticky="ew",
+        )
 
-        quit_button = create_button(
-            self,
+        utility_row = ctk.CTkFrame(action_stack, fg_color="transparent")
+        utility_row.grid(
+            row=3,
+            column=0,
+            pady=(0, 12),
+            sticky="ew",
+        )
+        utility_row.grid_columnconfigure(0, weight=1)
+        utility_row.grid_columnconfigure(1, weight=1)
+
+        create_button(
+            utility_row,
+            "Voir les chroniques",
+            self._handle_history,
+            variant="secondary",
+            height=42,
+            bg_color="transparent",
+        ).grid(row=0, column=0, padx=(0, 8), sticky="ew")
+
+        create_button(
+            utility_row,
+            "Reglages",
+            self._handle_settings,
+            variant="subtle",
+            height=42,
+            bg_color="transparent",
+        ).grid(row=0, column=1, padx=(8, 0), sticky="ew")
+
+        create_button(
+            action_stack,
             "Quitter",
             self._handle_close_app,
             variant="danger",
-            width=170,
-            height=40,
+            width=430,
+            height=42,
             bg_color="transparent",
+        ).grid(
+            row=5,
+            column=0,
+            pady=(0, 6),
+            sticky="ew",
         )
-        quit_button.place(relx=0.5, x=93, rely=0.785, anchor="n")
 
-        self.info_label = ctk.CTkLabel(
-            self,
-            text="",
-            font=TYPOGRAPHY["small"],
-            text_color=PALETTE["text_soft"],
-            justify="center",
-            wraplength=420,
-            fg_color="transparent",
-            bg_color="transparent",
+        footer_bar = ctk.CTkFrame(self, corner_radius=18)
+        style_frame(
+            footer_bar,
+            tone="panel_deep",
+            border_color=PALETTE["divider"],
         )
-        self.info_label.place(relx=0.5, rely=0.858, anchor="n")
+        footer_bar.grid(
+            row=1,
+            column=0,
+            padx=28,
+            pady=(0, 20),
+            sticky="ew",
+        )
+        footer_bar.grid_columnconfigure(0, weight=0)
+        footer_bar.grid_columnconfigure(1, weight=0)
+        footer_bar.grid_columnconfigure(2, weight=1)
 
-        author_label = ctk.CTkLabel(
-            self,
-            text="Ousmane et Gabriel",
+        ctk.CTkLabel(
+            footer_bar,
+            text="Jeu créé par Ousmane BunaTech-G",
             font=TYPOGRAPHY["small_bold"],
-            text_color=PALETTE["text_soft"],
-            fg_color="transparent",
-            bg_color="transparent",
+            text_color=PALETTE["text_muted"],
+        ).grid(row=0, column=0, padx=(16, 12), pady=12, sticky="w")
+
+        status_row = ctk.CTkFrame(footer_bar, fg_color="transparent")
+        status_row.grid(row=0, column=1, padx=(0, 12), pady=10, sticky="w")
+
+        self.db_badge = create_badge(
+            status_row,
+            "DB a verifier",
+            tone="warning",
         )
-        author_label.place(x=22, rely=1.0, y=-18, anchor="sw")
+        self.db_badge.grid(row=0, column=0, padx=(0, 8), sticky="w")
+
+        self.hall_badge = create_badge(
+            status_row,
+            "Hall au repos",
+            tone="neutral",
+        )
+        self.hall_badge.grid(row=0, column=1, padx=(0, 8), sticky="w")
+
+        self.forge_badge = create_badge(status_row, "Pygame", tone="gold")
+        self.forge_badge.grid(row=0, column=2, padx=(0, 8), sticky="w")
+
+        self.hardware_badge = create_badge(
+            status_row,
+            self.hardware_status_text,
+            tone=self.hardware_status_tone,
+        )
+        self.hardware_badge.grid(row=0, column=3, sticky="w")
 
         self.footer_status_label = ctk.CTkLabel(
-            self,
-            text="",
+            footer_bar,
+            text=self._footer_detail_text(),
             font=TYPOGRAPHY["small"],
-            text_color=PALETTE["text_muted"],
+            text_color=PALETTE["text_soft"],
             justify="right",
-            wraplength=720,
-            fg_color="transparent",
-            bg_color="transparent",
+            wraplength=320,
         )
-        self.footer_status_label.place(relx=1.0, x=-22, rely=1.0, y=-18, anchor="se")
+        self.footer_status_label.grid(
+            row=0,
+            column=2,
+            padx=(12, 16),
+            pady=12,
+            sticky="e",
+        )
 
         self.after(0, backdrop.lower)
 
@@ -1124,18 +1268,58 @@ class LauncherApp(ctk.CTk):
             return self.lan_address_info.primary_ip
         return "127.0.0.1"
 
+    def _db_status_tone(self) -> str:
+        if self.db_status_text == "pret":
+            return "success"
+        if self.db_status_text == "indisponible":
+            return "danger"
+        if self.db_status_text == "a verifier":
+            return "warning"
+        return "neutral"
+
+    def _hall_status_tone(self) -> str:
+        if self.embedded_server is None:
+            return "neutral"
+        return "info"
+
+    def _db_badge_text(self) -> str:
+        if self.db_status_text == "pret":
+            return "DB prete"
+        if self.db_status_text == "indisponible":
+            return "DB hors ligne"
+        return "DB a verifier"
+
+    def _hall_badge_text(self) -> str:
+        if self.embedded_server is None:
+            return "Hall au repos"
+        return "Hall ouvert"
+
+    def _footer_detail_text(self) -> str:
+        if self.embedded_server is not None:
+            hall_host = self.get_active_hall_host() or "127.0.0.1"
+            hall_port = self.get_active_hall_port() or self.tcp_port
+            endpoint = format_endpoint(hall_host, hall_port)
+            return f"Hall accessible sur {endpoint}."
+
+        if self.db_status_text == "indisponible":
+            return (
+                "Sanctuaire hors ligne. Réglages et diagnostic restent dans "
+                "la fenêtre dédiée."
+            )
+
+        return "Réglages, réseau et diagnostic dans la fenêtre Réglages."
+
     def _refresh_runtime_state(self, *, probe_db: bool = False):
         self._load_runtime_state()
 
         if probe_db:
-            self.db_status_text = "pret" if test_connection() else "indisponible"
+            self.db_status_text = "prêt" if test_connection() else "indisponible"
 
         hardware_status = describe_hardware_runtime_status(self.hardware_runtime_config)
         self.hardware_status_text = hardware_status.badge_text
-        backend_status = get_local_game_backend_status(self.persisted_runtime_config)
-        self.gameplay_backend_text = str(backend_status["effective_label"])
-        if backend_status["fallback_reason"] == "arcade_unavailable":
-            self.gameplay_backend_text += " (repli)"
+        self.hardware_status_tone = hardware_status.tone
+        self.hardware_detail_text = hardware_status.detail_text
+        self.gameplay_backend_text = BACKEND_LABELS[BACKEND_PYGAME]
         if self.embedded_server is None:
             self.hall_status_text = "au repos"
         else:
@@ -1143,26 +1327,46 @@ class LauncherApp(ctk.CTk):
         self._update_footer_status()
 
     def _update_footer_status(self):
-        summary = (
-            f"Sanctuaire: {self.db_status_text}   •   "
-            f"Hall: {self.hall_status_text}   •   "
-            f"Forge: {self.gameplay_backend_text}   •   "
-            f"Arduino: {self.hardware_status_text}"
-        )
-        self.footer_status_label.configure(text=summary)
+        if self.db_badge is not None:
+            update_badge(
+                self.db_badge,
+                self._db_badge_text(),
+                tone=self._db_status_tone(),
+            )
+        if self.hall_badge is not None:
+            update_badge(
+                self.hall_badge,
+                self._hall_badge_text(),
+                tone=self._hall_status_tone(),
+            )
+        if self.forge_badge is not None:
+            update_badge(
+                self.forge_badge,
+                self.gameplay_backend_text,
+                tone="gold",
+            )
+        if self.hardware_badge is not None:
+            update_badge(
+                self.hardware_badge,
+                self.hardware_status_text,
+                tone=self.hardware_status_tone,
+            )
+        self.footer_status_label.configure(text=self._footer_detail_text())
+
+    def _runtime_summary_text(self) -> str:
+        summary_parts = [
+            f"Forge locale : {self.gameplay_backend_text}",
+            f"Sanctuaire : {self.db_status_text}",
+        ]
+        if self.embedded_server is None:
+            summary_parts.append("Hall : au repos")
+        else:
+            summary_parts.append(f"Hall : {self._current_invitation_text()}")
+        return " · ".join(summary_parts)
 
     def _set_info(self, text: str, *, tone: str = "neutral"):
-        color_map = {
-            "gold": PALETTE["gold"],
-            "info": PALETTE["cyan"],
-            "success": PALETTE["success"],
-            "danger": PALETTE["danger"],
-            "neutral": PALETTE["text_soft"],
-        }
-        self.info_label.configure(
-            text=text,
-            text_color=color_map.get(tone, PALETTE["text_soft"]),
-        )
+        del text, tone
+        return
 
     def _handle_focus_in(self, _event=None):
         self._refresh_runtime_state(probe_db=False)
@@ -1205,16 +1409,7 @@ class LauncherApp(ctk.CTk):
     def _handle_new_game(self):
         play_transition()
         self._set_db_mode_local()
-        backend_status = get_local_game_backend_status(self.persisted_runtime_config)
-        if backend_status["fallback_reason"] == "arcade_unavailable":
-            info_text = (
-                "La forge locale s'ouvre avec repli vers Pygame, car Arcade "
-                "reste indisponible dans cet environnement."
-            )
-        else:
-            info_text = (
-                f"La forge locale s'ouvre avec {backend_status['effective_label']}."
-            )
+        info_text = "La forge locale s'ouvre avec Pygame."
         self._set_info(info_text, tone="gold")
         self._focus_or_open_window(
             "player_select_window",

@@ -456,24 +456,24 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
 
     big_font = load_font(
         "Cinzel-Bold.ttf",
-        34,
+        38,
         fallback_name="Georgia",
         bold=True,
     )
     medium_font = load_font(
         "Cinzel-Regular.ttf",
-        24,
+        26,
         fallback_name="Georgia",
         bold=True,
     )
     small_font = load_font(
         "CrimsonText-Regular.ttf",
-        18,
+        20,
         fallback_name="Georgia",
     )
     name_font = load_font(
         "CrimsonText-SemiBold.ttf",
-        16,
+        18,
         fallback_name="Georgia",
         bold=True,
     )
@@ -702,12 +702,26 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                         players,
                     )
 
-                # Centre la scene de jeu dans la fenetre.
+                # Centre et agrandit la scene quand la fenetre est plus grande.
                 sw, sh = screen.get_size()
                 screen.fill((10, 13, 19))
-                blit_x = max(0, (sw - game_w) // 2)
-                blit_y = max(0, (sh - game_h) // 2)
-                screen.blit(game_surface, (blit_x, blit_y))
+                scale = min(sw / game_w, sh / game_h)
+                if scale <= 1.001:
+                    blit_x = max(0, (sw - game_w) // 2)
+                    blit_y = max(0, (sh - game_h) // 2)
+                    screen.blit(game_surface, (blit_x, blit_y))
+                else:
+                    target_size = (
+                        max(1, int(game_w * scale)),
+                        max(1, int(game_h * scale)),
+                    )
+                    scaled_surface = pygame.transform.smoothscale(
+                        game_surface,
+                        target_size,
+                    )
+                    blit_x = max(0, (sw - target_size[0]) // 2)
+                    blit_y = max(0, (sh - target_size[1]) // 2)
+                    screen.blit(scaled_surface, (blit_x, blit_y))
                 pygame.display.flip()
 
             if restart_requested:

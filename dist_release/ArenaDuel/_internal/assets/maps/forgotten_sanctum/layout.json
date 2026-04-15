@@ -119,6 +119,74 @@
       "collision": true
     }
   ],
+  "traps": [
+    {
+      "id": "north_arc_left_trap",
+      "kind": "spike_trap",
+      "rect": [
+        344,
+        424,
+        56,
+        56
+      ],
+      "collision": false
+    },
+    {
+      "id": "north_arc_right_trap",
+      "kind": "ember_trap",
+      "rect": [
+        880,
+        424,
+        56,
+        56
+      ],
+      "collision": false
+    },
+    {
+      "id": "mid_temple_rune_trap",
+      "kind": "rune_trap",
+      "rect": [
+        614,
+        572,
+        52,
+        52
+      ],
+      "collision": false
+    },
+    {
+      "id": "south_arc_left_trap",
+      "kind": "ember_trap",
+      "rect": [
+        344,
+        724,
+        56,
+        56
+      ],
+      "collision": false
+    },
+    {
+      "id": "south_arc_right_trap",
+      "kind": "spike_trap",
+      "rect": [
+        880,
+        724,
+        56,
+        56
+      ],
+      "collision": false
+    },
+    {
+      "id": "mid_lower_rune_trap",
+      "kind": "rune_trap",
+      "rect": [
+        614,
+        744,
+        52,
+        52
+      ],
+      "collision": false
+    }
+  ],
   "decor": [
     {
       "id": "central_rune_ring",

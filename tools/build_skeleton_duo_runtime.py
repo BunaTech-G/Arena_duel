@@ -23,7 +23,7 @@ PORTRAITS_ROOT = WORKSPACE_ROOT / "assets" / "portraits"
 
 PACK_METADATA = {
     "skeleton_fighter_ember": {
-        "style": "fantasy arcade skeleton duelist with warm ember accents",
+        "style": "fantasy skeleton duelist with warm ember accents",
         "role": "agile duelist",
         "accent_hex": "#f3c96b",
         "secondary_hex": "#c8884a",
@@ -35,7 +35,7 @@ PACK_METADATA = {
         ],
     },
     "skeleton_fighter_aether": {
-        "style": "fantasy arcade skeleton guardian with cool cyan accents",
+        "style": "fantasy skeleton guardian with cool cyan accents",
         "role": "sturdy guardian",
         "accent_hex": "#64d7ff",
         "secondary_hex": "#2d758e",

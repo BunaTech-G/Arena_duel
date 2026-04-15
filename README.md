@@ -7,7 +7,7 @@ Arena Duel est un jeu desktop Python orienté duel local et LAN.
 Le projet combine :
 
 - une interface desktop en CustomTkinter
-- un moteur de match en pygame-ce, avec backend Arcade disponible pour la forge locale
+- un moteur de match en pygame-ce pour la forge locale et le LAN
 - une persistance MariaDB pour les joueurs, les joutes et les chroniques
 - un mode LAN avec hote autoritaire et clients relies au meme reseau local
 - une extension Arduino optionnelle pour LCD I2C / buzzer
@@ -16,7 +16,6 @@ Le projet combine :
 
 - Python
 - pygame-ce
-- Arcade pour la forge locale optionnelle
 - CustomTkinter
 - MariaDB Connector/Python
 - Pillow
@@ -37,7 +36,7 @@ Le projet combine :
 - partie independante du reseau
 - base MariaDB locale du poste
 - historique local consultable depuis le launcher
-- le backend local se choisit dans Parametres entre Arcade et Pygame
+- la forge locale utilise pygame-ce
 
 ### Hall LAN hote
 

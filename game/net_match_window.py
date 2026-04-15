@@ -71,6 +71,26 @@ def _resolve_local_team(my_team, my_slot, *payloads):
     return None
 
 
+def _default_sprite_id_for_team(team_code: str) -> str:
+    if str(team_code or "A").strip().upper() == "B":
+        return "skeleton_fighter_aether"
+    return "skeleton_fighter_ember"
+
+
+def _resolve_sprite_id(player_state: dict) -> str:
+    sprite_id = str(player_state.get("sprite_id") or "").strip()
+    if sprite_id:
+        return sprite_id
+    return _default_sprite_id_for_team(player_state.get("team", "A"))
+
+
+def _normalize_direction_name(player_state: dict) -> str | None:
+    direction_name = str(player_state.get("direction") or "").strip().lower()
+    if direction_name in {"up", "down", "left", "right"}:
+        return direction_name
+    return None
+
+
 def run_network_match(client, my_slot, my_name, my_team):
     pg_init()
     init_audio()
@@ -83,28 +103,33 @@ def run_network_match(client, my_slot, my_name, my_team):
             pygame.display.set_icon(pygame.image.load(icon_path))
         except OSError:
             pass
-    screen = pygame.display.set_mode(active_layout.window_size)
+    screen = pygame.display.set_mode(
+        active_layout.window_size,
+        getattr(pygame, "RESIZABLE"),
+    )
     pygame.display.set_caption(f"Arena Duel - Joute partagee \u00b7 {my_name}")
     clock = pygame.time.Clock()
 
     font = load_font("CrimsonText-Regular.ttf", 20, fallback_name="Georgia")
     medium_font = load_font(
         "Cinzel-Regular.ttf",
-        24,
+        26,
         fallback_name="Georgia",
         bold=True,
     )
     small_font = load_font(
         "CrimsonText-Regular.ttf",
-        18,
+        20,
         fallback_name="Georgia",
     )
     big_font = load_font(
         "Cinzel-Bold.ttf",
-        36,
+        38,
         fallback_name="Georgia",
         bold=True,
     )
+
+    frame_surface = pygame.Surface(active_layout.window_size)
 
     latest_state = None
     end_message = None
@@ -120,6 +145,7 @@ def run_network_match(client, my_slot, my_name, my_team):
     orb_effects = []
     orb_spawn_times = {}
     latest_movement = {}
+    latest_facing = {}
     end_sound_played = False
 
     running = True
@@ -158,10 +184,26 @@ def run_network_match(client, my_slot, my_name, my_team):
                     score = int(player_state.get("score", 0))
                     pickup_serial = int(player_state.get("last_pickup_serial", 0))
                     previous_pos = previous_positions.get(player_state["slot"])
-                    latest_movement[slot] = previous_pos is not None and (
-                        abs(player_state["x"] - previous_pos[0]) > 0.5
-                        or abs(player_state["y"] - previous_pos[1]) > 0.5
+                    server_is_moving = player_state.get("is_moving")
+                    if server_is_moving is None:
+                        latest_movement[slot] = previous_pos is not None and (
+                            abs(player_state["x"] - previous_pos[0]) > 0.5
+                            or abs(player_state["y"] - previous_pos[1]) > 0.5
+                        )
+                    else:
+                        latest_movement[slot] = bool(server_is_moving)
+
+                    default_facing = 1 if player_state.get("team") == "A" else -1
+                    latest_facing[slot] = latest_facing.get(
+                        slot,
+                        default_facing,
                     )
+                    direction_name = _normalize_direction_name(player_state)
+                    if direction_name == "left":
+                        latest_facing[slot] = -1
+                    elif direction_name == "right":
+                        latest_facing[slot] = 1
+
                     current_scores[slot] = score
                     next_pickup_serials[slot] = pickup_serial
                     if score > previous_scores.get(slot, score):
@@ -218,6 +260,8 @@ def run_network_match(client, my_slot, my_name, my_team):
                 orb_spawn_times = next_spawn_times
                 latest_state = msg
                 active_layout = get_map_layout(msg.get("map_id", DEFAULT_MAP_ID))
+                if frame_surface.get_size() != active_layout.window_size:
+                    frame_surface = pygame.Surface(active_layout.window_size)
 
             elif msg_type == END:
                 end_message = msg
@@ -241,11 +285,11 @@ def run_network_match(client, my_slot, my_name, my_team):
             else:
                 deferred_messages.append(msg)
 
-        draw_background(screen, active_layout)
+        draw_background(frame_surface, active_layout)
 
         if latest_state:
             draw_state(
-                screen,
+                frame_surface,
                 latest_state,
                 my_slot,
                 font,
@@ -254,6 +298,7 @@ def run_network_match(client, my_slot, my_name, my_team):
                 small_font,
                 active_layout,
                 latest_movement,
+                latest_facing,
                 orb_effects,
             )
 
@@ -282,7 +327,7 @@ def run_network_match(client, my_slot, my_name, my_team):
                 end_sound_played = True
 
             draw_end_overlay(
-                screen,
+                frame_surface,
                 end_message,
                 big_font,
                 medium_font,
@@ -291,6 +336,24 @@ def run_network_match(client, my_slot, my_name, my_team):
             end_timer -= dt
             if end_timer <= 0:
                 running = False
+
+        sw, sh = screen.get_size()
+        screen.fill((10, 13, 19))
+        base_w, base_h = frame_surface.get_size()
+        scale = min(sw / base_w, sh / base_h)
+        if scale <= 1.001:
+            blit_x = max(0, (sw - base_w) // 2)
+            blit_y = max(0, (sh - base_h) // 2)
+            screen.blit(frame_surface, (blit_x, blit_y))
+        else:
+            target_size = (
+                max(1, int(base_w * scale)),
+                max(1, int(base_h * scale)),
+            )
+            scaled_surface = pygame.transform.smoothscale(frame_surface, target_size)
+            blit_x = max(0, (sw - target_size[0]) // 2)
+            blit_y = max(0, (sh - target_size[1]) // 2)
+            screen.blit(scaled_surface, (blit_x, blit_y))
 
         pygame.display.flip()
 
@@ -324,9 +387,11 @@ def draw_state(
     small_font,
     layout,
     movement_flags=None,
+    facing_by_slot=None,
     orb_effects=None,
 ):
     movement_flags = movement_flags or {}
+    facing_by_slot = facing_by_slot or {}
     orb_effects = orb_effects or []
     elapsed_ms = pygame.time.get_ticks()
     arena_rect = get_arena_rect(layout)
@@ -350,10 +415,7 @@ def draw_state(
         state.get("players", []),
         key=lambda item: item.get("slot", 0),
     ):
-        if p["team"] == "A":
-            sprite_id = "skeleton_fighter_ember"
-        else:
-            sprite_id = "skeleton_fighter_aether"
+        sprite_id = _resolve_sprite_id(p)
         row = {
             "name": p["name"],
             "score": p["score"],
@@ -393,10 +455,8 @@ def draw_state(
 
     for p in state.get("players", []):
         accent_color = get_team_color(p["team"], max(0, p["slot"] - 1))
-        if p["team"] == "A":
-            sprite_id = "skeleton_fighter_ember"
-        else:
-            sprite_id = "skeleton_fighter_aether"
+        sprite_id = _resolve_sprite_id(p)
+        default_facing = 1 if p["team"] == "A" else -1
         draw_player_avatar(
             screen,
             name=p["name"],
@@ -408,9 +468,13 @@ def draw_state(
             sprite_id=sprite_id,
             highlight=p["slot"] == my_slot,
             team_code=p["team"],
-            facing=1 if p["team"] == "A" else -1,
+            facing=facing_by_slot.get(p["slot"], default_facing),
+            direction_name=_normalize_direction_name(p),
             elapsed_ms=elapsed_ms,
-            moving=movement_flags.get(p["slot"], False),
+            moving=movement_flags.get(
+                p["slot"],
+                bool(p.get("is_moving", False)),
+            ),
             combo_count=int(p.get("combo_count", 0)),
             combo_remaining_ms=int(p.get("combo_remaining_ms", 0)),
         )
@@ -479,11 +543,7 @@ def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
     team_a_rows = []
     team_b_rows = []
     for player in players:
-        sprite_id = (
-            "skeleton_fighter_ember"
-            if player.get("team") == "A"
-            else "skeleton_fighter_aether"
-        )
+        sprite_id = _resolve_sprite_id(player)
         row = {
             "name": player.get("name", "Combattant"),
             "score": player.get("score", 0),
