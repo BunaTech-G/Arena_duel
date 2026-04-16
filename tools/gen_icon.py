@@ -10,8 +10,8 @@ from PIL import Image
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-MASTER_LOGO_PATH = ROOT_DIR / "logo principale.png"
-REFERENCE_SHEET_PATH = ROOT_DIR / "ico du jeu.png"
+MASTER_LOGO_PATH = ROOT_DIR / "assets" / "icons" / "source" / "logo principale.png"
+REFERENCE_SHEET_PATH = ROOT_DIR / "assets" / "icons" / "source" / "ico du jeu.png"
 ICONS_DIR = ROOT_DIR / "assets" / "icons"
 IMAGES_DIR = ROOT_DIR / "assets" / "images"
 

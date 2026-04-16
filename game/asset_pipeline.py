@@ -177,7 +177,6 @@ def load_orb_token_asset(
     source_image = None
     for candidate_path in (
         asset_path("collectibles", "jetons.png"),
-        Path(resource_path("jetons.png")),
         asset_path("ui", "jetons.png"),
         asset_path("images", "jetons.png"),
     ):

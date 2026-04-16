@@ -25,7 +25,7 @@ Sprite package for two collectible skeleton arena fighters.
 
 ## Current state
 
-- `Perso.png` was found at the project root and copied into this folder as `skeleton_duo_master_sheet.png`
+- `source/Perso.png` is now the canonical raw drop used to build `skeleton_duo_master_sheet.png`
 - detected format: transparent `PNG`, `1024x1024`
 - automatic alpha scan suggests 4 large horizontal bands and multiple animation columns
 - exact slicing still needs visual confirmation before runtime extraction

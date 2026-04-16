@@ -2,8 +2,9 @@
 """
 Extract sprite frames from a transparent sheet by connected alpha components.
 
-This is tuned for generated character sheets like Perso.png where each frame
-is visually separated by transparent gutters but the global grid may not be
+This is tuned for generated character sheets like
+assets/sprites/skeleton_duo_fighters/source/Perso.png where each frame is
+visually separated by transparent gutters but the global grid may not be
 perfectly regular.
 """
 
@@ -53,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input",
-        default="Perso.png",
+        default="assets/sprites/skeleton_duo_fighters/source/Perso.png",
         help="Source sprite sheet path.",
     )
     parser.add_argument(
@@ -152,7 +153,9 @@ def group_rows(components: list[Component]) -> list[list[Component]]:
 
         if abs(component.center_y - current_anchor_y) <= threshold:
             current_row.append(component)
-            current_anchor_y = sum(item.center_y for item in current_row) / len(current_row)
+            current_anchor_y = sum(item.center_y for item in current_row) / len(
+                current_row
+            )
             continue
 
         rows.append(sorted(current_row, key=lambda item: item.min_x))
@@ -255,7 +258,9 @@ def main() -> int:
             )
 
     preview_path = output_dir / "atlas_preview.png"
-    build_preview(frame_paths, frame_size=frame_size, columns=max_columns).save(preview_path)
+    build_preview(frame_paths, frame_size=frame_size, columns=max_columns).save(
+        preview_path
+    )
     metadata["preview"] = preview_path.name
 
     metadata_path = output_dir / "extraction_manifest.json"

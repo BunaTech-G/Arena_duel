@@ -4,7 +4,7 @@
   "status": "classified_and_runtime_ready",
   "style": "fantasy arcade skeleton fighters with old-school action RPG readability",
   "render_mode": "top_down_or_pseudo_top_down",
-  "source_drop": "../../../Perso.png",
+  "source_drop": "source/Perso.png",
   "detected_asset": {
     "canvas_size": [1024, 1024],
     "mode": "RGBA",

@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+*.pyc.*
 *.pyo
 *.pyd
 
@@ -11,6 +12,7 @@ build/
 dist/
 build_release/
 build_release_check/
+dist_demo/
 dist_release/
 dist_release_check/
 
@@ -23,6 +25,8 @@ Thumbs.db
 # fichiers temporaires Windows / Python
 *.tmp
 *.bak
+tmp_*
+*.vsix
 
 # tests / coverage éventuels
 .coverage
