@@ -5,6 +5,7 @@ import tempfile
 import types
 import unittest
 import importlib
+from datetime import datetime
 
 
 TEST_APPDATA_DIR = tempfile.mkdtemp(prefix="arena_duel_demo_tests_")
@@ -25,9 +26,7 @@ matches_module = importlib.import_module("db.matches")
 
 class DemoStorageTests(unittest.TestCase):
     def setUp(self):
-        self.test_appdata_dir = tempfile.mkdtemp(
-            prefix="arena_duel_demo_case_"
-        )
+        self.test_appdata_dir = tempfile.mkdtemp(prefix="arena_duel_demo_case_")
         os.environ["APPDATA"] = self.test_appdata_dir
         runtime_utils.clear_runtime_override()
         runtime_utils.set_runtime_override("demo_local_storage_enabled", True)
@@ -56,6 +55,8 @@ class DemoStorageTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("Iris", message)
 
+        finished_at = datetime(2026, 4, 16, 12, 0, 0)
+
         archived, archive_message = matches_module.save_team_match(
             [
                 {
@@ -78,6 +79,10 @@ class DemoStorageTests(unittest.TestCase):
             5,
             3,
             90,
+            winner_team="A",
+            mode_code="LOCAL_HUMAN",
+            arena_code="forgotten_sanctum",
+            finished_at=finished_at,
         )
 
         self.assertTrue(archived)
@@ -90,6 +95,12 @@ class DemoStorageTests(unittest.TestCase):
         self.assertEqual(history_rows[0]["team_b_players"], "Iris")
         self.assertEqual(history_rows[0]["team_a_score"], 5)
         self.assertEqual(history_rows[0]["team_b_score"], 3)
+        self.assertEqual(history_rows[0]["winner_team"], "A")
+        self.assertEqual(history_rows[0]["winner_display"], "Bastion braise")
+        self.assertEqual(history_rows[0]["arena_code"], "forgotten_sanctum")
+        self.assertEqual(history_rows[0]["mode_code"], "LOCAL_HUMAN")
+        self.assertEqual(history_rows[0]["source_code"], "LOCAL")
+        self.assertEqual(history_rows[0]["played_at"], "2026-04-16 12:00:00")
 
 
 if __name__ == "__main__":

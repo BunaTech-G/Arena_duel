@@ -5,55 +5,15 @@ import uuid
 import mariadb
 
 from db.database import get_connection
+from db.schema_utils import column_exists, table_exists
 from game.control_models import is_ai_name
-
-
-def _get_database_name(cursor) -> str:
-    cursor.execute("SELECT DATABASE()")
-    row = cursor.fetchone()
-    return str(row[0]) if row and row[0] else ""
-
-
-def _table_exists(cursor, table_name: str) -> bool:
-    schema_name = _get_database_name(cursor)
-    if not schema_name:
-        return False
-
-    cursor.execute(
-        """
-        SELECT 1
-        FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = ?
-          AND TABLE_NAME = ?
-        """,
-        (schema_name, table_name),
-    )
-    return cursor.fetchone() is not None
-
-
-def _column_exists(cursor, table_name: str, column_name: str) -> bool:
-    schema_name = _get_database_name(cursor)
-    if not schema_name:
-        return False
-
-    cursor.execute(
-        """
-        SELECT 1
-        FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = ?
-          AND TABLE_NAME = ?
-          AND COLUMN_NAME = ?
-        """,
-        (schema_name, table_name, column_name),
-    )
-    return cursor.fetchone() is not None
 
 
 def lobby_schema_available(cursor) -> bool:
     return (
-        _table_exists(cursor, "lobby_sessions")
-        and _table_exists(cursor, "lobby_members")
-        and _column_exists(cursor, "lobby_sessions", "status_code")
+        table_exists(cursor, "lobby_sessions")
+        and table_exists(cursor, "lobby_members")
+        and column_exists(cursor, "lobby_sessions", "status_code")
     )
 
 

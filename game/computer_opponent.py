@@ -36,26 +36,32 @@ AI_TEAM_DEFAULT_SPRITES = {
 
 AI_DIFFICULTY_SETTINGS = {
     "cadet": {
-        "retarget_delay_ms": 420,
-        "contest_weight": 0.18,
-        "contest_cap": 80.0,
-        "axis_threshold": 12.0,
-        "escape_after_frames": 15,
-        "escape_duration_ms": 280,
+        "retarget_delay_ms": 620,
+        "decision_interval_ms": 190,
+        "contest_weight": 0.12,
+        "contest_cap": 70.0,
+        "rare_value_weight": 15.0,
+        "axis_threshold": 14.0,
+        "escape_after_frames": 18,
+        "escape_duration_ms": 320,
     },
     "standard": {
         "retarget_delay_ms": 260,
+        "decision_interval_ms": 95,
         "contest_weight": 0.35,
         "contest_cap": 140.0,
+        "rare_value_weight": 34.0,
         "axis_threshold": 8.0,
         "escape_after_frames": 10,
         "escape_duration_ms": 220,
     },
     "champion": {
-        "retarget_delay_ms": 140,
-        "contest_weight": 0.52,
-        "contest_cap": 190.0,
-        "axis_threshold": 5.0,
+        "retarget_delay_ms": 110,
+        "decision_interval_ms": 35,
+        "contest_weight": 0.62,
+        "contest_cap": 230.0,
+        "rare_value_weight": 62.0,
+        "axis_threshold": 4.0,
         "escape_after_frames": 7,
         "escape_duration_ms": 190,
     },
@@ -194,6 +200,7 @@ class BotController:
         self.last_intent = MovementIntent()
         self.stuck_frames = 0
         self.escape_until_ms = 0
+        self.next_decision_at_ms = 0
         self.escape_intent = MovementIntent()
         self.avoidance_axis: str | None = None
         self.avoidance_direction = 0
@@ -210,6 +217,7 @@ class BotController:
         self._update_stuck_state(player)
 
         if not orbs:
+            self.next_decision_at_ms = 0
             self.last_intent = MovementIntent()
             return self.last_intent
 
@@ -218,15 +226,19 @@ class BotController:
             self.retarget_at_ms = elapsed_ms + self.settings["retarget_delay_ms"]
 
         if self.target_orb is None:
+            self.next_decision_at_ms = 0
             self.last_intent = MovementIntent()
             return self.last_intent
-
-        dx = float(self.target_orb.x) - float(player.x)
-        dy = float(self.target_orb.y) - float(player.y)
 
         if elapsed_ms < self.escape_until_ms:
             self.last_intent = self.escape_intent
             return self.last_intent
+
+        if elapsed_ms < self.next_decision_at_ms and self.last_intent.is_active():
+            return self.last_intent
+
+        dx = float(self.target_orb.x) - float(player.x)
+        dy = float(self.target_orb.y) - float(player.y)
 
         if self.stuck_frames >= self.settings["escape_after_frames"]:
             self._clear_avoidance()
@@ -243,6 +255,7 @@ class BotController:
             dy,
             obstacles or (),
         )
+        self.next_decision_at_ms = elapsed_ms + self.settings["decision_interval_ms"]
         return self.last_intent
 
     @staticmethod
@@ -294,7 +307,10 @@ class BotController:
                 self.settings["contest_cap"],
                 enemy_distance * self.settings["contest_weight"],
             )
-            score -= max(0, int(getattr(orb, "value", 1)) - 1) * 32.0
+            score -= (
+                max(0, int(getattr(orb, "value", 1)) - 1)
+                * self.settings["rare_value_weight"]
+            )
 
             if best_score is None or score < best_score:
                 best_score = score

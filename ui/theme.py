@@ -1,12 +1,12 @@
 from collections import deque
 import customtkinter as ctk
 from pathlib import Path
-from tkinter import TclError
+from tkinter import PhotoImage, TclError
 from typing import cast
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
-from runtime_utils import resource_path
+from runtime_utils import get_app_icon_ico_path, get_app_icon_png_path, resource_path
 
 
 PALETTE = {
@@ -69,6 +69,9 @@ TYPOGRAPHY = {
     "button_small": ("Segoe UI Semibold", 14),
     "stat": ("Palatino Linotype", 24, "bold"),
 }
+
+
+WINDOW_ICON_PNG_SIZES = (256, 64, 32, 16)
 
 
 BUTTON_VARIANTS = {
@@ -198,7 +201,63 @@ def style_window(window):
     window.configure(fg_color=PALETTE["bg"])
 
 
-def style_frame(frame, tone="panel", border_color=None, border_width=1):
+def _apply_window_icon_once(window, *, default: bool = False):
+    icon_path = Path(get_app_icon_ico_path())
+    if icon_path.exists():
+        try:
+            window.iconbitmap(str(icon_path))
+        except (OSError, TclError):
+            pass
+
+    icon_images = []
+    seen_paths = set()
+    for preferred_size in WINDOW_ICON_PNG_SIZES:
+        png_path = Path(get_app_icon_png_path(preferred_size))
+        if not png_path.exists():
+            continue
+
+        normalized_path = str(png_path.resolve())
+        if normalized_path in seen_paths:
+            continue
+        seen_paths.add(normalized_path)
+
+        try:
+            icon_images.append(PhotoImage(master=window, file=str(png_path)))
+        except TclError:
+            pass
+
+    if not icon_images:
+        return
+
+    try:
+        window.iconphoto(default, *icon_images)
+        window._arena_window_icon_images = icon_images
+    except TclError:
+        pass
+
+
+def apply_window_icon(window, *, default: bool = False, retry_after_ms: int = 0):
+    _apply_window_icon_once(window, default=default)
+
+    if retry_after_ms <= 0:
+        return
+
+    def _retry():
+        try:
+            if not window.winfo_exists():
+                return
+        except TclError:
+            return
+
+        _apply_window_icon_once(window, default=default)
+
+    try:
+        window.after(retry_after_ms, _retry)
+    except TclError:
+        pass
+
+
+def style_frame(frame, tone="panel", border_color=None, border_width=0):
     frame.configure(
         bg_color=resolve_widget_bg_color(getattr(frame, "master", None)),
         fg_color=PALETTE.get(tone, PALETTE["panel"]),
@@ -215,6 +274,65 @@ def style_textbox(textbox, tone="panel_soft"):
         border_color=PALETTE["divider"],
         text_color=PALETTE["text"],
         font=TYPOGRAPHY["body"],
+    )
+
+
+def style_entry(entry, tone="panel_soft"):
+    entry.configure(
+        bg_color=resolve_widget_bg_color(getattr(entry, "master", None)),
+        fg_color=PALETTE.get(tone, PALETTE["panel_soft"]),
+        border_color=PALETTE["border"],
+        text_color=PALETTE["text"],
+        font=TYPOGRAPHY["body"],
+    )
+
+
+def style_combobox(combo, tone="panel_soft"):
+    combo.configure(
+        bg_color=resolve_widget_bg_color(getattr(combo, "master", None)),
+        fg_color=PALETTE.get(tone, PALETTE["panel_soft"]),
+        border_color=PALETTE["border"],
+        button_color=PALETTE["surface"],
+        button_hover_color=PALETTE["border_strong"],
+        text_color=PALETTE["text"],
+    )
+
+
+def style_checkbox(checkbox):
+    checkbox.configure(
+        bg_color=resolve_widget_bg_color(getattr(checkbox, "master", None)),
+        text_color=PALETTE["text"],
+    )
+
+
+def style_scrollable_frame(
+    scrollable_frame,
+    *,
+    tone="panel_soft",
+    border_color=None,
+    border_width=0,
+):
+    scrollable_frame.configure(
+        bg_color=resolve_widget_bg_color(getattr(scrollable_frame, "master", None)),
+        fg_color=PALETTE.get(tone, PALETTE["panel_soft"]),
+        border_color=border_color or PALETTE["divider"],
+        border_width=border_width,
+        scrollbar_button_color=PALETTE["surface"],
+        scrollbar_button_hover_color=PALETTE["border_strong"],
+    )
+
+
+def style_tabview(tabview, tone="panel_soft", border_color=None):
+    tabview.configure(
+        bg_color=resolve_widget_bg_color(getattr(tabview, "master", None)),
+        fg_color=PALETTE.get(tone, PALETTE["panel_soft"]),
+        border_color=border_color or PALETTE["divider"],
+        segmented_button_fg_color=PALETTE["panel_deep"],
+        segmented_button_selected_color=PALETTE["gold_dim"],
+        segmented_button_selected_hover_color=PALETTE["gold"],
+        segmented_button_unselected_color=PALETTE["panel"],
+        segmented_button_unselected_hover_color=PALETTE["panel_highlight"],
+        text_color=PALETTE["text"],
     )
 
 
@@ -311,6 +429,13 @@ def create_badge(master, text, tone="neutral"):
         font=TYPOGRAPHY["small_bold"],
         padx=12,
         pady=6,
+    )
+
+
+def style_image_label(label):
+    label.configure(
+        fg_color="transparent",
+        bg_color=resolve_widget_bg_color(getattr(label, "master", None)),
     )
 
 
@@ -495,6 +620,36 @@ def load_ctk_image(
     return ctk.CTkImage(light_image=image, dark_image=image, size=size)
 
 
+def load_app_icon_image(
+    size: tuple[int, int] | int,
+    *,
+    fallback_label: str = "arena duel",
+) -> ctk.CTkImage:
+    if isinstance(size, int):
+        target_size = (size, size)
+    else:
+        target_size = size
+
+    requested_size = max(target_size)
+    icon_path = Path(get_app_icon_png_path(requested_size))
+    try:
+        image = Image.open(icon_path).convert("RGBA")
+    except (FileNotFoundError, OSError):
+        return load_ctk_image(
+            "assets",
+            "icons",
+            "icon_preview_256.png",
+            size=target_size,
+            fallback_label=fallback_label,
+        )
+
+    return ctk.CTkImage(
+        light_image=image,
+        dark_image=image,
+        size=target_size,
+    )
+
+
 def load_launcher_background_image(
     *parts: str,
     size: tuple[int, int],
@@ -608,11 +763,11 @@ def _lift_dark_regions(
             if alpha <= 0:
                 continue
 
-            luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
-            if luminance >= threshold:
+            pixel_luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+            if pixel_luminance >= threshold:
                 continue
 
-            blend_strength = (threshold - luminance) / threshold * strength
+            blend_strength = (threshold - pixel_luminance) / threshold * strength
             pixels[x_pos, y_pos] = (
                 round(red * (1 - blend_strength) + target_red * blend_strength),
                 round(green * (1 - blend_strength) + target_green * blend_strength),

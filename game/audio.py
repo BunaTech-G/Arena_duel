@@ -1,7 +1,11 @@
 from pathlib import Path
 import pygame
 
-from runtime_utils import is_runtime_flag_enabled, resource_path
+from runtime_utils import (
+    is_runtime_flag_enabled,
+    resource_path,
+    runtime_file_path,
+)
 
 
 SOUNDS_DIR = Path(resource_path("assets", "sounds"))
@@ -10,6 +14,11 @@ SOUND_CONFIG = {
     "pickup": {
         "files": ["pickup-impact.mp3", "impact.mp3", "orb.mp3"],
         "volume": 0.34,
+    },
+    "bonus_spawn": {
+        "files": ["bonus_jetons.mp3"],
+        "volume": 0.38,
+        "maxtime_ms": 900,
     },
     "win": {
         "files": ["win.mp3"],
@@ -44,11 +53,26 @@ SOUND_CONFIG = {
     },
     "lose": {
         "files": [
+            "game_over.mp3",
             "lose-sting.mp3",
             "floraphonic-violin-lose-1-175615.mp3",
             "draw.mp3",
         ],
         "volume": 0.52,
+    },
+    "lose_alt": {
+        "files": ["gameover2.mp3", "game_over2.mp3"],
+        "volume": 0.54,
+    },
+    "trap_a": {
+        "files": ["piege1.mp3"],
+        "volume": 0.34,
+        "maxtime_ms": 700,
+    },
+    "trap_b": {
+        "files": ["piege2.mp3"],
+        "volume": 0.34,
+        "maxtime_ms": 700,
     },
     "error": {
         "files": ["error-sting.mp3", "erreur.mp3", "draw.mp3"],
@@ -88,6 +112,11 @@ transition_sound = None
 lose_sound = None
 error_sound = None
 alert_sound = None
+bonus_spawn_sound = None
+lose_alt_sound = None
+trap_a_sound = None
+trap_b_sound = None
+_trap_sound_index = 0
 
 
 def _log_audio(message):
@@ -97,9 +126,20 @@ def _log_audio(message):
 
 def _resolve_audio_path(candidates):
     for filename in candidates:
-        path = SOUNDS_DIR / filename
-        if path.exists():
-            return path
+        candidate_paths = [
+            SOUNDS_DIR / filename,
+            Path(runtime_file_path(filename)),
+        ]
+
+        seen_paths = set()
+        for path in candidate_paths:
+            normalized = str(path)
+            if normalized in seen_paths:
+                continue
+            seen_paths.add(normalized)
+
+            if path.exists():
+                return path
 
     _log_audio(f"aucun fichier trouve parmi : {', '.join(candidates)}")
     return None
@@ -118,9 +158,7 @@ def _safe_load_sound(candidates, volume=1.0, label="son"):
         sound.set_volume(volume)
         return sound
     except Exception as e:
-        _log_audio(
-            f"impossible de charger {label} depuis {path.name} : {e}"
-        )
+        _log_audio(f"impossible de charger {label} depuis {path.name} : {e}")
         return None
 
 
@@ -155,8 +193,10 @@ def init_audio():
     Initialise l'audio sans faire planter le jeu si un fichier manque.
     """
     global _audio_ready
+    global _trap_sound_index
     global pickup_sound, win_sound, draw_sound, click_sound
     global select_sound, transition_sound, lose_sound, error_sound, alert_sound
+    global bonus_spawn_sound, lose_alt_sound, trap_a_sound, trap_b_sound
 
     try:
         if pygame.mixer.get_init() is None:
@@ -168,14 +208,19 @@ def init_audio():
         return
 
     pickup_sound = _load_role_sound("pickup")
+    bonus_spawn_sound = _load_role_sound("bonus_spawn")
     win_sound = _load_role_sound("win")
     draw_sound = _load_role_sound("draw")
     click_sound = _load_role_sound("click")
     select_sound = _load_role_sound("select")
     transition_sound = _load_role_sound("transition")
     lose_sound = _load_role_sound("lose")
+    lose_alt_sound = _load_role_sound("lose_alt")
+    trap_a_sound = _load_role_sound("trap_a")
+    trap_b_sound = _load_role_sound("trap_b")
     error_sound = _load_role_sound("error")
     alert_sound = _load_role_sound("alert")
+    _trap_sound_index = 0
 
 
 def play_music(track_name="menu", loops=-1, restart=False):
@@ -245,6 +290,14 @@ def play_pickup():
     _safe_play(pickup_sound, "pickup", _role_maxtime("pickup"))
 
 
+def play_bonus_spawn():
+    _safe_play(
+        bonus_spawn_sound,
+        "bonus_spawn",
+        _role_maxtime("bonus_spawn"),
+    )
+
+
 def play_win():
     _safe_play(win_sound, "victoire", _role_maxtime("win"))
 
@@ -273,8 +326,34 @@ def play_transition():
     )
 
 
-def play_lose():
+def play_lose(consecutive_rematch_loss: bool = False):
+    if consecutive_rematch_loss and lose_alt_sound:
+        _safe_play(
+            lose_alt_sound,
+            "defaite_rematch",
+            _role_maxtime("lose_alt"),
+        )
+        return
+
     _safe_play(lose_sound or draw_sound, "defaite", _role_maxtime("lose"))
+
+
+def play_trap():
+    global _trap_sound_index
+
+    trap_sounds = [sound for sound in (trap_a_sound, trap_b_sound) if sound]
+    if not trap_sounds:
+        return
+
+    selected_index = _trap_sound_index % len(trap_sounds)
+    selected_sound = trap_sounds[selected_index]
+    selected_label = "trap_a" if selected_index == 0 else "trap_b"
+    _trap_sound_index = (_trap_sound_index + 1) % len(trap_sounds)
+    _safe_play(
+        selected_sound,
+        selected_label,
+        _role_maxtime(selected_label),
+    )
 
 
 def play_error():

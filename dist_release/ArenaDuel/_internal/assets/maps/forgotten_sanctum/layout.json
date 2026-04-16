@@ -7,13 +7,13 @@
       1280,
       980
     ],
-    "hud_height": 250,
-    "margin": 60,
+    "hud_height": 188,
+    "margin": 40,
     "playable_rect": [
-      60,
-      250,
-      1160,
-      700
+      40,
+      216,
+      1200,
+      736
     ]
   },
   "spawn_groups": {

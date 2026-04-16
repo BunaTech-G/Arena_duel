@@ -65,7 +65,9 @@ ARENA_FLOOR_ASSET = "forgotten_sanctum_floor"
 _BACKGROUND_CACHE: dict[tuple[int, int], pygame.Surface] = {}
 _FLOOR_CACHE: dict[tuple[str, int, int], pygame.Surface] = {}
 _ORB_EFFECT_FONT_CACHE: dict[int, pygame.font.Font] = {}
+PG_ERROR = getattr(pygame, "error", RuntimeError)
 PG_SRCALPHA = getattr(pygame, "SRCALPHA")
+PG_BLEND_RGB_ADD = getattr(pygame, "BLEND_RGB_ADD")
 
 
 def get_map_layout(map_id: str = DEFAULT_MAP_ID) -> ArenaLayout:
@@ -98,12 +100,18 @@ def get_team_color(team_code: str, slot_index: int = 0) -> tuple[int, int, int]:
 
 
 def _get_orb_effect_font(size: int) -> pygame.font.Font:
-    cached_font = _ORB_EFFECT_FONT_CACHE.get(size)
-    if cached_font is not None:
-        return cached_font
-
     if not pygame.font.get_init():
         pygame.font.init()
+        _ORB_EFFECT_FONT_CACHE.clear()
+
+    cached_font = _ORB_EFFECT_FONT_CACHE.get(size)
+    if cached_font is not None:
+        try:
+            cached_font.size("0")
+        except PG_ERROR:
+            _ORB_EFFECT_FONT_CACHE.pop(size, None)
+        else:
+            return cached_font
 
     font = pygame.font.SysFont("Segoe UI", size, bold=True)
     _ORB_EFFECT_FONT_CACHE[size] = font
@@ -157,6 +165,10 @@ def _mix_color(
     return tuple(int(a + (b - a) * blend) for a, b in zip(start, end))
 
 
+def _clamp_color_channel(value: float) -> int:
+    return max(0, min(255, int(value)))
+
+
 def _build_background_surface(size: tuple[int, int]) -> pygame.Surface:
     width, height = size
     background_asset = load_background_asset(
@@ -174,20 +186,37 @@ def _build_background_surface(size: tuple[int, int]) -> pygame.Surface:
             blend = y / max(1, height - 1)
             color = _mix_color(BACKGROUND_TOP, BACKGROUND_BOTTOM, blend)
             pygame.draw.rect(surface, color, (0, y, width, band_height))
+    else:
+        surface.fill((16, 18, 24), special_flags=PG_BLEND_RGB_ADD)
 
-    glow_surface = pygame.Surface(size, pygame.SRCALPHA)
+    glow_surface = pygame.Surface(size, PG_SRCALPHA)
     pygame.draw.ellipse(
         glow_surface, BACKGROUND_GLOW_A, (-120, 80, width // 2, height // 2)
     )
     pygame.draw.ellipse(
-        glow_surface, BACKGROUND_GLOW_B, (width // 2, -40, width // 2, height // 3)
+        glow_surface,
+        BACKGROUND_GLOW_B,
+        (width // 2, -40, width // 2, height // 3),
     )
     pygame.draw.ellipse(
         glow_surface,
-        (20, 24, 34, 120),
+        (20, 24, 34, 66),
         (-100, height // 2, width + 200, height // 2 + 120),
     )
     surface.blit(glow_surface, (0, 0))
+
+    haze_surface = pygame.Surface(size, PG_SRCALPHA)
+    pygame.draw.ellipse(
+        haze_surface,
+        (190, 202, 224, 28),
+        (-40, -20, width + 80, (height // 2) + 70),
+    )
+    pygame.draw.ellipse(
+        haze_surface,
+        (242, 196, 118, 20),
+        (width // 10, height // 2, (width * 8) // 10, height // 3),
+    )
+    surface.blit(haze_surface, (0, 0))
     return surface
 
 
@@ -206,7 +235,7 @@ def _build_floor_surface(layout: ArenaLayout) -> pygame.Surface:
     floor = (
         floor_asset.copy()
         if floor_asset is not None
-        else pygame.Surface((width, height), pygame.SRCALPHA)
+        else pygame.Surface((width, height), PG_SRCALPHA)
     )
 
     if floor_asset is None:
@@ -248,8 +277,23 @@ def _build_floor_surface(layout: ArenaLayout) -> pygame.Surface:
         ]
         for path in crack_lines:
             pygame.draw.lines(floor, crack_color, False, path, width=3)
+    else:
+        floor.fill((18, 14, 10), special_flags=PG_BLEND_RGB_ADD)
 
-    edge_shadow = pygame.Surface((width, height), pygame.SRCALPHA)
+    ambient_surface = pygame.Surface((width, height), PG_SRCALPHA)
+    pygame.draw.ellipse(
+        ambient_surface,
+        (236, 196, 136, 28),
+        (width // 9, height // 7, (width * 7) // 9, height // 2),
+    )
+    pygame.draw.ellipse(
+        ambient_surface,
+        (134, 170, 184, 18),
+        (width // 16, (height * 11) // 20, (width * 7) // 8, height // 4),
+    )
+    floor.blit(ambient_surface, (0, 0))
+
+    edge_shadow = pygame.Surface((width, height), PG_SRCALPHA)
     pygame.draw.rect(
         edge_shadow, (*ARENA_EDGE_SHADOW, 120), edge_shadow.get_rect(), border_radius=18
     )
@@ -276,7 +320,7 @@ def _draw_rune_circle(
     surface: pygame.Surface, rect: pygame.Rect, elapsed_ms: float
 ) -> None:
     pulse = 0.55 + 0.45 * math.sin(elapsed_ms / 480.0)
-    rune_surface = pygame.Surface(rect.size, pygame.SRCALPHA)
+    rune_surface = pygame.Surface(rect.size, PG_SRCALPHA)
     center = (rect.width // 2, rect.height // 2)
 
     for shrink, alpha in ((0, 54), (24, 78), (52, 110)):
@@ -300,7 +344,7 @@ def _draw_rune_circle(
 
 
 def _draw_banner_shadow(surface: pygame.Surface, rect: pygame.Rect) -> None:
-    banner_surface = pygame.Surface(rect.size, pygame.SRCALPHA)
+    banner_surface = pygame.Surface(rect.size, PG_SRCALPHA)
     pygame.draw.rect(
         banner_surface, (8, 11, 17, 65), banner_surface.get_rect(), border_radius=18
     )
@@ -314,6 +358,93 @@ def _draw_banner_shadow(surface: pygame.Surface, rect: pygame.Rect) -> None:
     surface.blit(banner_surface, rect.topleft)
 
 
+def _draw_corner_brackets(
+    surface: pygame.Surface,
+    rect: pygame.Rect,
+    color: tuple[int, int, int],
+    *,
+    length: int = 8,
+    width: int = 2,
+    inset: int = 0,
+) -> None:
+    left = rect.left + inset
+    top = rect.top + inset
+    right = rect.right - inset - 1
+    bottom = rect.bottom - inset - 1
+
+    pygame.draw.line(surface, color, (left, top), (left + length, top), width)
+    pygame.draw.line(surface, color, (left, top), (left, top + length), width)
+    pygame.draw.line(
+        surface,
+        color,
+        (right, top),
+        (right - length, top),
+        width,
+    )
+    pygame.draw.line(
+        surface,
+        color,
+        (right, top),
+        (right, top + length),
+        width,
+    )
+    pygame.draw.line(
+        surface,
+        color,
+        (left, bottom),
+        (left + length, bottom),
+        width,
+    )
+    pygame.draw.line(
+        surface,
+        color,
+        (left, bottom),
+        (left, bottom - length),
+        width,
+    )
+    pygame.draw.line(
+        surface,
+        color,
+        (right, bottom),
+        (right - length, bottom),
+        width,
+    )
+    pygame.draw.line(
+        surface,
+        color,
+        (right, bottom),
+        (right, bottom - length),
+        width,
+    )
+
+
+def _draw_ring_ticks(
+    surface: pygame.Surface,
+    center: tuple[int, int],
+    radius: int,
+    color: tuple[int, int, int],
+    *,
+    count: int,
+    tick_length: int,
+    width: int = 2,
+    phase: float = -math.pi / 2.0,
+) -> None:
+    center_x, center_y = center
+    for index in range(count):
+        angle = phase + (math.tau / float(count)) * index
+        inner_x = int(center_x + math.cos(angle) * max(0, radius - tick_length))
+        inner_y = int(center_y + math.sin(angle) * max(0, radius - tick_length))
+        outer_x = int(center_x + math.cos(angle) * radius)
+        outer_y = int(center_y + math.sin(angle) * radius)
+        pygame.draw.line(
+            surface,
+            color,
+            (inner_x, inner_y),
+            (outer_x, outer_y),
+            width,
+        )
+
+
 def _draw_spike_trap(
     surface: pygame.Surface,
     rect: pygame.Rect,
@@ -323,8 +454,11 @@ def _draw_spike_trap(
     pulse = 0.52 + 0.48 * math.sin(elapsed_ms / 220.0 + rect.centerx * 0.013)
     aura_margin = 12
     aura_size = (rect.width + aura_margin * 2, rect.height + aura_margin * 2)
-    aura_surface = pygame.Surface(aura_size, pygame.SRCALPHA)
-    aura_center = (aura_surface.get_width() // 2, aura_surface.get_height() // 2)
+    aura_surface = pygame.Surface(aura_size, PG_SRCALPHA)
+    aura_center = (
+        aura_surface.get_width() // 2,
+        aura_surface.get_height() // 2,
+    )
     aura_radius = max(rect.width, rect.height) // 2 - 2
     if active_presence > 0.04:
         pygame.draw.circle(
@@ -353,6 +487,36 @@ def _draw_spike_trap(
     center_y = plate_rect.centery
     inner_radius = max(7, min(plate_rect.width, plate_rect.height) // 5)
     outer_radius = max(12, min(plate_rect.width, plate_rect.height) // 2 - 5)
+    warning_radius = outer_radius + 7
+    warning_color = (
+        118 + int(92 * active_presence),
+        76 + int(52 * active_presence),
+        60 + int(26 * active_presence),
+    )
+    pygame.draw.circle(
+        surface,
+        warning_color,
+        (center_x, center_y),
+        warning_radius,
+        width=1,
+    )
+    _draw_ring_ticks(
+        surface,
+        (center_x, center_y),
+        warning_radius + 3,
+        warning_color,
+        count=6,
+        tick_length=6,
+        width=2,
+    )
+    pygame.draw.circle(
+        surface,
+        (88, 52, 44),
+        (center_x, center_y),
+        max(9, outer_radius - 3),
+        width=1,
+    )
+
     tip_radius = outer_radius + int((4 + 4 * pulse) * active_presence)
     if active_presence > 0.02:
         for index in range(6):
@@ -375,9 +539,24 @@ def _draw_spike_trap(
             ]
             pygame.draw.polygon(surface, TRAP_SPIKE, spike_points)
             pygame.draw.polygon(surface, (87, 66, 58), spike_points, width=1)
+    else:
+        _draw_ring_ticks(
+            surface,
+            (center_x, center_y),
+            outer_radius + 1,
+            (104, 72, 62),
+            count=6,
+            tick_length=5,
+            width=1,
+        )
 
     core_radius = max(8, inner_radius - 2)
-    pygame.draw.circle(surface, (120, 58, 42), (center_x, center_y), core_radius)
+    pygame.draw.circle(
+        surface,
+        (120, 58, 42),
+        (center_x, center_y),
+        core_radius,
+    )
     pygame.draw.circle(
         surface,
         (*TRAP_GLOW, int((38 + 86 * pulse) * (0.25 + active_presence * 0.75))),
@@ -409,11 +588,52 @@ def _draw_ember_trap(
             2,
         )
 
+    heat_ring_color = (
+        132 + int(72 * active_presence),
+        86 + int(44 * active_presence),
+        52 + int(14 * active_presence),
+    )
+    pygame.draw.circle(
+        surface,
+        heat_ring_color,
+        rect.center,
+        max(16, rect.width // 2 - 1),
+        width=1,
+    )
+    ember_y = base_rect.centery + 4
+    ember_color = (
+        138 + int(72 * active_presence),
+        76 + int(44 * active_presence),
+        32 + int(10 * active_presence),
+    )
+    for offset_x in (-8, 0, 8):
+        pygame.draw.circle(
+            surface,
+            ember_color,
+            (base_rect.centerx + offset_x, ember_y),
+            3,
+        )
+
+    for side in (-1, 1):
+        tip_x = rect.centerx + side * (rect.width // 2 - 3)
+        vent_top = rect.centery - 8
+        vent_bottom = rect.centery + 8
+        pygame.draw.line(
+            surface,
+            heat_ring_color,
+            (tip_x, vent_top),
+            (tip_x, vent_bottom),
+            1,
+        )
+
     if active_presence <= 0.02:
         return
 
     glow_radius = max(14, rect.width // 2)
-    glow_surface = pygame.Surface((glow_radius * 2, glow_radius * 2), pygame.SRCALPHA)
+    glow_surface = pygame.Surface(
+        (glow_radius * 2, glow_radius * 2),
+        PG_SRCALPHA,
+    )
     pygame.draw.circle(
         glow_surface,
         (*EMBER_TRAP_GLOW, int((34 + 54 * pulse) * active_presence)),
@@ -440,6 +660,15 @@ def _draw_ember_trap(
         ]
         pygame.draw.polygon(surface, (255, 128, 76), inner_points)
 
+    spark_color = (255, 228, 170)
+    for spark_x, spark_y in ((-12, -8), (12, -6), (0, -14)):
+        pygame.draw.circle(
+            surface,
+            spark_color,
+            (rect.centerx + spark_x, rect.centery + spark_y),
+            2,
+        )
+
 
 def _draw_rune_trap(
     surface: pygame.Surface,
@@ -447,11 +676,39 @@ def _draw_rune_trap(
     elapsed_ms: float,
     active_presence: float,
 ) -> None:
+    active_presence = max(0.0, min(1.0, float(active_presence)))
     pulse = 0.5 + 0.5 * math.sin(elapsed_ms / 260.0 + rect.centerx * 0.012)
+    frame_rect = rect.inflate(-4, -4)
     base_rect = rect.inflate(-14, -14)
+    frame_color = (
+        70,
+        _clamp_color_channel(112 + (48 * active_presence)),
+        _clamp_color_channel(118 + (82 * active_presence)),
+    )
+    pygame.draw.rect(
+        surface,
+        frame_color,
+        frame_rect,
+        width=1,
+        border_radius=12,
+    )
+    _draw_corner_brackets(
+        surface,
+        frame_rect,
+        frame_color,
+        length=7,
+        width=2,
+    )
+
     pygame.draw.rect(surface, (18, 26, 30), base_rect, border_radius=10)
     pygame.draw.rect(surface, RUNE_TRAP_CORE, base_rect, border_radius=10)
-    pygame.draw.rect(surface, RUNE_TRAP_EDGE, base_rect, width=2, border_radius=10)
+    pygame.draw.rect(
+        surface,
+        RUNE_TRAP_EDGE,
+        base_rect,
+        width=2,
+        border_radius=10,
+    )
 
     diamond = [
         (base_rect.centerx, base_rect.top + 2),
@@ -465,9 +722,17 @@ def _draw_rune_trap(
         pygame.draw.circle(surface, (94, 128, 132), base_rect.center, 4)
         return
 
-    rune_alpha = int((52 + 110 * pulse) * active_presence)
-    rune_surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+    rune_alpha = _clamp_color_channel((52 + 110 * pulse) * active_presence)
+    rune_surface = pygame.Surface((rect.width, rect.height), PG_SRCALPHA)
     center = (rect.width // 2, rect.height // 2)
+    outer_frame_rect = rune_surface.get_rect().inflate(-8, -8)
+    pygame.draw.rect(
+        rune_surface,
+        (*RUNE_TRAP_GLOW, _clamp_color_channel(max(36, rune_alpha - 20))),
+        outer_frame_rect,
+        width=1,
+        border_radius=10,
+    )
     pygame.draw.circle(
         rune_surface,
         (*RUNE_TRAP_GLOW, rune_alpha),
@@ -489,14 +754,33 @@ def _draw_rune_trap(
         (center[0] + 9, center[1]),
         2,
     )
+    pygame.draw.polygon(
+        rune_surface,
+        (*RUNE_TRAP_GLOW, _clamp_color_channel(rune_alpha + 14)),
+        [
+            (center[0], center[1] - 8),
+            (center[0] + 8, center[1]),
+            (center[0], center[1] + 8),
+            (center[0] - 8, center[1]),
+        ],
+        width=1,
+    )
     orbit_angle = elapsed_ms / 320.0
     orbit_x = int(center[0] + math.cos(orbit_angle) * 12)
     orbit_y = int(center[1] + math.sin(orbit_angle) * 12)
     pygame.draw.circle(
         rune_surface,
-        (*RUNE_TRAP_GLOW, min(255, rune_alpha + 20)),
+        (*RUNE_TRAP_GLOW, _clamp_color_channel(rune_alpha + 20)),
         (orbit_x, orbit_y),
         3,
+    )
+    counter_orbit_x = int(center[0] - math.cos(orbit_angle) * 12)
+    counter_orbit_y = int(center[1] - math.sin(orbit_angle) * 12)
+    pygame.draw.circle(
+        rune_surface,
+        (*RUNE_TRAP_GLOW, _clamp_color_channel(rune_alpha - 10)),
+        (counter_orbit_x, counter_orbit_y),
+        2,
     )
     surface.blit(rune_surface, rect.topleft)
 
@@ -559,7 +843,7 @@ def _draw_grave_marker(
     rune_rect = pygame.Rect(
         headstone_rect.centerx - 14, headstone_rect.centery - 18, 28, 36
     )
-    rune_surface = pygame.Surface(rune_rect.size, pygame.SRCALPHA)
+    rune_surface = pygame.Surface(rune_rect.size, PG_SRCALPHA)
     pygame.draw.ellipse(
         rune_surface,
         (*GRAVE_ACCENT, int(80 + 70 * pulse)),
@@ -603,8 +887,8 @@ def draw_arena(
     active_layout = layout or get_map_layout()
     surface.blit(_get_floor_surface(active_layout), arena_rect.topleft)
 
-    floor_veil = pygame.Surface(arena_rect.size, pygame.SRCALPHA)
-    floor_veil.fill((8, 12, 18, 26))
+    floor_veil = pygame.Surface(arena_rect.size, PG_SRCALPHA)
+    floor_veil.fill((8, 12, 18, 10))
     surface.blit(floor_veil, arena_rect.topleft)
 
     for decor in active_layout.decor:
@@ -968,7 +1252,7 @@ def _draw_nameplate(
     name_surface = name_font.render(name, True, NAME_TEXT)
     name_rect = name_surface.get_rect(center=(center_x, center_y))
     label_rect = name_rect.inflate(18, 10)
-    label_surface = pygame.Surface(label_rect.size, pygame.SRCALPHA)
+    label_surface = pygame.Surface(label_rect.size, PG_SRCALPHA)
     pygame.draw.rect(
         label_surface, NAME_PANEL, label_surface.get_rect(), border_radius=12
     )
@@ -1007,7 +1291,7 @@ def _draw_procedural_player_avatar(
     shadow_rect = pygame.Rect(
         center_x - radius, center_y + radius - 4, radius * 2, max(10, radius // 2 + 4)
     )
-    shadow_surface = pygame.Surface(shadow_rect.size, pygame.SRCALPHA)
+    shadow_surface = pygame.Surface(shadow_rect.size, PG_SRCALPHA)
     pygame.draw.ellipse(shadow_surface, (0, 0, 0, 92), shadow_surface.get_rect())
     surface.blit(shadow_surface, shadow_rect.topleft)
 
@@ -1187,7 +1471,7 @@ def draw_player_avatar(
         display_radius * 2,
         max(10, display_radius // 2 + 4),
     )
-    shadow_surface = pygame.Surface(shadow_rect.size, pygame.SRCALPHA)
+    shadow_surface = pygame.Surface(shadow_rect.size, PG_SRCALPHA)
     pygame.draw.ellipse(shadow_surface, (0, 0, 0, 92), shadow_surface.get_rect())
     surface.blit(shadow_surface, shadow_rect.topleft)
 
@@ -1217,9 +1501,7 @@ def draw_player_avatar(
 
     if sprite is not None:
         aura_radius = int(display_radius * (1.85 if highlight else 1.45))
-        aura_surface = pygame.Surface(
-            (aura_radius * 2, aura_radius * 2), pygame.SRCALPHA
-        )
+        aura_surface = pygame.Surface((aura_radius * 2, aura_radius * 2), PG_SRCALPHA)
         pygame.draw.circle(
             aura_surface,
             (*accent_bright, 38 if highlight else 24),

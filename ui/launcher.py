@@ -33,7 +33,6 @@ from runtime_utils import (
     clear_runtime_override,
     clear_runtime_user_overrides,
     load_persisted_runtime_config,
-    resource_path,
     runtime_user_config_path,
     save_runtime_user_overrides,
 )
@@ -43,17 +42,23 @@ from ui.player_select import PlayerSelectView
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
+    apply_window_icon,
     apply_theme_settings,
     create_badge,
     create_button,
     create_option_menu,
     enable_large_window,
+    load_app_icon_image,
     load_launcher_background_image,
-    load_ctk_image,
     present_window,
+    style_checkbox,
+    style_entry,
     style_frame,
+    style_tabview,
     style_window,
     update_badge,
+    style_image_label,
+    style_scrollable_frame,
 )
 
 
@@ -70,7 +75,7 @@ def _parse_int_value(
     try:
         parsed_value = int(str(raw_value or "").strip())
     except ValueError as error:
-        raise ValueError(f"Le champ {label} doit etre un entier.") from error
+        raise ValueError(f"Le champ {label} doit être un entier.") from error
 
     if parsed_value < minimum or parsed_value > maximum:
         raise ValueError(f"Le champ {label} doit rester entre {minimum} et {maximum}.")
@@ -87,7 +92,7 @@ def _parse_float_value(
     try:
         parsed_value = float(str(raw_value or "").strip())
     except ValueError as error:
-        raise ValueError(f"Le champ {label} doit etre un nombre valide.") from error
+        raise ValueError(f"Le champ {label} doit être un nombre valide.") from error
 
     if parsed_value < minimum or parsed_value > maximum:
         raise ValueError(f"Le champ {label} doit rester entre {minimum} et {maximum}.")
@@ -104,7 +109,7 @@ def _validate_bind_host(raw_value: str) -> str:
         ipaddress.ip_address(bind_host)
     except ValueError as error:
         raise ValueError(
-            "Le bind host LAN doit etre une IPv4 valide ou localhost."
+            "Le bind host LAN doit être une IPv4 valide ou localhost."
         ) from error
     return bind_host
 
@@ -130,15 +135,23 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         self.parent_launcher = parent
         style_window(self)
 
-        self.title("Arena Duel - Reglages")
-        try:
-            self.iconbitmap(resource_path("assets", "icons", "app.ico"))
-        except (OSError, TclError):
-            pass
+        self.title("Arena Duel - Réglages")
+        apply_window_icon(self, retry_after_ms=220)
 
-        self.geometry("860x640")
-        enable_large_window(self, 760, 520, start_zoomed=False)
+        self.geometry("1180x760")
+        enable_large_window(self, 980, 640, start_zoomed=False)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+        screen_width = max(1180, self.winfo_screenwidth())
+        screen_height = max(760, self.winfo_screenheight())
+        self.background_image = load_launcher_background_image(
+            "assets",
+            "backgrounds",
+            "launcher_twilight_bastion_bg.png",
+            size=(screen_width, screen_height),
+            fallback_label="réglages bastion",
+        )
+        self.configure(fg_color=PALETTE["launcher_blend"])
 
         self.runtime_snapshot = load_persisted_runtime_config()
         self.serial_ports = list_available_serial_ports()
@@ -244,49 +257,89 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         )
 
     def _build_ui(self):
+        backdrop = ctk.CTkLabel(self, text="", image=self.background_image)
+        style_image_label(backdrop)
+        backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=0)
 
         header = ctk.CTkFrame(
             self,
             corner_radius=22,
             fg_color=PALETTE["panel_deep"],
-            border_width=1,
+            border_width=0,
             border_color=PALETTE["divider"],
         )
-        header.grid(row=0, column=0, padx=18, pady=(18, 10), sticky="ew")
+        style_frame(
+            header,
+            tone="panel_deep",
+            border_color=PALETTE["gold_dim"],
+            border_width=0,
+        )
+        header.configure(bg_color="transparent")
+        header.grid(row=0, column=0, padx=22, pady=(22, 12), sticky="ew")
         header.grid_columnconfigure(0, weight=1)
 
-        create_badge(header, "Reglages du bastion", tone="gold").grid(
+        create_badge(header, "Réglages", tone="gold").grid(
             row=0,
             column=0,
-            padx=16,
-            pady=(16, 10),
+            padx=22,
+            pady=(22, 12),
             sticky="w",
         )
         ctk.CTkLabel(
             header,
-            text="Joueur, technique et dev separent enfin leurs reglages",
-            font=TYPOGRAPHY["section"],
+            text="Paramètres du jeu",
+            font=TYPOGRAPHY["title"],
             text_color=PALETTE["text"],
-        ).grid(row=1, column=0, padx=16, sticky="w")
-        ctk.CTkLabel(
-            header,
-            text=(
-                "L'essentiel reste devant. Le rare et le diagnostic "
-                "passent dans leurs onglets."
-            ),
-            font=TYPOGRAPHY["small"],
-            text_color=PALETTE["text_soft"],
             justify="left",
             wraplength=760,
-        ).grid(row=2, column=0, padx=16, pady=(8, 16), sticky="w")
+        ).grid(row=1, column=0, padx=22, sticky="w")
+
+        highlight_row = ctk.CTkFrame(header, fg_color="transparent")
+        highlight_row.grid(
+            row=2,
+            column=0,
+            padx=22,
+            pady=(14, 22),
+            sticky="ew",
+        )
+        for column in range(4):
+            highlight_row.grid_columnconfigure(column, weight=1)
+
+        create_badge(highlight_row, "Hall LAN", tone="info").grid(
+            row=0,
+            column=0,
+            padx=(0, 8),
+            sticky="w",
+        )
+        create_badge(highlight_row, "Sanctuaire", tone="gold").grid(
+            row=0,
+            column=1,
+            padx=8,
+            sticky="w",
+        )
+        create_badge(highlight_row, "Bonus Arduino", tone="warning").grid(
+            row=0,
+            column=2,
+            padx=8,
+            sticky="w",
+        )
+        create_badge(highlight_row, "Démo & diagnostic", tone="neutral").grid(
+            row=0,
+            column=3,
+            padx=(8, 0),
+            sticky="w",
+        )
 
         tabs = ctk.CTkTabview(
             self,
-            corner_radius=22,
+            corner_radius=24,
             fg_color=PALETTE["panel_soft"],
-            border_width=1,
+            border_width=0,
             border_color=PALETTE["divider"],
             segmented_button_fg_color=PALETTE["panel_deep"],
             segmented_button_selected_color=PALETTE["gold_dim"],
@@ -295,7 +348,8 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             segmented_button_unselected_hover_color=PALETTE["panel_highlight"],
             text_color=PALETTE["text"],
         )
-        tabs.grid(row=1, column=0, padx=18, pady=(0, 10), sticky="nsew")
+        style_tabview(tabs, tone="panel_soft", border_color=PALETTE["divider"])
+        tabs.grid(row=1, column=0, padx=22, pady=(0, 12), sticky="nsew")
 
         player_tab = tabs.add("Joueur")
         tech_tab = tabs.add("Technique")
@@ -310,13 +364,13 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             0,
             0,
             "Hall LAN",
-            "Port et delai utiles pendant les parties en reseau local.",
+            "Port et délai utiles pendant les parties en réseau local.",
         )
         self._add_entry_field(
             network_content,
             "Bind host",
             self.vars["lan_bind_host"],
-            note="0.0.0.0 ecoute partout. localhost reste local au poste.",
+            note="0.0.0.0 écoute partout. localhost reste local au poste.",
         )
         self._add_entry_field(
             network_content,
@@ -345,7 +399,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         ).pack(anchor="w", pady=(0, 4))
         ctk.CTkLabel(
             demo_content,
-            text=("Le stockage demo reste optionnel. Les logs passent dans Dev."),
+            text=("Active le stockage démo pour enregistrer les parties locales."),
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_faint"],
             justify="left",
@@ -353,7 +407,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         ).pack(fill="x", pady=(0, 8))
         self._add_checkbox_field(
             demo_content,
-            "Activer le stockage demo",
+            "Activer le stockage démo",
             self.vars["demo_local_storage_enabled"],
         )
 
@@ -364,7 +418,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             "Sanctuaire",
             "Connexion MariaDB du registre, des chroniques et des halls.",
         )
-        self._add_entry_field(db_content, "Hote", self.vars["db_host"])
+        self._add_entry_field(db_content, "Hôte", self.vars["db_host"])
         self._add_entry_field(db_content, "Port", self.vars["db_port"])
         self._add_entry_field(db_content, "Utilisateur", self.vars["db_user"])
         self._add_entry_field(
@@ -372,7 +426,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             "Mot de passe",
             self.vars["db_password"],
             show="*",
-            note="Le mot de passe reste masque dans cette fenetre.",
+            note="Le mot de passe reste masqué dans cette fenêtre.",
         )
         self._add_entry_field(db_content, "Base", self.vars["db_name"])
         self._add_entry_field(
@@ -386,7 +440,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             0,
             1,
             "Bonus Arduino",
-            "Bridge materiel et ports serie du bastion.",
+            "Bridge matériel et ports série du bastion.",
         )
         self._add_checkbox_field(
             hardware_content,
@@ -395,12 +449,12 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         )
         self._add_checkbox_field(
             hardware_content,
-            "Auto-detection des ports",
+            "Auto-détection des ports",
             self.vars["hardware_serial_auto_detect"],
         )
         self._add_entry_field(
             hardware_content,
-            "Port serie",
+            "Port série",
             self.vars["hardware_serial_port"],
         )
         self._add_entry_field(
@@ -415,7 +469,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         )
         self._add_entry_field(
             hardware_content,
-            "Timeout ecriture",
+            "Timeout écriture",
             self.vars["hardware_serial_write_timeout_seconds"],
         )
 
@@ -434,12 +488,12 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             dev_content,
             0,
             0,
-            "Demo et diagnostic",
-            "Options reservees aux demonstrations, seeds et logs console.",
+            "Démo et diagnostic",
+            "Options réservées aux démonstrations, seeds et logs console.",
         )
         self._add_checkbox_field(
             developer_content,
-            "Forcer le stockage demo",
+            "Forcer le stockage démo",
             self.vars["demo_local_storage_force"],
         )
         self._add_checkbox_field(
@@ -449,35 +503,60 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         )
         self._add_entry_field(
             developer_content,
-            "Liste seed demo",
+            "Liste seed démo",
             self.vars["demo_seed_players"],
-            note="Noms separes par des virgules.",
+            note="Noms séparés par des virgules.",
         )
 
         footer = ctk.CTkFrame(
             self,
             corner_radius=22,
             fg_color=PALETTE["panel_deep"],
-            border_width=1,
+            border_width=0,
             border_color=PALETTE["divider"],
         )
-        footer.grid(row=2, column=0, padx=18, pady=(0, 18), sticky="ew")
+        style_frame(
+            footer,
+            tone="panel_deep",
+            border_color=PALETTE["divider"],
+            border_width=0,
+        )
+        footer.configure(bg_color="transparent")
+        footer.grid(row=2, column=0, padx=22, pady=(0, 22), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
         footer.grid_columnconfigure(1, weight=0)
 
+        notice_shell = ctk.CTkFrame(footer, corner_radius=18)
+        style_frame(
+            notice_shell,
+            tone="panel",
+            border_color=PALETTE["divider"],
+            border_width=0,
+        )
+        notice_shell.grid(row=0, column=0, padx=(16, 12), pady=16, sticky="ew")
+        notice_shell.grid_columnconfigure(0, weight=1)
+
+        create_badge(notice_shell, "Fichier utilisateur", tone="neutral").grid(
+            row=0,
+            column=0,
+            padx=16,
+            pady=(14, 8),
+            sticky="w",
+        )
+
         self.notice_label = ctk.CTkLabel(
-            footer,
+            notice_shell,
             text=runtime_user_config_path(),
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
             justify="left",
-            wraplength=420,
+            wraplength=520,
         )
         self.notice_label.grid(
-            row=0,
+            row=1,
             column=0,
             padx=16,
-            pady=16,
+            pady=(0, 14),
             sticky="w",
         )
 
@@ -502,7 +581,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         ).grid(row=0, column=1, padx=(0, 8))
         create_button(
             buttons,
-            "Reinitialiser",
+            "Réinitialiser",
             self._restore_defaults,
             variant="subtle",
             width=132,
@@ -517,6 +596,18 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             height=42,
         ).grid(row=0, column=3)
 
+        self.after(0, backdrop.lower)
+
+    def _get_section_badge_specs(self, title: str) -> tuple[str, str]:
+        badge_map = {
+            "Hall LAN": ("Réseau", "info"),
+            "Forge locale": ("Joute locale", "gold"),
+            "Sanctuaire": ("MariaDB", "gold"),
+            "Bonus Arduino": ("Matériel", "warning"),
+            "Démo et diagnostic": ("Dev", "neutral"),
+        }
+        return badge_map.get(title, ("Section", "neutral"))
+
     def _create_tab_content(self, tab):
         tab.grid_columnconfigure(0, weight=1)
         tab.grid_rowconfigure(0, weight=1)
@@ -524,10 +615,10 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         content = ctk.CTkScrollableFrame(
             tab,
             corner_radius=0,
-            fg_color="transparent",
             border_width=0,
         )
-        content.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        style_scrollable_frame(content, tone="panel_soft", border_width=0)
+        content.grid(row=0, column=0, padx=12, pady=12, sticky="nsew")
         content.grid_columnconfigure(0, weight=1)
         content.grid_columnconfigure(1, weight=1)
         return content
@@ -544,28 +635,53 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             parent,
             corner_radius=20,
             fg_color=PALETTE["panel"],
-            border_width=1,
+            border_width=0,
             border_color=PALETTE["divider"],
         )
-        section.grid(row=row, column=column, padx=8, pady=8, sticky="nsew")
+        style_frame(
+            section,
+            tone="panel",
+            border_color=PALETTE["divider"],
+            border_width=0,
+        )
+        section.grid(row=row, column=column, padx=10, pady=10, sticky="nsew")
+
+        badge_text, badge_tone = self._get_section_badge_specs(title)
+        header = ctk.CTkFrame(section, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(16, 0))
+        header.grid_columnconfigure(0, weight=1)
+
+        create_badge(header, badge_text, tone=badge_tone).grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
 
         ctk.CTkLabel(
-            section,
+            header,
             text=title,
             font=TYPOGRAPHY["body_bold"],
             text_color=PALETTE["text"],
-        ).pack(anchor="w", padx=14, pady=(14, 4))
+        ).grid(row=1, column=0, pady=(10, 4), sticky="w")
         ctk.CTkLabel(
             section,
             text=description,
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
             justify="left",
-            wraplength=320,
-        ).pack(anchor="w", padx=14, pady=(0, 10))
+            wraplength=360,
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
+        ctk.CTkFrame(
+            section,
+            height=1,
+            corner_radius=999,
+            fg_color=PALETTE["divider"],
+            border_width=0,
+        ).pack(fill="x", padx=16, pady=(0, 12))
 
         content = ctk.CTkFrame(section, fg_color="transparent")
-        content.pack(fill="x", padx=14, pady=(0, 14))
+        content.pack(fill="x", padx=16, pady=(0, 16))
         return content
 
     def _add_entry_field(
@@ -598,6 +714,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             font=TYPOGRAPHY["small"],
             show=show,
         )
+        style_entry(entry, tone="panel_soft")
         entry.grid(row=0, column=1, padx=(12, 0), sticky="ew")
 
         if note:
@@ -629,6 +746,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             text_color=PALETTE["text"],
             font=TYPOGRAPHY["small_bold"],
         )
+        style_checkbox(checkbox)
         checkbox.pack(anchor="w", pady=(0, 8))
 
     def _add_option_field(
@@ -686,7 +804,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         ports_text = ", ".join(self.serial_ports)
         if not ports_text:
             ports_text = "aucun port compatible visible"
-        self.serial_ports_label.configure(text=f"Ports detectes : {ports_text}")
+        self.serial_ports_label.configure(text=f"Ports détectés : {ports_text}")
 
     def _set_notice(self, text: str, tone: str):
         color_map = {
@@ -703,7 +821,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
     def _collect_payload(self) -> dict:
         db_host = str(self.vars["db_host"].get() or "").strip()
         if not db_host:
-            raise ValueError("Renseigne un hote de base valide.")
+            raise ValueError("Renseigne un hôte de base valide.")
 
         demo_force = bool(self.vars["demo_local_storage_force"].get())
         demo_enabled = bool(self.vars["demo_local_storage_enabled"].get())
@@ -770,7 +888,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
                 maximum=10.0,
             ),
             "hardware_serial_write_timeout_seconds": _parse_float_value(
-                "Timeout ecriture",
+                "Timeout écriture",
                 self.vars["hardware_serial_write_timeout_seconds"].get(),
                 minimum=0.05,
                 maximum=10.0,
@@ -799,14 +917,14 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
                 or previous_config.get("lan_bind_host") != payload["lan_bind_host"]
             ):
                 restart_note = (
-                    " Hall deja ouvert sur "
+                    " Hall déjà ouvert sur "
                     f"{format_endpoint(hall_host, hall_port)} : "
-                    "redemarrage requis pour appliquer le nouveau port."
+                    "redémarrage requis pour appliquer le nouveau port."
                 )
 
-        self._set_notice("Reglages enregistres.", "success")
+        self._set_notice("Réglages enregistrés.", "success")
         self.parent_launcher.handle_settings_saved(
-            "Reglages enregistres." + restart_note,
+            "Réglages enregistrés." + restart_note,
             tone="success",
         )
 
@@ -817,11 +935,11 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         self.serial_ports = list_available_serial_ports()
         self._refresh_serial_ports_label()
         self._set_notice(
-            "Reglages relus depuis le fichier utilisateur.",
+            "Réglages relus depuis le fichier utilisateur.",
             "info",
         )
         self.parent_launcher.handle_settings_saved(
-            "Reglages relus.",
+            "Réglages relus.",
             tone="info",
         )
 
@@ -833,11 +951,11 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         self.serial_ports = list_available_serial_ports()
         self._refresh_serial_ports_label()
         self._set_notice(
-            ("Override utilisateur retire. Les valeurs du projet reprennent la main."),
+            ("Override utilisateur retiré. Les valeurs du projet reprennent la main."),
             "gold",
         )
         self.parent_launcher.handle_settings_saved(
-            "Reglages revenus aux valeurs du projet.",
+            "Réglages revenus aux valeurs du projet.",
             tone="gold",
         )
 
@@ -848,13 +966,10 @@ class LauncherApp(ctk.CTk):
         style_window(self)
 
         self.title("Arena Duel - Bastion central")
-        try:
-            self.iconbitmap(resource_path("assets", "icons", "app.ico"))
-        except (OSError, TclError):
-            pass
+        apply_window_icon(self, default=True)
 
         self.geometry("1140x700")
-        enable_large_window(self, 1040, 620, start_zoomed=False)
+        enable_large_window(self, 1040, 620, start_zoomed=True)
 
         self.embedded_server = None
         self.embedded_server_thread = None
@@ -866,11 +981,11 @@ class LauncherApp(ctk.CTk):
         self.join_lobby_window = None
         self.settings_window = None
 
-        self.db_status_text = "a verifier"
+        self.db_status_text = "à vérifier"
         self.hall_status_text = "au repos"
         self.hardware_status_text = "en veille"
         self.hardware_status_tone = "neutral"
-        self.hardware_detail_text = "Bonus materiel desactive dans la configuration."
+        self.hardware_detail_text = "Bonus matériel désactivé dans la configuration."
         self.gameplay_backend_text = BACKEND_LABELS[BACKEND_PYGAME]
         self.db_badge = None
         self.hall_badge = None
@@ -892,15 +1007,9 @@ class LauncherApp(ctk.CTk):
             size=(screen_width, screen_height),
             fallback_label="twilight bastion",
         )
-        self.logo_image = load_ctk_image(
-            "assets",
-            "icons",
-            "icon_preview_256.png",
+        self.logo_image = load_app_icon_image(
             size=(224, 224),
             fallback_label="arena duel",
-            brightness=1.0,
-            remove_edge_dark_regions=True,
-            crop_to_visible_bounds=True,
         )
         self.configure(fg_color=PALETTE["launcher_blend"])
 
@@ -913,16 +1022,12 @@ class LauncherApp(ctk.CTk):
 
         self._build_ui()
         self._refresh_runtime_state(probe_db=True)
-        self._set_info("Le bastion attend la prochaine joute.", tone="gold")
+        self._set_info("Choisis un mode.", tone="gold")
+        self.after(80, self._maximize_on_launch)
 
     def _build_ui(self):
-        backdrop = ctk.CTkLabel(
-            self,
-            text="",
-            image=self.background_image,
-            fg_color="transparent",
-            bg_color="transparent",
-        )
+        backdrop = ctk.CTkLabel(self, text="", image=self.background_image)
+        style_image_label(backdrop)
         backdrop.place(x=0, y=0, relwidth=1, relheight=1)
 
         self.grid_columnconfigure(0, weight=1)
@@ -950,7 +1055,9 @@ class LauncherApp(ctk.CTk):
             hero_panel,
             tone="panel_deep",
             border_color=PALETTE["gold_dim"],
+            border_width=0,
         )
+        hero_panel.configure(bg_color="transparent")
         hero_panel.grid(
             row=0,
             column=0,
@@ -979,7 +1086,7 @@ class LauncherApp(ctk.CTk):
             sticky="w",
         )
         title_shell.grid_propagate(False)
-        title_shell.configure(width=620, height=110)
+        title_shell.configure(width=680, height=176)
 
         ctk.CTkLabel(
             title_shell,
@@ -997,6 +1104,14 @@ class LauncherApp(ctk.CTk):
             justify="left",
         ).place(x=0, y=0)
 
+        ctk.CTkLabel(
+            title_shell,
+            text="Deux camps. Une arène. Aucun répit.",
+            font=(TYPOGRAPHY["subtitle"][0], 26, "bold"),
+            text_color=PALETTE["cyan"],
+            justify="left",
+        ).place(x=4, y=96)
+
         ctk.CTkFrame(
             title_shell,
             width=300,
@@ -1004,12 +1119,12 @@ class LauncherApp(ctk.CTk):
             corner_radius=999,
             fg_color=PALETTE["gold"],
             border_width=0,
-        ).place(x=4, y=76)
+        ).place(x=4, y=140)
 
         logo_shell = ctk.CTkFrame(
             hero_panel,
-            width=360,
-            height=300,
+            width=340,
+            height=290,
             corner_radius=42,
         )
         style_frame(
@@ -1018,7 +1133,13 @@ class LauncherApp(ctk.CTk):
             border_color=PALETTE["gold_dim"],
         )
         logo_shell.grid_propagate(False)
-        logo_shell.place(relx=0.5, rely=0.58, anchor="center")
+        logo_shell.grid(
+            row=2,
+            column=0,
+            padx=(24, 32),
+            pady=(18, 32),
+            sticky="se",
+        )
 
         logo_halo = ctk.CTkFrame(
             logo_shell,
@@ -1026,25 +1147,27 @@ class LauncherApp(ctk.CTk):
             height=226,
             corner_radius=113,
             fg_color=PALETTE["bg_glow"],
-            border_width=1,
+            border_width=0,
             border_color=PALETTE["border_strong"],
         )
         logo_halo.place(relx=0.5, rely=0.5, anchor="center")
 
-        ctk.CTkLabel(
+        logo_label = ctk.CTkLabel(
             logo_halo,
             text="",
             image=self.logo_image,
-            fg_color="transparent",
-            bg_color="transparent",
-        ).place(relx=0.5, rely=0.5, anchor="center")
+        )
+        style_image_label(logo_label)
+        logo_label.place(relx=0.5, rely=0.5, anchor="center")
 
         action_panel = ctk.CTkFrame(content_shell, corner_radius=28)
         style_frame(
             action_panel,
             tone="panel",
             border_color=PALETTE["border_strong"],
+            border_width=0,
         )
+        action_panel.configure(bg_color="transparent")
         action_panel.grid(
             row=0,
             column=1,
@@ -1091,7 +1214,6 @@ class LauncherApp(ctk.CTk):
             variant="primary",
             width=430,
             height=58,
-            bg_color="transparent",
         )
         forge_button.grid(
             row=0,
@@ -1107,7 +1229,6 @@ class LauncherApp(ctk.CTk):
             variant="accent",
             width=430,
             height=50,
-            bg_color="transparent",
         )
         hall_button.grid(
             row=1,
@@ -1123,7 +1244,6 @@ class LauncherApp(ctk.CTk):
             variant="secondary",
             width=430,
             height=48,
-            bg_color="transparent",
         )
         join_button.grid(
             row=2,
@@ -1148,16 +1268,14 @@ class LauncherApp(ctk.CTk):
             self._handle_history,
             variant="secondary",
             height=42,
-            bg_color="transparent",
         ).grid(row=0, column=0, padx=(0, 8), sticky="ew")
 
         create_button(
             utility_row,
-            "Reglages",
+            "Réglages",
             self._handle_settings,
             variant="subtle",
             height=42,
-            bg_color="transparent",
         ).grid(row=0, column=1, padx=(8, 0), sticky="ew")
 
         create_button(
@@ -1167,7 +1285,6 @@ class LauncherApp(ctk.CTk):
             variant="danger",
             width=430,
             height=42,
-            bg_color="transparent",
         ).grid(
             row=5,
             column=0,
@@ -1180,7 +1297,9 @@ class LauncherApp(ctk.CTk):
             footer_bar,
             tone="panel_deep",
             border_color=PALETTE["divider"],
+            border_width=0,
         )
+        footer_bar.configure(bg_color="transparent")
         footer_bar.grid(
             row=1,
             column=0,
@@ -1204,7 +1323,7 @@ class LauncherApp(ctk.CTk):
 
         self.db_badge = create_badge(
             status_row,
-            "DB a verifier",
+            "DB à vérifier",
             tone="warning",
         )
         self.db_badge.grid(row=0, column=0, padx=(0, 8), sticky="w")
@@ -1244,6 +1363,21 @@ class LauncherApp(ctk.CTk):
 
         self.after(0, backdrop.lower)
 
+    def _maximize_on_launch(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        try:
+            self.state("zoomed")
+        except TclError:
+            try:
+                self.attributes("-zoomed", True)
+            except TclError:
+                pass
+
     def _load_runtime_state(self):
         self.persisted_runtime_config = load_persisted_runtime_config()
         self.network_config = load_lan_runtime_config()
@@ -1269,11 +1403,11 @@ class LauncherApp(ctk.CTk):
         return "127.0.0.1"
 
     def _db_status_tone(self) -> str:
-        if self.db_status_text == "pret":
+        if self.db_status_text == "prêt":
             return "success"
         if self.db_status_text == "indisponible":
             return "danger"
-        if self.db_status_text == "a verifier":
+        if self.db_status_text == "à vérifier":
             return "warning"
         return "neutral"
 
@@ -1283,11 +1417,11 @@ class LauncherApp(ctk.CTk):
         return "info"
 
     def _db_badge_text(self) -> str:
-        if self.db_status_text == "pret":
-            return "DB prete"
+        if self.db_status_text == "prêt":
+            return "DB prête"
         if self.db_status_text == "indisponible":
             return "DB hors ligne"
-        return "DB a verifier"
+        return "DB à vérifier"
 
     def _hall_badge_text(self) -> str:
         if self.embedded_server is None:
@@ -1409,7 +1543,7 @@ class LauncherApp(ctk.CTk):
     def _handle_new_game(self):
         play_transition()
         self._set_db_mode_local()
-        info_text = "La forge locale s'ouvre avec Pygame."
+        info_text = "Ouverture de la joute locale."
         self._set_info(info_text, tone="gold")
         self._focus_or_open_window(
             "player_select_window",
@@ -1419,12 +1553,12 @@ class LauncherApp(ctk.CTk):
     def _handle_history(self):
         play_transition()
         self._set_db_mode_local()
-        self._set_info("Ouverture des chroniques.", tone="gold")
+        self._set_info("Ouverture de l'historique.", tone="gold")
         self._focus_or_open_window(
             "history_window",
             lambda: HistoryView(
                 self,
-                source_label="Chroniques locales du bastion",
+                source_label="Chroniques locales",
             ),
         )
 
@@ -1440,7 +1574,7 @@ class LauncherApp(ctk.CTk):
             except (OSError, RuntimeError) as error:
                 play_alert()
                 self._set_info(
-                    "Le hall LAN n'a pas pu s'ouvrir.",
+                    "Impossible d'ouvrir le hall LAN.",
                     tone="danger",
                 )
                 messagebox.showerror(
@@ -1459,7 +1593,7 @@ class LauncherApp(ctk.CTk):
         self._set_db_mode_local()
         self._refresh_runtime_state(probe_db=False)
         self._set_info(
-            f"Hall pret : {self._current_invitation_text()}",
+            f"Hall prêt : {self._current_invitation_text()}",
             tone="info",
         )
         self._focus_or_open_window(
@@ -1476,7 +1610,7 @@ class LauncherApp(ctk.CTk):
         play_transition()
         self._set_db_mode_local()
         self._set_info(
-            "Prepare l'invitation du bastion hote puis entre dans le hall.",
+            "Entre l'adresse du hall LAN pour rejoindre la partie.",
             tone="info",
         )
         self._focus_or_open_window(

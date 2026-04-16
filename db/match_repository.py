@@ -6,6 +6,7 @@ import mariadb
 
 from db import demo_store
 from db.database import get_connection
+from db.schema_utils import column_exists, relation_exists
 from game.control_models import AI_CONTROL_MODE, HUMAN_CONTROL_MODE, is_ai_name
 from game.match_text import get_team_label
 
@@ -54,66 +55,14 @@ def _winner_display(winner_team: str | None):
     return get_team_label(normalized)
 
 
-def _get_database_name(cursor) -> str:
-    cursor.execute("SELECT DATABASE()")
-    row = cursor.fetchone()
-    return str(row[0]) if row and row[0] else ""
-
-
-def _relation_exists(
-    cursor,
-    relation_name: str,
-    relation_type: str | None = None,
-) -> bool:
-    schema_name = _get_database_name(cursor)
-    if not schema_name:
-        return False
-
-    query = (
-        """
-        SELECT 1
-        FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = ?
-          AND TABLE_NAME = ?
-        """
-    )
-    params = [schema_name, relation_name]
-
-    if relation_type:
-        query += " AND TABLE_TYPE = ?"
-        params.append(relation_type)
-
-    cursor.execute(query, tuple(params))
-    return cursor.fetchone() is not None
-
-
-def _column_exists(cursor, table_name: str, column_name: str) -> bool:
-    schema_name = _get_database_name(cursor)
-    if not schema_name:
-        return False
-
-    cursor.execute(
-        """
-        SELECT 1
-        FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = ?
-          AND TABLE_NAME = ?
-          AND COLUMN_NAME = ?
-        """,
-        (schema_name, table_name, column_name),
-    )
-    return cursor.fetchone() is not None
-
-
 def _supports_v2_schema(cursor) -> bool:
-    return (
-        _column_exists(cursor, "matches", "mode_code")
-        and _column_exists(cursor, "match_players", "display_name_snapshot")
+    return column_exists(cursor, "matches", "mode_code") and column_exists(
+        cursor, "match_players", "display_name_snapshot"
     )
 
 
 def _history_view_available(cursor) -> bool:
-    return _relation_exists(cursor, "v_match_history_cards", "VIEW")
+    return relation_exists(cursor, "v_match_history_cards", "VIEW")
 
 
 def _ensure_player_exists(
@@ -175,7 +124,7 @@ def ensure_player_exists_by_name(
 
 def _ensure_arena(cursor, arena_code: str | None):
     clean_code = str(arena_code or "").strip()
-    if not clean_code or not _relation_exists(cursor, "arenas", "BASE TABLE"):
+    if not clean_code or not relation_exists(cursor, "arenas", "BASE TABLE"):
         return None
 
     cursor.execute(
@@ -210,28 +159,28 @@ def _ensure_arena(cursor, arena_code: str | None):
 
 def _normalize_participants(match_result: dict) -> list[dict]:
     participants = []
-    raw_players = (
-        match_result.get("players")
-        or match_result.get("players_data")
-        or []
-    )
+    raw_players = match_result.get("players") or match_result.get("players_data") or []
 
     for index, raw_player in enumerate(raw_players, start=1):
         name = str(raw_player.get("name", "")).strip()
         if not name:
             continue
 
-        control_mode = str(
-            raw_player.get(
-                "control_mode",
-                (
-                    AI_CONTROL_MODE
-                    if raw_player.get("is_ai")
-                    else HUMAN_CONTROL_MODE
-                ),
+        control_mode = (
+            str(
+                raw_player.get(
+                    "control_mode",
+                    (
+                        AI_CONTROL_MODE
+                        if raw_player.get("is_ai")
+                        else HUMAN_CONTROL_MODE
+                    ),
+                )
+                or HUMAN_CONTROL_MODE
             )
-            or HUMAN_CONTROL_MODE
-        ).strip().lower()
+            .strip()
+            .lower()
+        )
         is_ai = (
             bool(raw_player.get("is_ai"))
             or control_mode == AI_CONTROL_MODE
@@ -282,9 +231,7 @@ def _infer_mode_code(source_code: str, participants: list[dict]) -> str:
 
 def _normalize_match_result(match_result: dict) -> dict:
     participants = _normalize_participants(match_result)
-    source_code = str(
-        match_result.get("source_code") or "LOCAL"
-    ).strip().upper()
+    source_code = str(match_result.get("source_code") or "LOCAL").strip().upper()
     if source_code not in {"LOCAL", "LAN", "LEGACY"}:
         source_code = "LOCAL"
 
@@ -292,10 +239,7 @@ def _normalize_match_result(match_result: dict) -> dict:
     if not mode_code:
         mode_code = _infer_mode_code(source_code, participants)
 
-    finished_at = (
-        _coerce_datetime(match_result.get("finished_at"))
-        or datetime.now()
-    )
+    finished_at = _coerce_datetime(match_result.get("finished_at")) or datetime.now()
     played_at = _coerce_datetime(match_result.get("played_at")) or finished_at
 
     return {
@@ -308,13 +252,11 @@ def _normalize_match_result(match_result: dict) -> dict:
         ),
         "mode_code": mode_code,
         "source_code": source_code,
-        "status_code": str(
-            match_result.get("status_code") or "COMPLETED"
-        ).strip().upper(),
+        "status_code": str(match_result.get("status_code") or "COMPLETED")
+        .strip()
+        .upper(),
         "arena_code": str(
-            match_result.get("arena_code")
-            or match_result.get("map_id")
-            or ""
+            match_result.get("arena_code") or match_result.get("map_id") or ""
         ).strip(),
         "lobby_session_id": match_result.get("lobby_session_id"),
         "created_by_player_id": match_result.get("created_by_player_id"),
@@ -483,9 +425,7 @@ def save_match_result(match_result: dict) -> int:
         raise
     except mariadb.Error as error:
         conn.rollback()
-        raise RuntimeError(
-            f"MariaDB n'a pas pu archiver la joute : {error}"
-        ) from error
+        raise RuntimeError(f"MariaDB n'a pas pu archiver la joute : {error}") from error
     finally:
         conn.close()
 
@@ -630,11 +570,7 @@ def _load_history_from_legacy(cursor) -> list[dict]:
 
     history_rows.sort(
         key=lambda item: (
-            (
-                item["played_at"]
-                if item["played_at"] is not None
-                else datetime.min
-            ),
+            (item["played_at"] if item["played_at"] is not None else datetime.min),
             item["match_id"],
         ),
         reverse=True,

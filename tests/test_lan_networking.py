@@ -383,12 +383,18 @@ class LanNetworkingTests(unittest.TestCase):
 
         game_state._handle_traps(1000.0)
         first_slow_until = player["trap_slowed_until_ms"]
+        exported_state = game_state.export_state()
         game_state._handle_traps(1100.0)
 
         self.assertEqual(player["combo_count"], 0)
         self.assertEqual(player["combo_expires_at_ms"], 0.0)
         self.assertEqual(first_slow_until, 1000.0 + TRAP_SLOW_DURATION_MS)
         self.assertEqual(player["trap_slowed_until_ms"], first_slow_until)
+        self.assertEqual(exported_state["players"][0]["last_trap_serial"], 1)
+        self.assertEqual(
+            exported_state["players"][0]["last_trap_kind"],
+            game_state.traps[0].kind,
+        )
 
     def test_game_state_exports_dynamic_traps(self):
         lobby_snapshot = {
@@ -435,7 +441,8 @@ class LanNetworkingTests(unittest.TestCase):
 
         game_state.update(0.1, lobby_snapshot)
         exported_player = game_state.export_state()["players"][0]
-        end_player = game_state.build_end_message()["players"][0]
+        end_message = game_state.build_end_message()
+        end_player = end_message["players"][0]
 
         self.assertEqual(
             exported_player["sprite_id"],
@@ -444,6 +451,14 @@ class LanNetworkingTests(unittest.TestCase):
         self.assertEqual(exported_player["direction"], "up")
         self.assertTrue(exported_player["is_moving"])
         self.assertEqual(end_player["sprite_id"], "skeleton_fighter_ember")
+        self.assertEqual(
+            end_message["summary_metric_label"],
+            "Points d'équipe",
+        )
+        self.assertEqual(
+            end_message["team_panel_value_label"],
+            "Points",
+        )
 
 
 if __name__ == "__main__":

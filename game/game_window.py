@@ -1,18 +1,23 @@
+from datetime import datetime
 from pathlib import Path
 
 import pygame
 
 from hardware.service import create_match_hardware_service
-from runtime_utils import resource_path
+from runtime_utils import get_app_icon_png_path
 from game.asset_pipeline import load_font
 from game.computer_opponent import BotController
 from game.control_models import AI_CONTROL_MODE, HUMAN_CONTROL_MODE
 from game.hud_panels import (
+    choose_text_candidate,
+    draw_end_team_card,
     draw_match_hud,
-    draw_player_summary_row,
+    get_shared_player_score_slot_width,
 )
 from game.match_text import (
-    format_scoreline,
+    END_SCREEN_PLAYER_VALUE_LABEL,
+    END_SCREEN_SUMMARY_LABEL,
+    build_scoreline_candidates,
     format_winner_text,
     get_team_label,
     get_winner_team,
@@ -37,9 +42,14 @@ from game.arena import (
     get_obstacles,
     get_team_spawn_positions_for_layout,
 )
-from game.traps import build_match_traps, snapshot_match_traps, update_match_traps
-from game.audio import init_audio, play_draw, play_win, stop_music
-from game.audio import play_lose, play_pickup, start_match_music
+from game.traps import (
+    build_match_traps,
+    snapshot_match_traps,
+    update_match_traps,
+)
+from game.audio import init_audio, play_bonus_spawn, play_draw, play_trap
+from game.audio import play_win, stop_music
+from game.audio import play_lose, play_pickup
 
 
 PG_KEYDOWN = getattr(pygame, "KEYDOWN")
@@ -47,6 +57,7 @@ PG_K_ESCAPE = getattr(pygame, "K_ESCAPE")
 PG_K_RETURN = getattr(pygame, "K_RETURN")
 PG_K_R = getattr(pygame, "K_r")
 PG_QUIT = getattr(pygame, "QUIT")
+PG_RESIZABLE = getattr(pygame, "RESIZABLE")
 PG_SRCALPHA = getattr(pygame, "SRCALPHA")
 pg_init = getattr(pygame, "init")
 pg_quit = getattr(pygame, "quit")
@@ -55,6 +66,92 @@ pg_quit = getattr(pygame, "quit")
 def _tick_frame(clock, target_fps):
     tick_method = getattr(clock, "tick_busy_loop", None) or clock.tick
     return tick_method(target_fps)
+
+
+def _present_game_surface(screen, game_surface, game_size):
+    game_w, game_h = game_size
+    sw, sh = screen.get_size()
+    screen.fill((10, 13, 19))
+    scale = min(sw / game_w, sh / game_h)
+    if scale <= 1.001:
+        blit_x = max(0, (sw - game_w) // 2)
+        blit_y = max(0, (sh - game_h) // 2)
+        screen.blit(game_surface, (blit_x, blit_y))
+        return
+
+    target_size = (
+        max(1, int(game_w * scale)),
+        max(1, int(game_h * scale)),
+    )
+    scaled_surface = pygame.transform.smoothscale(
+        game_surface,
+        target_size,
+    )
+    blit_x = max(0, (sw - target_size[0]) // 2)
+    blit_y = max(0, (sh - target_size[1]) // 2)
+    screen.blit(scaled_surface, (blit_x, blit_y))
+
+
+def _draw_loading_frame(
+    screen,
+    game_surface,
+    layout,
+    arena_rect,
+    obstacles,
+    big_font,
+    small_font,
+):
+    draw_background(game_surface, layout)
+    draw_arena(
+        game_surface,
+        arena_rect,
+        obstacles,
+        layout=layout,
+        elapsed_ms=0.0,
+    )
+
+    panel_rect = pygame.Rect(0, 0, 420, 112)
+    panel_rect.center = (layout.window_size[0] // 2, 132)
+    panel_surface = pygame.Surface(panel_rect.size, PG_SRCALPHA)
+    pygame.draw.rect(
+        panel_surface,
+        (14, 18, 28, 214),
+        panel_surface.get_rect(),
+        border_radius=18,
+    )
+    pygame.draw.rect(
+        panel_surface,
+        (222, 194, 120, 228),
+        panel_surface.get_rect(),
+        width=2,
+        border_radius=18,
+    )
+    game_surface.blit(panel_surface, panel_rect.topleft)
+
+    title_surface = big_font.render(
+        "Chargement du combat",
+        True,
+        (244, 236, 214),
+    )
+    subtitle_surface = small_font.render(
+        "Preparation de l'arene et des combattants...",
+        True,
+        (187, 201, 224),
+    )
+    game_surface.blit(
+        title_surface,
+        title_surface.get_rect(center=(panel_rect.centerx, panel_rect.y + 38)),
+    )
+    game_surface.blit(
+        subtitle_surface,
+        subtitle_surface.get_rect(
+            center=(panel_rect.centerx, panel_rect.y + 76),
+        ),
+    )
+
+    _present_game_surface(screen, game_surface, layout.window_size)
+    pygame.display.flip()
+    pygame.event.pump()
 
 
 def get_local_focus_team(players):
@@ -182,7 +279,7 @@ def draw_hud(
         team_a_rows=[
             {
                 "name": p.name,
-                "score": p.score,
+                "player_score": p.score,
                 "accent_color": p.color,
                 "sprite_id": p.sprite_id,
             }
@@ -191,7 +288,7 @@ def draw_hud(
         team_b_rows=[
             {
                 "name": p.name,
-                "score": p.score,
+                "player_score": p.score,
                 "accent_color": p.color,
                 "sprite_id": p.sprite_id,
             }
@@ -212,6 +309,24 @@ def draw_end_overlay(
     team_a_score, team_b_score = get_team_scores(players)
     team_a_players = [p for p in players if p.team_code == "A"]
     team_b_players = [p for p in players if p.team_code == "B"]
+    team_a_rows = [
+        {
+            "name": p.name,
+            "player_score": p.score,
+            "accent_color": p.color,
+            "sprite_id": p.sprite_id,
+        }
+        for p in team_a_players
+    ]
+    team_b_rows = [
+        {
+            "name": p.name,
+            "player_score": p.score,
+            "accent_color": p.color,
+            "sprite_id": p.sprite_id,
+        }
+        for p in team_b_players
+    ]
     max_team_size = max(1, len(team_a_players), len(team_b_players))
 
     overlay = pygame.Surface(surface.get_size(), PG_SRCALPHA)
@@ -219,17 +334,30 @@ def draw_end_overlay(
     surface.blit(overlay, (0, 0))
 
     sw, sh = surface.get_size()
-    panel_width = min(920, sw - 72)
-    column_gap = 28
-    side_padding = 34
-    header_height = 120
-    roster_header_height = 34
-    row_pitch = 60
+    panel_width = min(920, sw - 48)
+    column_gap = max(20, min(32, panel_width // 28))
+    side_padding = max(24, min(36, panel_width // 24))
+    header_height = 126
     footer_height = 82
-    roster_height = roster_header_height + max_team_size * row_pitch
+    row_gap = 8
+    available_rows_height = max(160, sh - header_height - footer_height - 96)
+    row_height = max(
+        40,
+        min(
+            48,
+            int(
+                (available_rows_height - 76 - row_gap * (max_team_size - 1))
+                / max_team_size
+            ),
+        ),
+    )
+    portrait_size = max(30, min(36, row_height - 10))
+    roster_height = 62 + max_team_size * row_height
+    roster_height += max(0, max_team_size - 1) * row_gap
+    roster_height += 16
     panel_height = min(
-        sh - 64,
-        max(370, header_height + roster_height + footer_height),
+        sh - 40,
+        max(392, header_height + roster_height + footer_height + 16),
     )
     panel_x = (sw - panel_width) // 2
     panel_y = (sh - panel_height) // 2
@@ -249,13 +377,21 @@ def draw_end_overlay(
     title_rect = title.get_rect(center=(sw // 2, panel_y + 42))
     surface.blit(title, title_rect)
 
-    score_label = format_scoreline(team_a_score, team_b_score)
-    score_text = medium_font.render(
-        score_label,
+    summary_label = small_font.render(
+        END_SCREEN_SUMMARY_LABEL,
         True,
-        (190, 210, 255),
+        (175, 192, 220),
     )
-    score_rect = score_text.get_rect(center=(sw // 2, panel_y + 88))
+    summary_label_rect = summary_label.get_rect(center=(sw // 2, panel_y + 78))
+    surface.blit(summary_label, summary_label_rect)
+
+    score_label = choose_text_candidate(
+        medium_font,
+        build_scoreline_candidates(team_a_score, team_b_score),
+        panel_width - 80,
+    )
+    score_text = medium_font.render(score_label, True, (190, 210, 255))
+    score_rect = score_text.get_rect(center=(sw // 2, panel_y + 102))
     surface.blit(score_text, score_rect)
 
     roster_top = panel_y + header_height
@@ -272,66 +408,49 @@ def draw_end_overlay(
         roster_height,
     )
 
-    pygame.draw.rect(surface, (28, 34, 44), team_a_rect, border_radius=14)
-    pygame.draw.rect(
+    shared_score_slot_width = get_shared_player_score_slot_width(
+        small_font,
+        team_a_rect.width - 20,
+        team_a_rows,
+        team_b_rows,
+        team_a_score,
+        team_b_score,
+    )
+
+    draw_end_team_card(
         surface,
-        (243, 201, 107),
+        medium_font,
+        small_font,
         team_a_rect,
-        width=2,
-        border_radius=14,
+        title=get_team_label("A"),
+        rows=team_a_rows,
+        align="left",
+        border_color=(243, 201, 107),
+        team_score=team_a_score,
+        row_height=row_height,
+        row_gap=row_gap,
+        portrait_size=portrait_size,
+        row_value_label=END_SCREEN_PLAYER_VALUE_LABEL,
+        score_format_mode="grouped",
+        score_slot_width=shared_score_slot_width,
     )
-    pygame.draw.rect(surface, (24, 34, 48), team_b_rect, border_radius=14)
-    pygame.draw.rect(
+    draw_end_team_card(
         surface,
-        (100, 215, 255),
+        medium_font,
+        small_font,
         team_b_rect,
-        width=2,
-        border_radius=14,
+        title=get_team_label("B"),
+        rows=team_b_rows,
+        align="right",
+        border_color=(100, 215, 255),
+        team_score=team_b_score,
+        row_height=row_height,
+        row_gap=row_gap,
+        portrait_size=portrait_size,
+        row_value_label=END_SCREEN_PLAYER_VALUE_LABEL,
+        score_format_mode="grouped",
+        score_slot_width=shared_score_slot_width,
     )
-
-    team_a_title = medium_font.render(
-        get_team_label("A"),
-        True,
-        (255, 241, 214),
-    )
-    team_b_title = medium_font.render(
-        get_team_label("B"),
-        True,
-        (223, 245, 255),
-    )
-
-    surface.blit(team_a_title, (team_a_rect.x + 18, team_a_rect.y + 14))
-    surface.blit(team_b_title, (team_b_rect.x + 18, team_b_rect.y + 14))
-
-    row_origin_y = roster_top + roster_header_height
-
-    for idx, p in enumerate(team_a_players):
-        draw_player_summary_row(
-            surface,
-            small_font,
-            team_a_rect.x + 10,
-            row_origin_y + idx * row_pitch,
-            name=p.name,
-            score=p.score,
-            accent_color=p.color,
-            sprite_id=p.sprite_id,
-            panel_width=team_a_rect.width - 20,
-            portrait_size=40,
-        )
-
-    for idx, p in enumerate(team_b_players):
-        draw_player_summary_row(
-            surface,
-            small_font,
-            team_b_rect.x + 10,
-            row_origin_y + idx * row_pitch,
-            name=p.name,
-            score=p.score,
-            accent_color=p.color,
-            sprite_id=p.sprite_id,
-            panel_width=team_b_rect.width - 20,
-            portrait_size=40,
-        )
 
     footer_rect = pygame.Rect(
         panel_x + 24,
@@ -358,7 +477,7 @@ def draw_end_overlay(
     for key_text, label_text in instruction_specs:
         key_surface = small_font.render(key_text, True, (28, 28, 32))
         label_surface = small_font.render(label_text, True, (228, 230, 236))
-        chip_width = 36 + key_surface.get_width() + label_surface.get_width() + 36
+        chip_width = 72 + key_surface.get_width() + label_surface.get_width()
         chips.append((key_surface, label_surface, chip_width))
         total_width += chip_width
 
@@ -395,6 +514,8 @@ def build_result(
     match_duration_seconds,
     *,
     players_config=None,
+    started_at=None,
+    finished_at=None,
 ):
     team_a_score, team_b_score = get_team_scores(players)
     config_by_name = {
@@ -427,12 +548,19 @@ def build_result(
         "players_data": players_data,
         "team_a_score": team_a_score,
         "team_b_score": team_b_score,
+        "summary_metric_key": "team_score",
+        "summary_metric_label": END_SCREEN_SUMMARY_LABEL,
+        "team_panel_value_key": "player_score",
+        "team_panel_value_label": END_SCREEN_PLAYER_VALUE_LABEL,
         "winner_team": winner_team,
         "winner_text": winner_text,
         "duration_seconds": match_duration_seconds,
         "source_code": "LOCAL",
         "mode_code": "LOCAL_AI" if has_ai else "LOCAL_HUMAN",
         "arena_code": current_layout.map_id,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "played_at": finished_at or started_at,
     }
 
 
@@ -444,13 +572,13 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
     stop_music(fade_ms=0)
     active_match_duration = coerce_match_duration(match_duration_seconds)
     layout = get_map_layout()
-    _icon_path = resource_path("assets", "icons", "app.png")
-    if Path(_icon_path).exists():
+    icon_path = get_app_icon_png_path(64)
+    if Path(icon_path).exists():
         try:
-            pygame.display.set_icon(pygame.image.load(_icon_path))
+            pygame.display.set_icon(pygame.image.load(icon_path))
         except OSError:
             pass
-    screen = pygame.display.set_mode(layout.window_size, getattr(pygame, "RESIZABLE"))
+    screen = pygame.display.set_mode(layout.window_size, PG_RESIZABLE)
     pygame.display.set_caption("Arena Duel - Joute locale")
     clock = pygame.time.Clock()
 
@@ -482,6 +610,17 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
     obstacles = get_obstacles(layout)
     game_w, game_h = layout.window_size
     game_surface = pygame.Surface((game_w, game_h))
+    _draw_loading_frame(
+        screen,
+        game_surface,
+        layout,
+        arena_rect,
+        obstacles,
+        big_font,
+        small_font,
+    )
+
+    last_focus_losing_team = None
 
     try:
         while True:
@@ -495,7 +634,7 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
             ]
             trap_states = build_match_traps(layout)
             orb_effects = []
-            start_match_music(restart=True)
+            stop_music(fade_ms=0)
             hardware_service.reset()
             hardware_service.emit_state("COMBAT")
             hardware_service.emit_score(0, 0)
@@ -503,6 +642,8 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
             running = True
             game_over = False
             restart_requested = False
+            match_started_at = datetime.now()
+            match_finished_at = None
             start_ticks = pygame.time.get_ticks()
             winner_text = ""
             final_sound_played = False
@@ -533,6 +674,8 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                                     winner_text,
                                     active_match_duration,
                                     players_config=players_config,
+                                    started_at=match_started_at,
+                                    finished_at=match_finished_at or datetime.now(),
                                 )
 
                             elif event.key == PG_K_R:
@@ -554,6 +697,7 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
 
                 if remaining_time <= 0 and not game_over:
                     game_over = True
+                    match_finished_at = datetime.now()
                     stop_music(fade_ms=280)
                     team_a_score, team_b_score = get_team_scores(players)
 
@@ -598,11 +742,13 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                             if not trap_state.active:
                                 continue
                             if player.collides_with_trap(trap_state.rect):
-                                player.trigger_trap(
+                                trap_triggered = player.trigger_trap(
                                     elapsed_ms,
-                                    slow_duration_ms=trap_state.slow_duration_ms,
+                                    slow_duration_ms=(trap_state.slow_duration_ms),
                                     slow_multiplier=trap_state.slow_multiplier,
                                 )
+                                if trap_triggered:
+                                    play_trap()
                                 break
 
                     for orb in orbs:
@@ -624,6 +770,8 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                                 )
                                 play_pickup()
                                 orb.respawn(arena_rect, obstacles)
+                                if orb.variant == "rare":
+                                    play_bonus_spawn()
                                 break
 
                 team_a_score, team_b_score = get_team_scores(players)
@@ -638,13 +786,21 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
 
                     if winner_team is None:
                         play_draw()
+                        last_focus_losing_team = None
                     elif local_focus_team is not None:
                         if winner_team == local_focus_team:
                             play_win()
+                            last_focus_losing_team = None
                         else:
-                            play_lose()
+                            play_lose(
+                                consecutive_rematch_loss=(
+                                    last_focus_losing_team == local_focus_team
+                                )
+                            )
+                            last_focus_losing_team = local_focus_team
                     else:
                         play_win()
+                        last_focus_losing_team = None
 
                     hardware_service.emit_state("RESULT")
                     hardware_service.emit_winner(winner_team)
@@ -656,7 +812,10 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                     arena_rect,
                     obstacles,
                     layout=layout,
-                    trap_states=snapshot_match_traps(trap_states, match_elapsed_ms),
+                    trap_states=snapshot_match_traps(
+                        trap_states,
+                        match_elapsed_ms,
+                    ),
                     elapsed_ms=elapsed_ms,
                 )
 
@@ -703,25 +862,7 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                     )
 
                 # Centre et agrandit la scene quand la fenetre est plus grande.
-                sw, sh = screen.get_size()
-                screen.fill((10, 13, 19))
-                scale = min(sw / game_w, sh / game_h)
-                if scale <= 1.001:
-                    blit_x = max(0, (sw - game_w) // 2)
-                    blit_y = max(0, (sh - game_h) // 2)
-                    screen.blit(game_surface, (blit_x, blit_y))
-                else:
-                    target_size = (
-                        max(1, int(game_w * scale)),
-                        max(1, int(game_h * scale)),
-                    )
-                    scaled_surface = pygame.transform.smoothscale(
-                        game_surface,
-                        target_size,
-                    )
-                    blit_x = max(0, (sw - target_size[0]) // 2)
-                    blit_y = max(0, (sh - target_size[1]) // 2)
-                    screen.blit(scaled_surface, (blit_x, blit_y))
+                _present_game_surface(screen, game_surface, layout.window_size)
                 pygame.display.flip()
 
             if restart_requested:

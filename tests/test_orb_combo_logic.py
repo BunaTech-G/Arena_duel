@@ -1,6 +1,7 @@
 import importlib
 import os
 import unittest
+from itertools import combinations
 
 import pygame
 
@@ -108,14 +109,90 @@ class OrbComboLogicTests(unittest.TestCase):
             places=2,
         )
 
-    def test_match_traps_cycle_and_cover_multiple_types(self):
+    def test_match_traps_cycle_with_multiple_trap_kinds(self):
         layout = load_arena_layout()
         trap_states = build_match_traps(layout)
 
         update_match_traps(trap_states, 6000.0)
 
-        self.assertGreaterEqual(len({trap.kind for trap in trap_states}), 3)
+        self.assertEqual(
+            {trap.kind for trap in trap_states},
+            {"spike_trap", "ember_trap", "rune_trap"},
+        )
         self.assertTrue(any(trap.last_toggle_ms > 0.0 for trap in trap_states))
+
+    def test_default_map_traps_are_spread_and_keep_spawn_exits_clear(self):
+        layout = load_arena_layout()
+        trap_rects = [pygame.Rect(*trap.rect) for trap in layout.traps]
+        obstacle_rects = [
+            pygame.Rect(*element.rect)
+            for element in layout.obstacles
+            if element.collision
+        ]
+        trap_centers = [rect.center for rect in trap_rects]
+        left_band_limit = layout.left + int(layout.playable_rect[2] * 0.33)
+        right_band_limit = layout.left + int(layout.playable_rect[2] * 0.67)
+        upper_band_limit = layout.top + int(layout.playable_rect[3] * 0.38)
+        lower_band_limit = layout.top + int(layout.playable_rect[3] * 0.68)
+        spawn_points = [
+            *layout.spawn_positions("A"),
+            *layout.spawn_positions("B"),
+        ]
+        min_spawn_clearance_px = 160
+        min_trap_spacing_px = 150
+
+        self.assertGreaterEqual(len(layout.traps), 6)
+        self.assertEqual(
+            {trap.kind for trap in layout.traps},
+            {"spike_trap", "ember_trap", "rune_trap"},
+        )
+        self.assertTrue(
+            all(
+                not trap_rect.colliderect(obstacle_rect)
+                for trap_rect in trap_rects
+                for obstacle_rect in obstacle_rects
+            )
+        )
+        self.assertTrue(any(center_x < left_band_limit for center_x, _ in trap_centers))
+        self.assertTrue(
+            any(
+                left_band_limit <= center_x <= right_band_limit
+                for center_x, _ in trap_centers
+            )
+        )
+        self.assertTrue(
+            any(center_x > right_band_limit for center_x, _ in trap_centers)
+        )
+        self.assertTrue(
+            any(center_y < upper_band_limit for _, center_y in trap_centers)
+        )
+        self.assertTrue(
+            any(
+                upper_band_limit <= center_y <= lower_band_limit
+                for _, center_y in trap_centers
+            )
+        )
+        self.assertTrue(
+            any(center_y > lower_band_limit for _, center_y in trap_centers)
+        )
+        self.assertTrue(
+            all(
+                (center_x - spawn_x) ** 2 + (center_y - spawn_y) ** 2
+                >= min_spawn_clearance_px**2
+                for center_x, center_y in trap_centers
+                for spawn_x, spawn_y in spawn_points
+            )
+        )
+        self.assertTrue(
+            all(
+                (first_x - second_x) ** 2 + (first_y - second_y) ** 2
+                >= min_trap_spacing_px**2
+                for (first_x, first_y), (second_x, second_y) in combinations(
+                    trap_centers,
+                    2,
+                )
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -108,6 +108,7 @@ Pour chaque changement gameplay :
 Tu dois agir comme un assistant technique qui améliore un jeu existant avec prudence, qualité et logique.
 Tu dois chercher les meilleures pratiques et la meilleure documentation avant de toucher une partie importante.
 Tu dois toujours respecter l’existant avant d’inventer une nouvelle structure.
+TU dois mettre pour chque nouvelle fenetre cree le logo du jeu dans l'ico de la fentre
 
 ## Vérification obligatoire avant changement important
 

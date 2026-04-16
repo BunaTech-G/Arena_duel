@@ -6,7 +6,7 @@ from db.database import test_connection
 from db.matches import get_match_history
 from game.audio import play_alert, play_click
 from game.match_text import DRAW_LABEL, format_compact_scoreline
-from runtime_utils import resource_path
+from runtime_utils import get_app_icon_ico_path
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
@@ -14,9 +14,13 @@ from ui.theme import (
     present_window,
     style_window,
     style_frame,
+    style_image_label,
+    style_scrollable_frame,
     create_button,
     create_badge,
     load_ctk_image,
+    load_launcher_background_image,
+    resolve_widget_bg_color,
     update_badge,
 )
 
@@ -66,7 +70,7 @@ def _build_match_context(row_data: dict) -> str:
     elif mode_code == "LOCAL_AI" or ai_participants > 0:
         source_label = "Forge vs IA"
     elif mode_code == "LEGACY" or source_code == "LEGACY":
-        source_label = "Archive legacy"
+        source_label = "Archives héritées"
     else:
         source_label = "Forge locale"
 
@@ -83,10 +87,10 @@ def _build_match_footer(row_data: dict) -> str:
     if mode_code:
         parts.append(_build_match_context(row_data))
     if ai_participants > 0:
-        parts.append(f"{ai_participants} IA archivee(s)")
+        parts.append(f"{ai_participants} IA archivée(s)")
 
     if not parts:
-        return "Archive complete avec score, verdict et duree reelle de la joute."
+        return "Archive complète avec score, verdict et durée réelle de la joute."
 
     return " · ".join(parts)
 
@@ -142,6 +146,7 @@ class MatchCard(ctk.CTkFrame):
             text=str(played_at),
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
+            bg_color=PALETTE["panel"],
             fg_color=PALETTE["panel_soft"],
             corner_radius=999,
             padx=12,
@@ -176,6 +181,7 @@ class MatchCard(ctk.CTkFrame):
             text="",
             image=self.portrait_image,
         )
+        style_image_label(left_portrait)
         left_portrait.grid(
             row=0,
             column=0,
@@ -204,6 +210,7 @@ class MatchCard(ctk.CTkFrame):
             text=str(p1),
             font=TYPOGRAPHY["body_bold"],
             text_color=PALETTE["text"],
+            bg_color=resolve_widget_bg_color(self),
             wraplength=240,
             justify="left",
         )
@@ -262,6 +269,7 @@ class MatchCard(ctk.CTkFrame):
             text="",
             image=self.portrait_image,
         )
+        style_image_label(right_portrait)
         right_portrait.grid(
             row=0,
             column=1,
@@ -343,19 +351,14 @@ class HistoryView(ctk.CTkToplevel):
         self.history_rows = history_rows
         self.source_label = source_label
         self.allow_refresh = allow_refresh
-        self.history_preview_image = load_ctk_image(
+        screen_width = max(1320, self.winfo_screenwidth())
+        screen_height = max(860, self.winfo_screenheight())
+        self.background_image = load_launcher_background_image(
             "assets",
             "backgrounds",
-            "launcher_sanctum_bg.png",
-            size=(220, 108),
-            fallback_label="sanctum",
-        )
-        self.history_portrait_image = load_ctk_image(
-            "assets",
-            "portraits",
-            "skeleton_mascot_portrait.png",
-            size=(62, 62),
-            fallback_label="mascot",
+            "launcher_twilight_bastion_bg.png",
+            size=(screen_width, screen_height),
+            fallback_label="chroniques bastion",
         )
         self.match_portrait_image = load_ctk_image(
             "assets",
@@ -368,7 +371,8 @@ class HistoryView(ctk.CTkToplevel):
         self.title("Arena Duel - Chroniques")
         self.geometry("1320x860")
         enable_large_window(self, 1120, 760)
-        _ico = resource_path("assets", "icons", "app.ico")
+        self.configure(fg_color=PALETTE["launcher_blend"])
+        _ico = get_app_icon_ico_path()
         self.after(200, lambda: self._apply_icon(_ico))
 
         self.lift()
@@ -385,117 +389,99 @@ class HistoryView(ctk.CTkToplevel):
             pass
 
     def _build_ui(self):
+        backdrop = ctk.CTkLabel(self, text="", image=self.background_image)
+        style_image_label(backdrop)
+        backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
 
-        header = ctk.CTkFrame(self, corner_radius=20)
-        style_frame(header, tone="panel", border_color=PALETTE["gold_dim"])
+        header = ctk.CTkFrame(self, corner_radius=22)
+        style_frame(
+            header,
+            tone="panel_deep",
+            border_color=PALETTE["gold_dim"],
+            border_width=0,
+        )
+        header.configure(bg_color="transparent")
         header.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
         header.grid_columnconfigure(0, weight=1)
         header.grid_columnconfigure(1, weight=0)
 
-        title = ctk.CTkLabel(
-            header,
-            text="Chroniques",
-            font=TYPOGRAPHY["title"],
-            text_color=PALETTE["text"],
+        create_badge(header, "Historique", tone="gold").grid(
+            row=0,
+            column=0,
+            padx=22,
+            pady=(22, 12),
+            sticky="w",
         )
-        title.grid(row=0, column=0, padx=20, pady=(16, 6), sticky="w")
 
         self.source_badge = create_badge(
             header,
             self.source_label,
-            tone="gold",
+            tone="neutral",
         )
         self.source_badge.grid(
             row=0,
-            column=0,
-            padx=20,
-            pady=(16, 6),
+            column=1,
+            padx=22,
+            pady=(22, 12),
             sticky="e",
         )
 
-        intro = ctk.CTkLabel(
+        title = ctk.CTkLabel(
             header,
-            text="Relis vite verdicts, scores et durees sans noyer l'ecran.",
-            font=TYPOGRAPHY["body"],
-            text_color=PALETTE["text_muted"],
-            wraplength=760,
+            text="Historique des matchs",
+            font=TYPOGRAPHY["title"],
+            text_color=PALETTE["text"],
             justify="left",
+            wraplength=720,
         )
-        intro.grid(row=1, column=0, padx=20, pady=(0, 16), sticky="w")
+        title.grid(row=1, column=0, columnspan=2, padx=22, sticky="w")
 
-        preview_card = ctk.CTkFrame(header, corner_radius=18)
-        style_frame(
-            preview_card,
-            tone="panel_soft",
-            border_color=PALETTE["gold_dim"],
-        )
-        preview_card.grid(
-            row=0,
-            column=1,
-            rowspan=2,
-            padx=(10, 20),
-            pady=16,
-            sticky="nsew",
-        )
-        preview_card.grid_columnconfigure(1, weight=1)
-
-        preview_image = ctk.CTkLabel(
-            preview_card,
-            text="",
-            image=self.history_preview_image,
-        )
-        preview_image.grid(
-            row=0,
+        signal_row = ctk.CTkFrame(header, fg_color="transparent")
+        signal_row.grid(
+            row=2,
             column=0,
             columnspan=2,
-            padx=12,
-            pady=(12, 10),
+            padx=22,
+            pady=(14, 22),
             sticky="ew",
         )
+        for column in range(4):
+            signal_row.grid_columnconfigure(column, weight=1)
 
-        portrait = ctk.CTkLabel(
-            preview_card,
-            text="",
-            image=self.history_portrait_image,
+        create_badge(signal_row, "Vainqueurs", tone="gold").grid(
+            row=0,
+            column=0,
+            padx=(0, 8),
+            sticky="w",
         )
-        portrait.grid(row=1, column=0, padx=(12, 10), pady=(0, 12), sticky="w")
-
-        preview_title = ctk.CTkLabel(
-            preview_card,
-            text="Archives locales",
-            font=TYPOGRAPHY["body_bold"],
-            text_color=PALETTE["text"],
-        )
-        preview_title.grid(
-            row=1,
+        create_badge(signal_row, "Scores", tone="info").grid(
+            row=0,
             column=1,
-            padx=(0, 12),
-            pady=(2, 0),
-            sticky="sw",
+            padx=8,
+            sticky="w",
         )
-
-        preview_hint = ctk.CTkLabel(
-            preview_card,
-            text="Locale, LAN\net forge IA",
-            font=TYPOGRAPHY["small"],
-            text_color=PALETTE["text_muted"],
-            justify="left",
+        create_badge(signal_row, "Durées", tone="warning").grid(
+            row=0,
+            column=2,
+            padx=8,
+            sticky="w",
         )
-        preview_hint.grid(
-            row=1,
-            column=1,
-            padx=(0, 12),
-            pady=(0, 12),
-            sticky="nw",
+        create_badge(signal_row, "Sources", tone="neutral").grid(
+            row=0,
+            column=3,
+            padx=8,
+            sticky="w",
         )
 
         self.summary_frame = ctk.CTkFrame(self, corner_radius=16)
         style_frame(
             self.summary_frame,
-            tone="panel_soft",
+            tone="panel_deep",
             border_color=PALETTE["border"],
+            border_width=0,
         )
         self.summary_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
         self.summary_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
@@ -508,37 +494,50 @@ class HistoryView(ctk.CTkToplevel):
         self.players_label = self._build_stat_card(1, "Combattants vus", "0")
         self.top_winner_label = self._build_stat_card(
             2,
-            "Bastion dominant",
+            "Équipe dominante",
             "-",
         )
-        self.draws_label = self._build_stat_card(3, "Equilibres parfaits", "0")
+        self.draws_label = self._build_stat_card(3, "Matchs nuls", "0")
 
         action_frame = ctk.CTkFrame(self, corner_radius=16)
-        style_frame(action_frame, tone="panel", border_color=PALETTE["border"])
+        style_frame(
+            action_frame,
+            tone="panel_deep",
+            border_color=PALETTE["border"],
+            border_width=0,
+        )
         action_frame.grid(row=2, column=0, padx=20, pady=(0, 10), sticky="ew")
         action_frame.grid_columnconfigure(0, weight=1)
         action_frame.grid_columnconfigure(1, weight=0)
 
         self.status_label = ctk.CTkLabel(
             action_frame,
-            text="",
+            text="Aucune chronique chargée.",
             font=TYPOGRAPHY["body"],
             text_color=PALETTE["text_muted"],
+            wraplength=860,
+            justify="left",
         )
-        self.status_label.grid(row=0, column=0, padx=18, pady=14, sticky="w")
+        self.status_label.grid(
+            row=0,
+            column=0,
+            padx=18,
+            pady=14,
+            sticky="w",
+        )
 
         refresh_btn = create_button(
             action_frame,
             "Actualiser",
             self._handle_refresh,
-            variant="secondary",
+            variant="ghost",
             width=220,
             height=42,
             state="normal" if self.allow_refresh else "disabled",
         )
         refresh_btn.grid(row=0, column=1, padx=18, pady=12, sticky="e")
 
-        self.scroll_frame = ctk.CTkScrollableFrame(self, corner_radius=14)
+        self.scroll_frame = ctk.CTkScrollableFrame(self, corner_radius=18)
         self.scroll_frame.grid(
             row=3,
             column=0,
@@ -547,7 +546,9 @@ class HistoryView(ctk.CTkToplevel):
             sticky="nsew",
         )
         self.scroll_frame.grid_columnconfigure(0, weight=1)
-        self.scroll_frame.configure(fg_color=PALETTE["panel_soft"])
+        style_scrollable_frame(self.scroll_frame, tone="panel_deep")
+
+        self.after(0, backdrop.lower)
 
     def _render_scroll_message(
         self,
@@ -558,8 +559,8 @@ class HistoryView(ctk.CTkToplevel):
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
 
-        card = ctk.CTkFrame(self.scroll_frame, corner_radius=18)
-        style_frame(card, tone="panel", border_color=PALETTE["border"])
+        card = ctk.CTkFrame(self.scroll_frame, corner_radius=20)
+        style_frame(card, tone="panel_deep", border_color=PALETTE["border"])
         card.grid(row=0, column=0, padx=12, pady=14, sticky="ew")
         card.grid_columnconfigure(0, weight=1)
 
@@ -570,8 +571,8 @@ class HistoryView(ctk.CTkToplevel):
             card,
             text=detail_text,
             font=TYPOGRAPHY["body"],
+            wraplength=980,
             text_color=PALETTE["text_muted"],
-            wraplength=880,
             justify="left",
         )
         detail.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="w")
@@ -613,13 +614,13 @@ class HistoryView(ctk.CTkToplevel):
             self.top_winner_label.configure(text="Indisponible")
             self.draws_label.configure(text="0")
             self.status_label.configure(
-                text="Chroniques indisponibles : sanctuaire hors ligne."
+                text="Chroniques indisponibles : base locale hors ligne."
             )
             update_badge(self.source_badge, self.source_label, "danger")
             self._render_scroll_message(
                 "Chroniques indisponibles",
                 (
-                    "La base locale ne repond pas. Relance MariaDB puis "
+                    "La base locale ne répond pas. Relance MariaDB puis "
                     "rouvre cette vue."
                 ),
                 "danger",
@@ -634,13 +635,13 @@ class HistoryView(ctk.CTkToplevel):
         if not rows:
             self.total_matches_label.configure(text="0")
             self.players_label.configure(text="0")
-            self.top_winner_label.configure(text="En attente")
+            self.top_winner_label.configure(text="Aucune")
             self.draws_label.configure(text="0")
-            self.status_label.configure(text="Aucune chronique dans cette source.")
+            self.status_label.configure(text="Aucun match dans cette source.")
             update_badge(self.source_badge, self.source_label, "warning")
             self._render_scroll_message(
-                "Aucune joute archivee",
-                "Termine une joute locale ou LAN, puis reviens ici.",
+                "Aucun match archivé",
+                "Joue une partie locale ou LAN pour remplir l'historique.",
                 "warning",
             )
             return
@@ -670,14 +671,14 @@ class HistoryView(ctk.CTkToplevel):
             top_name, top_count = winner_counter.most_common(1)[0]
             self.top_winner_label.configure(text=f"{top_name} ({top_count})")
         else:
-            self.top_winner_label.configure(text="Equilibre")
+            self.top_winner_label.configure(text="Équilibre")
 
         draws_count = sum(
             1 for row in rows if not _coerce_history_row(row)["winner_display"]
         )
         self.draws_label.configure(text=str(draws_count))
 
-        self.status_label.configure(text=f"{len(rows)} chronique(s) chargee(s).")
+        self.status_label.configure(text=f"{len(rows)} match(s) chargé(s).")
         update_badge(self.source_badge, self.source_label, "success")
 
         # Cartes de matchs

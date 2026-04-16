@@ -10,22 +10,22 @@ TRAP_TRANSITION_MS = 220.0
 
 _TRAP_PROFILES = {
     "spike_trap": {
-        "active_range_ms": (900, 1500),
-        "idle_range_ms": (1300, 2400),
-        "slow_duration_ms": 900,
-        "slow_multiplier": 0.5,
+        "active_range_ms": (820, 1200),
+        "idle_range_ms": (1700, 2900),
+        "slow_duration_ms": 850,
+        "slow_multiplier": 0.48,
     },
     "ember_trap": {
-        "active_range_ms": (1000, 1650),
-        "idle_range_ms": (1500, 2600),
-        "slow_duration_ms": 1350,
-        "slow_multiplier": 0.64,
+        "active_range_ms": (1250, 1950),
+        "idle_range_ms": (1400, 2300),
+        "slow_duration_ms": 1450,
+        "slow_multiplier": 0.68,
     },
     "rune_trap": {
-        "active_range_ms": (1200, 1900),
-        "idle_range_ms": (1100, 2150),
-        "slow_duration_ms": 1100,
-        "slow_multiplier": 0.74,
+        "active_range_ms": (1000, 1550),
+        "idle_range_ms": (1250, 2050),
+        "slow_duration_ms": 1200,
+        "slow_multiplier": 0.6,
     },
 }
 
@@ -59,7 +59,10 @@ def _pick_duration_ms(rng: random.Random, bounds: tuple[int, int]) -> int:
     return rng.randint(int(lower), int(upper))
 
 
-def build_match_traps(layout: ArenaLayout, start_ms: float = 0.0) -> list[TrapRuntime]:
+def build_match_traps(
+    layout: ArenaLayout,
+    start_ms: float = 0.0,
+) -> list[TrapRuntime]:
     trap_states = []
     for trap in layout.traps:
         profile = _get_trap_profile(trap.kind)
@@ -86,7 +89,10 @@ def build_match_traps(layout: ArenaLayout, start_ms: float = 0.0) -> list[TrapRu
     return trap_states
 
 
-def update_match_traps(trap_states: list[TrapRuntime], elapsed_ms: float) -> None:
+def update_match_traps(
+    trap_states: list[TrapRuntime],
+    elapsed_ms: float,
+) -> None:
     for trap in trap_states:
         while elapsed_ms >= trap.next_toggle_ms:
             trap.active = not trap.active
@@ -101,7 +107,10 @@ def snapshot_match_traps(
     snapshots = []
     for trap in trap_states:
         transition_elapsed_ms = max(0.0, elapsed_ms - trap.last_toggle_ms)
-        transition_progress = min(1.0, transition_elapsed_ms / TRAP_TRANSITION_MS)
+        transition_progress = min(
+            1.0,
+            transition_elapsed_ms / TRAP_TRANSITION_MS,
+        )
         presence = (
             transition_progress if trap.active else max(0.0, 1.0 - transition_progress)
         )

@@ -17,7 +17,12 @@ from game.arena_layout import (
     random_free_point,
     resolve_movement,
 )
-from game.match_text import format_winner_text, get_winner_team
+from game.match_text import (
+    END_SCREEN_PLAYER_VALUE_LABEL,
+    END_SCREEN_SUMMARY_LABEL,
+    format_winner_text,
+    get_winner_team,
+)
 from game.settings import (
     MATCH_DURATION_SECONDS,
     ORB_COMBO_BONUS_CAP,
@@ -32,7 +37,11 @@ from game.settings import (
     TRAP_SLOW_MULTIPLIER,
     coerce_match_duration,
 )
-from game.traps import build_match_traps, snapshot_match_traps, update_match_traps
+from game.traps import (
+    build_match_traps,
+    snapshot_match_traps,
+    update_match_traps,
+)
 from network.messages import (
     HELLO,
     ASSIGN_SLOT,
@@ -354,6 +363,8 @@ class GameState:
                     "combo_expires_at_ms": 0.0,
                     "trap_slowed_until_ms": 0.0,
                     "trap_slow_multiplier": 1.0,
+                    "last_trap_serial": 0,
+                    "last_trap_kind": "",
                     "last_pickup_serial": 0,
                     "last_pickup_value": 0,
                     "last_pickup_x": 0.0,
@@ -425,6 +436,7 @@ class GameState:
         player: dict,
         current_time_ms: float,
         *,
+        trap_kind: str | None = None,
         slow_duration_ms: int = TRAP_SLOW_DURATION_MS,
         slow_multiplier: float = TRAP_SLOW_MULTIPLIER,
     ) -> bool:
@@ -435,6 +447,8 @@ class GameState:
         player["trap_slow_multiplier"] = max(0.25, min(1.0, float(slow_multiplier)))
         player["combo_count"] = 0
         player["combo_expires_at_ms"] = 0.0
+        player["last_trap_serial"] = int(player.get("last_trap_serial", 0)) + 1
+        player["last_trap_kind"] = str(trap_kind or "")
         return True
 
     def _handle_traps(self, current_time_ms: float) -> None:
@@ -454,6 +468,7 @@ class GameState:
                     self._trigger_trap(
                         player,
                         current_time_ms,
+                        trap_kind=trap_state.kind,
                         slow_duration_ms=trap_state.slow_duration_ms,
                         slow_multiplier=trap_state.slow_multiplier,
                     )
@@ -567,6 +582,8 @@ class GameState:
                     "score": p["score"],
                     "combo_count": combo_count,
                     "combo_remaining_ms": max(0, combo_remaining_ms),
+                    "last_trap_serial": int(p.get("last_trap_serial", 0)),
+                    "last_trap_kind": str(p.get("last_trap_kind") or ""),
                     "last_pickup_serial": int(p.get("last_pickup_serial", 0)),
                     "last_pickup": {
                         "x": round(float(p.get("last_pickup_x", p["x"])), 1),
@@ -621,6 +638,10 @@ class GameState:
             "winner_text": format_winner_text(winner_team),
             "team_a_score": self.team_a_score,
             "team_b_score": self.team_b_score,
+            "summary_metric_key": "team_score",
+            "summary_metric_label": END_SCREEN_SUMMARY_LABEL,
+            "team_panel_value_key": "player_score",
+            "team_panel_value_label": END_SCREEN_PLAYER_VALUE_LABEL,
             "duration_seconds": self.match_duration_seconds,
             "players": players,
         }
@@ -649,6 +670,10 @@ class GameState:
             "lobby_session_id": self.lobby_session_id,
             "team_a_score": self.team_a_score,
             "team_b_score": self.team_b_score,
+            "summary_metric_key": "team_score",
+            "summary_metric_label": END_SCREEN_SUMMARY_LABEL,
+            "team_panel_value_key": "player_score",
+            "team_panel_value_label": END_SCREEN_PLAYER_VALUE_LABEL,
             "winner_team": winner_team,
             "duration_seconds": self.match_duration_seconds,
             "started_at": datetime.fromtimestamp(self.started_at),

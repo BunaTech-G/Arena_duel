@@ -23,6 +23,15 @@ if not exist "%PYTHON_EXE%" (
 if exist "%WORK_DIR%" rmdir /s /q "%WORK_DIR%"
 if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
 
+echo [INFO] Regeneration du pack d icones officiel...
+"%PYTHON_EXE%" tools\gen_icon.py
+if errorlevel 1 (
+  echo.
+  echo [ERREUR] La generation des icones a echoue.
+  pause
+  exit /b 1
+)
+
 echo [INFO] Si dist\ArenaDuel est verrouille par l Explorateur, OneDrive ou un ancien EXE,
 echo [INFO] cette build utilise un dossier de sortie propre pour eviter le blocage.
 echo.

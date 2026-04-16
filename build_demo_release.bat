@@ -25,6 +25,15 @@ if exist "%WORK_DIR%" rmdir /s /q "%WORK_DIR%"
 if exist "%DIST_DIR%" rmdir /s /q "%DIST_DIR%"
 if exist "dist_demo" rmdir /s /q "dist_demo"
 
+echo [INFO] Regeneration du pack d icones officiel...
+"%PYTHON_EXE%" tools\gen_icon.py
+if errorlevel 1 (
+    echo.
+    echo [ERREUR] La generation des icones a echoue.
+    pause
+    exit /b 1
+)
+
 echo [INFO] Build PyInstaller de la version demo...
 "%PYTHON_EXE%" -m PyInstaller ^
   --noconfirm ^

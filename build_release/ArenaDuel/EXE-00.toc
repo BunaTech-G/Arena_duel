@@ -68,7 +68,7 @@
  [],
  False,
  False,
- 1776007234,
+ 1776319982,
  [('runw.exe',
    'C:\\Dev\\arena_duel_clean\\.venv\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\runw.exe',
    'EXECUTABLE')],

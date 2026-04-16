@@ -6,6 +6,7 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
 USER_RUNTIME_OVERRIDE_FILENAME = "app_runtime.user.json"
+APP_ICON_PNG_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 # override runtime temporaire (en mémoire)
 _RUNTIME_OVERRIDES = {}
@@ -29,6 +30,36 @@ def resource_path(*parts) -> str:
         base_path = PROJECT_DIR
 
     return str(base_path.joinpath(*parts))
+
+
+def get_app_icon_ico_path() -> str:
+    return resource_path("assets", "icons", "app.ico")
+
+
+def get_app_icon_png_path(preferred_size: int = 64) -> str:
+    normalized_size = max(16, int(preferred_size or 16))
+    selected_size = next(
+        (
+            candidate_size
+            for candidate_size in APP_ICON_PNG_SIZES
+            if candidate_size >= normalized_size
+        ),
+        APP_ICON_PNG_SIZES[-1],
+    )
+
+    preferred_path = Path(resource_path("assets", "icons", f"app_{selected_size}.png"))
+    if preferred_path.exists():
+        return str(preferred_path)
+
+    fallback_paths = (
+        Path(resource_path("assets", "icons", "app.png")),
+        Path(resource_path("assets", "icons", "icon_preview_256.png")),
+    )
+    for fallback_path in fallback_paths:
+        if fallback_path.exists():
+            return str(fallback_path)
+
+    return str(preferred_path)
 
 
 def runtime_file_path(filename: str) -> str:
