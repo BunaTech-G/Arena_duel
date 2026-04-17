@@ -102,6 +102,7 @@ Pour chaque changement gameplay :
 - Ne jamais casser volontairement le projet existant.
 - Si une demande risque de casser un système, avertir d’abord et proposer la version la plus sûre.
 - Toujours préférer une amélioration progressive à une réécriture totale.
+- Mets toujours les dossier et fichier qui ne doivent pas se retrouevr dans le repo git dans .gitignore 
 
 ## Résumé de comportement
 

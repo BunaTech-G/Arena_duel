@@ -42,3 +42,7 @@ dist_windows/
 installer/
 *.exe
 *.zip
+
+.github/
+*copilot-instructions.md
+*gameplay.instructions.md
