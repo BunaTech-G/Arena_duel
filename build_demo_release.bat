@@ -17,7 +17,7 @@ set "ZIP_PATH=dist_demo\ArenaDuel_Demo_Windows.zip"
 if not exist "%PYTHON_EXE%" (
     echo [ERREUR] Le venv n existe pas.
     echo Lance d abord : setup_env.bat
-    pause
+    call :maybe_pause
     exit /b 1
 )
 
@@ -30,7 +30,7 @@ echo [INFO] Regeneration du pack d icones officiel...
 if errorlevel 1 (
     echo.
     echo [ERREUR] La generation des icones a echoue.
-    pause
+    call :maybe_pause
     exit /b 1
 )
 
@@ -45,7 +45,7 @@ echo [INFO] Build PyInstaller de la version demo...
 if errorlevel 1 (
     echo.
     echo [ERREUR] Le build PyInstaller a echoue.
-    pause
+    call :maybe_pause
     exit /b 1
 )
 
@@ -58,7 +58,7 @@ xcopy "%DIST_DIR%\ArenaDuel\*" "%PORTABLE_DIR%\" /e /i /y >nul
 if errorlevel 1 (
     echo.
     echo [ERREUR] Impossible de preparer le dossier portable de demo.
-    pause
+    call :maybe_pause
     exit /b 1
 )
 
@@ -79,7 +79,7 @@ if not defined ISCC_EXE (
     if errorlevel 1 (
         echo.
         echo [ERREUR] La generation de l installateur a echoue.
-        pause
+        call :maybe_pause
         exit /b 1
     )
 
@@ -92,7 +92,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '
 if errorlevel 1 (
     echo.
     echo [ERREUR] Impossible de generer l archive zip de livraison.
-    pause
+    call :maybe_pause
     exit /b 1
 )
 
@@ -108,4 +108,10 @@ if exist "%INSTALLER_DIR%\Setup_ArenaDuel.exe" (
     echo Plan B installateur : %INSTALLER_DIR%\Setup_ArenaDuel.exe
 )
 echo.
+call :maybe_pause
+exit /b 0
+
+:maybe_pause
+if /I "%ARENA_DUEL_NO_PAUSE%"=="1" exit /b 0
 pause
+exit /b 0

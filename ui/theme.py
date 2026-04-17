@@ -73,6 +73,10 @@ TYPOGRAPHY = {
 
 WINDOW_ICON_PNG_SIZES = (256, 64, 32, 16)
 
+RESPONSIVE_BASELINE_SIZE = (1440, 900)
+RESPONSIVE_MIN_SCALE = 0.84
+_RESPONSIVE_STATE = {"last_scale": 1.0}
+
 
 BUTTON_VARIANTS = {
     "primary": {
@@ -158,6 +162,29 @@ BADGE_VARIANTS = {
 def apply_theme_settings():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
+
+
+def apply_responsive_scaling(screen_width: int, screen_height: int) -> float:
+    base_width, base_height = RESPONSIVE_BASELINE_SIZE
+    width_ratio = screen_width / max(1, base_width)
+    height_ratio = screen_height / max(1, base_height)
+
+    if width_ratio >= 1.0 and height_ratio >= 1.0:
+        target_scale = 1.0
+    else:
+        target_scale = max(
+            RESPONSIVE_MIN_SCALE,
+            min(1.0, min(width_ratio, height_ratio) * 0.98),
+        )
+
+    last_scale = float(_RESPONSIVE_STATE["last_scale"])
+    if abs(target_scale - last_scale) < 0.01:
+        return last_scale
+
+    ctk.set_widget_scaling(target_scale)
+    ctk.set_window_scaling(target_scale)
+    _RESPONSIVE_STATE["last_scale"] = target_scale
+    return target_scale
 
 
 def _resolve_theme_color(color_value):
@@ -507,6 +534,7 @@ def enable_large_window(
 ):
     screen_width = max(1, int(window.winfo_screenwidth()))
     screen_height = max(1, int(window.winfo_screenheight()))
+    responsive_scale = apply_responsive_scaling(screen_width, screen_height)
     preferred_width, preferred_height = _parse_geometry_size(window.geometry())
 
     usable_width = max(480, screen_width - 80)
@@ -528,6 +556,7 @@ def enable_large_window(
 
     should_zoom = (
         start_zoomed
+        and responsive_scale >= 0.98
         and preferred_width is not None
         and preferred_height is not None
         and screen_width >= preferred_width + 120

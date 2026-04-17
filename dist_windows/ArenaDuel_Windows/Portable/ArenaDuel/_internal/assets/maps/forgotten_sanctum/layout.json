@@ -1,0 +1,217 @@
+{
+  "id": "forgotten_sanctum",
+  "label": "Forgotten Sanctum",
+  "theme": "fantasy_ruins_light_undead",
+  "arena": {
+    "window_size": [
+      1280,
+      980
+    ],
+    "hud_height": 188,
+    "margin": 40,
+    "playable_rect": [
+      40,
+      216,
+      1200,
+      736
+    ]
+  },
+  "spawn_groups": {
+    "A": [
+      [
+        165,
+        412
+      ],
+      [
+        165,
+        600
+      ],
+      [
+        165,
+        788
+      ]
+    ],
+    "B": [
+      [
+        1115,
+        412
+      ],
+      [
+        1115,
+        600
+      ],
+      [
+        1115,
+        788
+      ]
+    ]
+  },
+  "lanes": [
+    "north_arc",
+    "mid_temple",
+    "south_arc"
+  ],
+  "obstacles": [
+    {
+      "id": "north_dais",
+      "kind": "ruin_wall",
+      "rect": [
+        520,
+        342,
+        220,
+        42
+      ],
+      "collision": true
+    },
+    {
+      "id": "south_dais",
+      "kind": "ruin_wall",
+      "rect": [
+        520,
+        856,
+        220,
+        42
+      ],
+      "collision": true
+    },
+    {
+      "id": "west_pillar_cluster",
+      "kind": "pillar_cluster",
+      "rect": [
+        248,
+        560,
+        118,
+        96
+      ],
+      "collision": true
+    },
+    {
+      "id": "east_pillar_cluster",
+      "kind": "pillar_cluster",
+      "rect": [
+        914,
+        560,
+        118,
+        96
+      ],
+      "collision": true
+    },
+    {
+      "id": "mid_left_grave",
+      "kind": "grave_marker",
+      "rect": [
+        448,
+        527,
+        64,
+        132
+      ],
+      "collision": true
+    },
+    {
+      "id": "mid_right_grave",
+      "kind": "grave_marker",
+      "rect": [
+        768,
+        527,
+        64,
+        132
+      ],
+      "collision": true
+    }
+  ],
+  "traps": [
+    {
+      "id": "north_arc_left_trap",
+      "kind": "spike_trap",
+      "rect": [
+        344,
+        424,
+        56,
+        56
+      ],
+      "collision": false
+    },
+    {
+      "id": "north_arc_right_trap",
+      "kind": "ember_trap",
+      "rect": [
+        880,
+        424,
+        56,
+        56
+      ],
+      "collision": false
+    },
+    {
+      "id": "mid_temple_rune_trap",
+      "kind": "rune_trap",
+      "rect": [
+        614,
+        572,
+        52,
+        52
+      ],
+      "collision": false
+    },
+    {
+      "id": "south_arc_left_trap",
+      "kind": "ember_trap",
+      "rect": [
+        344,
+        724,
+        56,
+        56
+      ],
+      "collision": false
+    },
+    {
+      "id": "south_arc_right_trap",
+      "kind": "spike_trap",
+      "rect": [
+        880,
+        724,
+        56,
+        56
+      ],
+      "collision": false
+    },
+    {
+      "id": "mid_lower_rune_trap",
+      "kind": "rune_trap",
+      "rect": [
+        614,
+        744,
+        52,
+        52
+      ],
+      "collision": false
+    }
+  ],
+  "decor": [
+    {
+      "id": "central_rune_ring",
+      "kind": "rune_circle",
+      "rect": [
+        474,
+        471,
+        312,
+        152
+      ],
+      "collision": false
+    },
+    {
+      "id": "north_banner_shadow",
+      "kind": "banner_shadow",
+      "rect": [
+        482,
+        293,
+        296,
+        46
+      ],
+      "collision": false
+    }
+  ],
+  "notes": [
+    "Map designed for quick readability with three simple lanes."
+  ]
+}

@@ -37,6 +37,7 @@ exe = EXE(
     upx=True,
     console=False,
     icon="assets/icons/app.ico",
+    version="installer/pyinstaller_version_info.txt",
 )
 
 coll = COLLECT(

@@ -63,6 +63,7 @@ Le projet combine :
 ## Build V1
 
 - build_presentation.bat : build canonique de l'exe PyInstaller
+- build_windows_release.bat : livraison Windows complete avec portable, zip et signature optionnelle
 - ArenaDuel.spec : spec versionnee de la build
 - installer/build.bat : build presentation puis generation du setup si Inno Setup est present
 

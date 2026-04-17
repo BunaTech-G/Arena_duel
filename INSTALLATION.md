@@ -156,6 +156,25 @@ run_client_lan.bat
 build_presentation.bat
 ```
 
+#### Livraison Windows complete
+
+```powershell
+build_windows_release.bat
+```
+
+Ce script produit :
+
+1. un exe portable dans `dist_windows\ArenaDuel_Windows\Portable`
+2. un setup Windows dans `dist_windows\ArenaDuel_Windows\Installer` si Inno Setup est disponible
+3. une archive zip prete a distribuer
+
+Signature optionnelle pour la diffusion :
+
+- `ARENA_DUEL_SIGN_PFX` et `ARENA_DUEL_SIGN_PFX_PASSWORD` pour signer avec un certificat `.pfx`
+- ou `ARENA_DUEL_SIGN_CERT_SHA1` pour signer avec un certificat deja installe
+- `ARENA_DUEL_SIGNTOOL` pour forcer le chemin de `signtool.exe`
+- `ARENA_DUEL_SIGN_TIMESTAMP_URL` pour surcharger le serveur de timestamp
+
 #### Option Arduino facultative
 
 ```powershell

@@ -16,7 +16,7 @@ set "WORK_DIR=build_release"
 if not exist "%PYTHON_EXE%" (
     echo [ERREUR] Le venv n existe pas.
     echo Lance d abord : setup_env.bat
-    pause
+  call :maybe_pause
     exit /b 1
 )
 
@@ -28,7 +28,7 @@ echo [INFO] Regeneration du pack d icones officiel...
 if errorlevel 1 (
   echo.
   echo [ERREUR] La generation des icones a echoue.
-  pause
+  call :maybe_pause
   exit /b 1
 )
 
@@ -48,7 +48,7 @@ if errorlevel 1 (
     echo [ERREUR] Le build PyInstaller a echoue.
     echo Ferme Arena Duel, ferme tout Explorateur ouvert sur dist\ArenaDuel,
     echo puis relance ce script.
-    pause
+  call :maybe_pause
     exit /b 1
 )
 
@@ -62,4 +62,10 @@ echo.
 echo Pour ecraser dist\ArenaDuel, ferme d abord tout programme ou fenetre
 echo qui utilise ce dossier, puis relance une build standard si tu en as besoin.
 echo.
+call :maybe_pause
+exit /b 0
+
+:maybe_pause
+if /I "%ARENA_DUEL_NO_PAUSE%"=="1" exit /b 0
 pause
+exit /b 0

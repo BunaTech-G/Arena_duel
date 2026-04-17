@@ -40,6 +40,7 @@ from runtime_utils import (
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
+    apply_window_icon,
     enable_large_window,
     style_window,
     style_checkbox,
@@ -399,10 +400,7 @@ class ForgeGuideWindow(ctk.CTkToplevel):
         style_window(self)
 
         self.title("Arena Duel - Guide de forge")
-        try:
-            self.iconbitmap(get_app_icon_ico_path())
-        except (OSError, TclError):
-            pass
+        apply_window_icon(self, retry_after_ms=220)
 
         self.geometry("760x560")
         enable_large_window(self, 680, 480, start_zoomed=False)
@@ -568,6 +566,8 @@ class PlayerSelectView(ctk.CTkToplevel):
         self._registry_loading = False
         self._add_player_in_progress = False
         self._launch_in_progress = False
+        self._responsive_layout_mode = None
+        self._layout_refresh_after_id = None
         self._registry_request_token = 0
         self._registry_result_queue = queue.SimpleQueue()
         self.parent = parent
@@ -619,8 +619,8 @@ class PlayerSelectView(ctk.CTkToplevel):
         self._refresh_forge_state()
         self.after(40, lambda: self.refresh_players(reason="initial"))
         self.after(80, self._handle_first_paint)
-        # Ouvrir maximisé pour garantir que tout le contenu est visible
-        self.after(60, lambda: self.state("zoomed"))
+        self.bind("<Configure>", self._schedule_layout_refresh)
+        self.after(0, self._refresh_responsive_layout)
         self.after(120, lambda: present_window(self))
 
     def _apply_icon(self, path: str):
@@ -688,11 +688,12 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.close_button.configure(state="disabled" if launch_busy else "normal")
 
     def _build_ui(self):
-        self.grid_columnconfigure(0, weight=2)
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=5)
+        self.grid_columnconfigure(1, weight=4)
         self.grid_rowconfigure(1, weight=0)
         self.grid_rowconfigure(2, weight=1)
         self.grid_rowconfigure(3, weight=0)
+        self.grid_rowconfigure(4, weight=0)
 
         backdrop = ctk.CTkLabel(
             self,
@@ -845,6 +846,7 @@ class PlayerSelectView(ctk.CTkToplevel):
         left_frame.grid(row=2, column=0, padx=(20, 10), pady=10, sticky="nsew")
         left_frame.grid_rowconfigure(3, weight=1)
         left_frame.grid_columnconfigure(0, weight=1)
+        self.left_frame = left_frame
 
         slots_title = ctk.CTkLabel(
             left_frame,
@@ -995,6 +997,7 @@ class PlayerSelectView(ctk.CTkToplevel):
         )
         right_frame.grid_columnconfigure(0, weight=1)
         right_frame.grid_rowconfigure(0, weight=1)
+        self.right_frame = right_frame
 
         self.right_scroll_frame = ctk.CTkScrollableFrame(
             right_frame,
@@ -1276,6 +1279,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             justify="left",
         )
         create_title.grid(row=0, column=0, padx=18, pady=(16, 8), sticky="ew")
+        self.register_title_label = create_title
 
         self.register_count_badge = create_badge(
             register_frame,
@@ -1371,6 +1375,7 @@ class PlayerSelectView(ctk.CTkToplevel):
         )
         footer.grid_columnconfigure(0, weight=2)
         footer.grid_columnconfigure((1, 2, 3), weight=1)
+        self.footer = footer
 
         self.launch_button = create_button(
             footer,
@@ -1430,6 +1435,189 @@ class PlayerSelectView(ctk.CTkToplevel):
         self._sync_match_mode_ui()
         self._sync_action_controls()
         self.after(0, backdrop.lower)
+
+    def _schedule_layout_refresh(self, event=None):
+        if event is not None and event.widget is not self:
+            return
+
+        if self._layout_refresh_after_id is not None:
+            try:
+                self.after_cancel(self._layout_refresh_after_id)
+            except TclError:
+                pass
+
+        self._layout_refresh_after_id = self.after(
+            40,
+            self._refresh_responsive_layout,
+        )
+
+    def _refresh_responsive_layout(self):
+        self._layout_refresh_after_id = None
+
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        width = max(1, self.winfo_width())
+        layout_mode = "compact" if width < 1500 else "wide"
+        if layout_mode == self._responsive_layout_mode:
+            return
+
+        self._responsive_layout_mode = layout_mode
+        if layout_mode == "compact":
+            self._apply_compact_layout()
+        else:
+            self._apply_wide_layout()
+
+    def _apply_wide_layout(self):
+        self.grid_columnconfigure(0, weight=5)
+        self.grid_columnconfigure(1, weight=4)
+        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=0)
+        self.grid_rowconfigure(4, weight=0)
+
+        self.left_frame.grid_configure(
+            row=2,
+            column=0,
+            columnspan=1,
+            padx=(20, 10),
+            pady=10,
+            sticky="nsew",
+        )
+        self.right_frame.grid_configure(
+            row=2,
+            column=1,
+            columnspan=1,
+            padx=(10, 20),
+            pady=10,
+            sticky="nsew",
+        )
+        self.footer.grid_configure(
+            row=3,
+            column=0,
+            columnspan=2,
+            padx=20,
+            pady=(0, 20),
+            sticky="ew",
+        )
+
+        self.footer.grid_columnconfigure(0, weight=2)
+        self.footer.grid_columnconfigure(1, weight=1)
+        self.footer.grid_columnconfigure(2, weight=1)
+        self.footer.grid_columnconfigure(3, weight=1)
+
+        self.launch_button.grid_configure(
+            row=0,
+            column=0,
+            columnspan=1,
+            padx=(16, 8),
+            pady=16,
+            sticky="ew",
+        )
+        self.history_button.grid_configure(
+            row=0,
+            column=1,
+            columnspan=1,
+            padx=8,
+            pady=16,
+            sticky="ew",
+        )
+        self.refresh_button.grid_configure(
+            row=0,
+            column=2,
+            columnspan=1,
+            padx=8,
+            pady=16,
+            sticky="ew",
+        )
+        self.close_button.grid_configure(
+            row=0,
+            column=3,
+            columnspan=1,
+            padx=(8, 16),
+            pady=16,
+            sticky="ew",
+        )
+
+        self.info_label.configure(wraplength=720)
+        self.slots_hint.configure(wraplength=760)
+        self.register_title_label.configure(wraplength=320)
+
+    def _apply_compact_layout(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=0)
+        self.grid_rowconfigure(2, weight=3)
+        self.grid_rowconfigure(3, weight=2)
+        self.grid_rowconfigure(4, weight=0)
+
+        self.left_frame.grid_configure(
+            row=2,
+            column=0,
+            columnspan=2,
+            padx=20,
+            pady=(10, 8),
+            sticky="nsew",
+        )
+        self.right_frame.grid_configure(
+            row=3,
+            column=0,
+            columnspan=2,
+            padx=20,
+            pady=(0, 8),
+            sticky="nsew",
+        )
+        self.footer.grid_configure(
+            row=4,
+            column=0,
+            columnspan=2,
+            padx=20,
+            pady=(0, 20),
+            sticky="ew",
+        )
+
+        self.footer.grid_columnconfigure(0, weight=1)
+        self.footer.grid_columnconfigure(1, weight=1)
+        self.footer.grid_columnconfigure(2, weight=0)
+        self.footer.grid_columnconfigure(3, weight=0)
+
+        self.launch_button.grid_configure(
+            row=0,
+            column=0,
+            columnspan=2,
+            padx=16,
+            pady=(16, 8),
+            sticky="ew",
+        )
+        self.history_button.grid_configure(
+            row=1,
+            column=0,
+            columnspan=1,
+            padx=(16, 8),
+            pady=8,
+            sticky="ew",
+        )
+        self.refresh_button.grid_configure(
+            row=1,
+            column=1,
+            columnspan=1,
+            padx=(8, 16),
+            pady=8,
+            sticky="ew",
+        )
+        self.close_button.grid_configure(
+            row=2,
+            column=0,
+            columnspan=2,
+            padx=16,
+            pady=(8, 16),
+            sticky="ew",
+        )
+
+        self.info_label.configure(wraplength=980)
+        self.slots_hint.configure(wraplength=980)
+        self.register_title_label.configure(wraplength=620)
 
     def _build_stat_card(
         self,

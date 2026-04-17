@@ -8,6 +8,7 @@ echo   Arena Duel - Build Presentation + Installer
 echo =========================================
 echo.
 
+set "ARENA_DUEL_NO_PAUSE=1"
 call build_presentation.bat
 if errorlevel 1 (
   exit /b 1
@@ -24,7 +25,7 @@ if not defined ISCC_EXE (
   echo [INFO] L EXE est pret dans dist_release\ArenaDuel.
   echo [INFO] Pour generer le setup, compile installer\arena_duel.iss.
   echo.
-  pause
+  call :maybe_pause
   exit /b 0
 )
 
@@ -32,7 +33,7 @@ if not defined ISCC_EXE (
 if errorlevel 1 (
   echo.
   echo [ERREUR] La generation de l installateur a echoue.
-  pause
+  call :maybe_pause
   exit /b 1
 )
 
@@ -40,4 +41,10 @@ echo.
 echo [OK] Installateur genere avec succes.
 echo Fichier final : installer\Setup_ArenaDuel.exe
 echo.
+call :maybe_pause
+exit /b 0
+
+:maybe_pause
+if /I "%ARENA_DUEL_NO_PAUSE%"=="1" exit /b 0
 pause
+exit /b 0

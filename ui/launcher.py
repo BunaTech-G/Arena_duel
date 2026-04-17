@@ -1023,7 +1023,6 @@ class LauncherApp(ctk.CTk):
         self._build_ui()
         self._refresh_runtime_state(probe_db=True)
         self._set_info("Choisis un mode.", tone="gold")
-        self.after(80, self._maximize_on_launch)
 
     def _build_ui(self):
         backdrop = ctk.CTkLabel(self, text="", image=self.background_image)
