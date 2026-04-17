@@ -36,3 +36,7 @@ htmlcov/
 # fichiers SQLite éventuels si un jour tu testes localement
 *.sqlite3
 *.db
+
+dist_windows/
+*.exe
+*.zip
