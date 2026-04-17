@@ -37,6 +37,8 @@ htmlcov/
 *.sqlite3
 *.db
 
+# Builds / releases
 dist_windows/
+installer/
 *.exe
 *.zip
