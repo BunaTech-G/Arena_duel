@@ -8,6 +8,15 @@ __pycache__/
 venv/
 env/
 
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.nox/
+.tox/
+
 build/
 dist/
 build_release/
@@ -15,34 +24,24 @@ build_release_check/
 dist_demo/
 dist_release/
 dist_release_check/
+dist_windows/
+
+installer/Setup_ArenaDuel.exe
 
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
-*.log
 
-# fichiers temporaires Windows / Python
+*.log
 *.tmp
 *.bak
 tmp_*
 *.vsix
+*.pyz
 
-# tests / coverage éventuels
-.coverage
-htmlcov/
-.pytest_cache/
-
-# fichiers SQLite éventuels si un jour tu testes localement
 *.sqlite3
 *.db
 
-# Builds / releases
-dist_windows/
-installer/
-*.exe
-*.zip
-
-.github/
-*copilot-instructions.md
-*gameplay.instructions.md
+image.png
+.github/instructions/
