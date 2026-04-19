@@ -50,6 +50,7 @@ if errorlevel 1 (
 )
 
 copy /y "app_runtime.demo.json" "%DIST_DIR%\ArenaDuel\app_runtime.json" >nul
+copy /y "assets\images\arena_duel.ico" "%DIST_DIR%\ArenaDuel\arena_duel.ico" >nul
 copy /y "README_DEMO.txt" "%DIST_DIR%\ArenaDuel\README_DEMO.txt" >nul
 
 mkdir "%PORTABLE_DIR%" >nul 2>nul
@@ -97,6 +98,7 @@ if errorlevel 1 (
 )
 
 copy /y "app_runtime.json" "%DIST_DIR%\ArenaDuel\app_runtime.json" >nul
+copy /y "assets\images\arena_duel.ico" "%DIST_DIR%\ArenaDuel\arena_duel.ico" >nul
 if exist "%DIST_DIR%\ArenaDuel\README_DEMO.txt" del /q "%DIST_DIR%\ArenaDuel\README_DEMO.txt"
 
 echo.

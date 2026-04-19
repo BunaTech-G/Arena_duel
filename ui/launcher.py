@@ -1,44 +1,30 @@
 from __future__ import annotations
 
 import ipaddress
+import queue
+import threading
 from tkinter import TclError, messagebox
 
 import customtkinter as ctk
-import pygame
-
-from db.database import test_connection
-from game.audio import (
-    init_audio,
-    play_alert,
-    play_click,
-    play_error,
-    play_transition,
-    start_menu_music,
-    stop_music,
-)
 from game.runtime_backend import (
     BACKEND_LABELS,
     BACKEND_PYGAME,
 )
-from hardware.arduino import list_available_serial_ports
-from hardware.bridge import load_hardware_runtime_config
-from hardware.service import describe_hardware_runtime_status
 from network.net_utils import (
+    LanAddressInfo,
     format_endpoint,
     get_lan_address_info,
     load_lan_runtime_config,
 )
-from network.server import start_server_in_background
 from runtime_utils import (
     clear_runtime_override,
     clear_runtime_user_overrides,
     load_persisted_runtime_config,
     runtime_user_config_path,
+    set_runtime_override,
     save_runtime_user_overrides,
 )
-from ui.history_view import HistoryView
-from ui.network_lobby import NetworkLobbyView
-from ui.player_select import PlayerSelectView
+from ui.online_lobby import OnlineLobbyWindow
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
@@ -65,6 +51,417 @@ from ui.theme import (
 apply_theme_settings()
 
 
+_AUDIO_MODULE = None
+
+
+def _audio_module():
+    global _AUDIO_MODULE
+    if _AUDIO_MODULE is None:
+        from game import audio as audio_module
+
+        _AUDIO_MODULE = audio_module
+    return _AUDIO_MODULE
+
+
+def init_audio():
+    return _audio_module().init_audio()
+
+
+def play_alert():
+    return _audio_module().play_alert()
+
+
+def play_click():
+    return _audio_module().play_click()
+
+
+def play_error():
+    return _audio_module().play_error()
+
+
+def play_transition():
+    return _audio_module().play_transition()
+
+
+def start_menu_music(restart: bool = False):
+    return _audio_module().start_menu_music(restart=restart)
+
+
+def stop_music(fade_ms: int = 250):
+    return _audio_module().stop_music(fade_ms=fade_ms)
+
+
+def test_connection():
+    from db.database import test_connection as db_test_connection
+
+    return db_test_connection()
+
+
+def probe_database_connection():
+    from db.database import probe_connection as db_probe_connection
+
+    return db_probe_connection()
+
+
+def list_available_serial_ports():
+    from hardware.arduino import (
+        list_available_serial_ports as list_serial_ports,
+    )
+
+    return list_serial_ports()
+
+
+def load_hardware_runtime_config():
+    from hardware.bridge import load_hardware_runtime_config as load_runtime
+
+    return load_runtime()
+
+
+def describe_hardware_runtime_status(runtime_config):
+    from hardware.service import (
+        describe_hardware_runtime_status as describe_runtime_status,
+    )
+
+    return describe_runtime_status(runtime_config)
+
+
+def start_server_in_background(host: str, port: int):
+    from network.server import start_server_in_background as start_server
+
+    return start_server(host, port)
+
+
+def _build_player_select_view(parent):
+    from ui.player_select import PlayerSelectView
+
+    return PlayerSelectView(parent)
+
+
+def _build_history_view(parent, **kwargs):
+    from ui.history_view import HistoryView
+
+    return HistoryView(parent, **kwargs)
+
+
+def _build_network_lobby_view(parent, **kwargs):
+    from ui.network_lobby import NetworkLobbyView
+
+    return NetworkLobbyView(parent, **kwargs)
+
+
+def _warm_launcher_visual_cache(background_size: tuple[int, int]):
+    load_launcher_background_image(
+        "assets",
+        "backgrounds",
+        "launcher_twilight_bastion_bg.png",
+        size=background_size,
+        fallback_label="twilight bastion",
+    )
+    load_app_icon_image(
+        size=(224, 224),
+        fallback_label="arena duel",
+    )
+
+
+class StartupModeApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        style_window(self)
+
+        self.selection = None
+        self._pending_selection = None
+        self.logo_image = load_app_icon_image(
+            size=(88, 88),
+            fallback_label="arena duel",
+        )
+        self._db_probe_request_token = 0
+        self._db_probe_result_queue = queue.SimpleQueue()
+        self._db_probe_in_progress = False
+        self._spinner_step = 0
+        self._spinner_after_id = None
+
+        self.title("Arena Duel - Démarrage")
+        apply_window_icon(self, default=True, retry_after_ms=220)
+        self.geometry("620x420")
+        enable_large_window(self, 560, 360, start_zoomed=False)
+        self.protocol("WM_DELETE_WINDOW", self._handle_close)
+
+        self._build_ui()
+        present_window(self)
+
+    def _build_ui(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        shell = ctk.CTkFrame(self, corner_radius=28)
+        style_frame(shell, tone="panel_deep", border_color=PALETTE["gold_dim"])
+        shell.grid(row=0, column=0, padx=24, pady=24, sticky="nsew")
+        shell.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(shell, fg_color="transparent")
+        header.grid(row=0, column=0, padx=24, pady=(22, 10), sticky="ew")
+        header.grid_columnconfigure(1, weight=1)
+
+        logo = ctk.CTkLabel(header, text="", image=self.logo_image)
+        style_image_label(logo)
+        logo.grid(row=0, column=0, rowspan=3, padx=(0, 16), sticky="w")
+
+        create_badge(header, "Démarrage", tone="gold").grid(
+            row=0,
+            column=1,
+            sticky="w",
+        )
+
+        ctk.CTkLabel(
+            header,
+            text="Choisir le mode du sanctuaire",
+            font=TYPOGRAPHY["title"],
+            text_color=PALETTE["text"],
+        ).grid(row=1, column=1, pady=(10, 4), sticky="w")
+
+        ctk.CTkLabel(
+            header,
+            text=(
+                "Avec base : vérifie MariaDB avant d'ouvrir le bastion.\n"
+                "Sans base : lance directement le jeu avec registre et "
+                "chroniques locales."
+            ),
+            font=TYPOGRAPHY["body"],
+            text_color=PALETTE["text_soft"],
+            justify="left",
+            wraplength=420,
+        ).grid(row=2, column=1, sticky="w")
+
+        self.state_badge = create_badge(shell, "En attente", tone="neutral")
+        self.state_badge.grid(
+            row=1,
+            column=0,
+            padx=24,
+            pady=(0, 8),
+            sticky="w",
+        )
+
+        self.status_label = ctk.CTkLabel(
+            shell,
+            text="Choisis comment lancer Arena Duel.",
+            font=TYPOGRAPHY["body"],
+            text_color=PALETTE["text_muted"],
+            justify="left",
+            wraplength=540,
+        )
+        self.status_label.grid(
+            row=2,
+            column=0,
+            padx=24,
+            pady=(0, 18),
+            sticky="w",
+        )
+
+        action_column = ctk.CTkFrame(shell, fg_color="transparent")
+        action_column.grid(row=3, column=0, padx=24, pady=(0, 18), sticky="ew")
+        action_column.grid_columnconfigure(0, weight=1)
+
+        self.with_db_button = create_button(
+            action_column,
+            "Lancer avec base de données",
+            self._handle_launch_with_db,
+            variant="primary",
+            height=54,
+        )
+        self.with_db_button.grid(row=0, column=0, pady=(0, 12), sticky="ew")
+
+        self.without_db_button = create_button(
+            action_column,
+            "Lancer sans base de données",
+            self._handle_launch_without_db,
+            variant="secondary",
+            height=48,
+        )
+        self.without_db_button.grid(row=1, column=0, pady=(0, 12), sticky="ew")
+
+        self.quit_button = create_button(
+            action_column,
+            "Quitter",
+            self._handle_close,
+            variant="ghost",
+            height=42,
+        )
+        self.quit_button.grid(row=2, column=0, sticky="ew")
+
+    def _set_controls_enabled(self, enabled: bool):
+        state = "normal" if enabled else "disabled"
+        self.with_db_button.configure(state=state)
+        self.without_db_button.configure(state=state)
+        self.quit_button.configure(state=state)
+
+    def _set_status(self, badge_text: str, text: str, *, tone: str):
+        update_badge(self.state_badge, badge_text, tone)
+        text_color_map = {
+            "neutral": PALETTE["text_muted"],
+            "info": PALETTE["cyan"],
+            "success": PALETTE["success"],
+            "warning": PALETTE["warning"],
+            "danger": PALETTE["danger"],
+            "gold": PALETTE["gold"],
+        }
+        self.status_label.configure(
+            text=text,
+            text_color=text_color_map.get(tone, PALETTE["text_muted"]),
+        )
+
+    def _handle_launch_without_db(self):
+        set_runtime_override("demo_local_storage_enabled", True)
+        set_runtime_override("demo_local_storage_force", True)
+        self._queue_launcher_open(
+            {
+                "mode": "demo",
+                "db_status": "local",
+                "probe_db_on_start": False,
+            },
+            badge_text="Mode local prêt",
+            status_text="Préparation du bastion sans base de données.",
+            tone="gold",
+        )
+
+    def _queue_launcher_open(
+        self,
+        selection: dict,
+        *,
+        badge_text: str,
+        status_text: str,
+        tone: str,
+    ):
+        self._pending_selection = selection
+        self._set_controls_enabled(False)
+        self._set_status(badge_text, status_text, tone=tone)
+        try:
+            self.update_idletasks()
+        except TclError:
+            return
+        self.after(20, self._open_launcher)
+
+    def _open_launcher(self):
+        try:
+            if not self.winfo_exists() or self._pending_selection is None:
+                return
+        except TclError:
+            return
+
+        background_size = (
+            max(1024, self.winfo_screenwidth()),
+            max(640, self.winfo_screenheight()),
+        )
+        _warm_launcher_visual_cache(background_size)
+        self.selection = self._pending_selection
+        self.destroy()
+
+    def _handle_launch_with_db(self):
+        if self._db_probe_in_progress:
+            return
+
+        clear_runtime_override("demo_local_storage_enabled")
+        clear_runtime_override("demo_local_storage_force")
+
+        self._db_probe_request_token += 1
+        request_token = self._db_probe_request_token
+        self._db_probe_in_progress = True
+        self._set_controls_enabled(False)
+        self._set_status(
+            "Connexion au sanctuaire",
+            "Recherche de MariaDB O",
+            tone="info",
+        )
+        self._schedule_spinner()
+
+        worker = threading.Thread(
+            target=self._db_probe_worker,
+            args=(request_token,),
+            daemon=True,
+        )
+        worker.start()
+        self.after(25, self._drain_db_probe_results)
+
+    def _db_probe_worker(self, request_token: int):
+        self._db_probe_result_queue.put((request_token, probe_database_connection()))
+
+    def _drain_db_probe_results(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        received_current_result = False
+        while True:
+            try:
+                request_token, is_available = self._db_probe_result_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if request_token != self._db_probe_request_token:
+                continue
+
+            received_current_result = True
+            self._db_probe_in_progress = False
+            self._cancel_spinner()
+            if is_available:
+                self._queue_launcher_open(
+                    {
+                        "mode": "db",
+                        "db_status": "prêt",
+                        "probe_db_on_start": False,
+                    },
+                    badge_text="Base prête",
+                    status_text="Préparation du bastion.",
+                    tone="success",
+                )
+            else:
+                self._set_controls_enabled(True)
+                self._set_status(
+                    "Base introuvable",
+                    (
+                        "Impossible de joindre MariaDB. Vérifie le service, "
+                        "puis réessaie, ou lance sans base de données."
+                    ),
+                    tone="danger",
+                )
+
+        if self._db_probe_in_progress and not received_current_result:
+            self.after(40, self._drain_db_probe_results)
+
+    def _schedule_spinner(self):
+        self._cancel_spinner()
+
+        def _tick():
+            try:
+                if not self.winfo_exists() or not self._db_probe_in_progress:
+                    return
+            except TclError:
+                return
+
+            self._spinner_step = (self._spinner_step + 1) % 3
+            suffix = "O" * (self._spinner_step + 1)
+            self.status_label.configure(text=f"Recherche de MariaDB {suffix}")
+            self._spinner_after_id = self.after(150, _tick)
+
+        self._spinner_after_id = self.after(150, _tick)
+
+    def _cancel_spinner(self):
+        if self._spinner_after_id is None:
+            return
+
+        try:
+            self.after_cancel(self._spinner_after_id)
+        except TclError:
+            pass
+        self._spinner_after_id = None
+
+    def _handle_close(self):
+        self.selection = None
+        self._pending_selection = None
+        self.destroy()
+
+
 def _parse_int_value(
     label: str,
     raw_value: str,
@@ -75,7 +472,7 @@ def _parse_int_value(
     try:
         parsed_value = int(str(raw_value or "").strip())
     except ValueError as error:
-        raise ValueError(f"Le champ {label} doit être un entier.") from error
+        raise ValueError(f"Le champ {label} doit être un nombre valide.") from error
 
     if parsed_value < minimum or parsed_value > maximum:
         raise ValueError(f"Le champ {label} doit rester entre {minimum} et {maximum}.")
@@ -140,27 +537,24 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
 
         self.geometry("1180x760")
         enable_large_window(self, 980, 640, start_zoomed=False)
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.protocol("WM_DELETE_WINDOW", self._handle_close)
 
         screen_width = max(1180, self.winfo_screenwidth())
         screen_height = max(760, self.winfo_screenheight())
-        self.background_image = load_launcher_background_image(
-            "assets",
-            "backgrounds",
-            "launcher_twilight_bastion_bg.png",
-            size=(screen_width, screen_height),
-            fallback_label="réglages bastion",
-        )
+        self._background_asset_size = (screen_width, screen_height)
+        self.background_image = None
         self.configure(fg_color=PALETTE["launcher_blend"])
 
         self.runtime_snapshot = load_persisted_runtime_config()
-        self.serial_ports = list_available_serial_ports()
+        self.serial_ports = []
         self.vars = self._build_vars(self.runtime_snapshot)
         self.serial_ports_label: ctk.CTkLabel
         self.notice_label: ctk.CTkLabel
 
         self._build_ui()
         present_window(self)
+        self.after(20, self._hydrate_visual_assets)
+        self.after(60, self._refresh_serial_ports)
 
     def _build_vars(self, config: dict) -> dict[str, ctk.Variable]:
         return {
@@ -260,6 +654,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         backdrop = ctk.CTkLabel(self, text="", image=self.background_image)
         style_image_label(backdrop)
         backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+        self.backdrop_label = backdrop
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=0)
@@ -590,13 +985,40 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         create_button(
             buttons,
             "Fermer",
-            self.destroy,
+            self._handle_close,
             variant="ghost",
             width=120,
             height=42,
         ).grid(row=0, column=3)
 
         self.after(0, backdrop.lower)
+
+    def _handle_close(self):
+        play_click()
+        parent = self.parent_launcher
+        self.destroy()
+        try:
+            if parent.winfo_exists():
+                present_window(parent)
+        except TclError:
+            return
+
+    def _hydrate_visual_assets(self):
+        try:
+            if not self.winfo_exists() or self.background_image is not None:
+                return
+        except TclError:
+            return
+
+        self.background_image = load_launcher_background_image(
+            "assets",
+            "backgrounds",
+            "launcher_twilight_bastion_bg.png",
+            size=self._background_asset_size,
+            fallback_label="réglages bastion",
+        )
+        self.backdrop_label.configure(image=self.background_image)
+        self.backdrop_label.lower()
 
     def _get_section_badge_specs(self, title: str) -> tuple[str, str]:
         badge_map = {
@@ -806,6 +1228,16 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
             ports_text = "aucun port compatible visible"
         self.serial_ports_label.configure(text=f"Ports détectés : {ports_text}")
 
+    def _refresh_serial_ports(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        self.serial_ports = list_available_serial_ports()
+        self._refresh_serial_ports_label()
+
     def _set_notice(self, text: str, tone: str):
         color_map = {
             "success": PALETTE["success"],
@@ -961,7 +1393,13 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
 
 
 class LauncherApp(ctk.CTk):
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        startup_mode: str = "db",
+        startup_db_status: str = "à vérifier",
+        probe_db_on_start: bool = True,
+    ):
         super().__init__()
         style_window(self)
 
@@ -979,9 +1417,13 @@ class LauncherApp(ctk.CTk):
         self.history_window = None
         self.host_lobby_window = None
         self.join_lobby_window = None
+        self.online_lobby_window = None
         self.settings_window = None
+        self.startup_mode = startup_mode
+        self._db_probe_enabled = startup_mode != "demo"
+        self._probe_db_on_start = probe_db_on_start and self._db_probe_enabled
 
-        self.db_status_text = "à vérifier"
+        self.db_status_text = startup_db_status
         self.hall_status_text = "au repos"
         self.hardware_status_text = "en veille"
         self.hardware_status_tone = "neutral"
@@ -991,43 +1433,47 @@ class LauncherApp(ctk.CTk):
         self.hall_badge = None
         self.forge_badge = None
         self.runtime_summary_label = None
+        self._db_probe_in_progress = False
+        self._db_probe_request_token = 0
+        self._db_probe_result_queue = queue.SimpleQueue()
 
         self.persisted_runtime_config = load_persisted_runtime_config()
         self.network_config = load_lan_runtime_config()
         self.hardware_runtime_config = load_hardware_runtime_config()
         self.tcp_port = self.network_config.port
-        self.lan_address_info = get_lan_address_info()
+        self.lan_address_info = LanAddressInfo(
+            primary_ip=None,
+            candidate_ips=tuple(),
+        )
 
         screen_width = max(1024, self.winfo_screenwidth())
         screen_height = max(640, self.winfo_screenheight())
-        self.background_image = load_launcher_background_image(
-            "assets",
-            "backgrounds",
-            "launcher_twilight_bastion_bg.png",
-            size=(screen_width, screen_height),
-            fallback_label="twilight bastion",
-        )
-        self.logo_image = load_app_icon_image(
-            size=(224, 224),
-            fallback_label="arena duel",
-        )
+        self._background_asset_size = (screen_width, screen_height)
+        self.background_image = None
+        self.logo_image = None
         self.configure(fg_color=PALETTE["launcher_blend"])
 
-        pygame.mixer.pre_init(44100, -16, 2, 512)
-        init_audio()
-        start_menu_music()
+        self._menu_audio_started = False
 
         self.protocol("WM_DELETE_WINDOW", self._handle_close_app)
         self.bind("<FocusIn>", self._handle_focus_in)
 
         self._build_ui()
-        self._refresh_runtime_state(probe_db=True)
+        self._hydrate_visual_assets()
+        self.after(
+            60,
+            lambda: self._refresh_runtime_state(
+                probe_db=self._probe_db_on_start,
+            ),
+        )
+        self.after(100, self._ensure_menu_audio_started)
         self._set_info("Choisis un mode.", tone="gold")
 
     def _build_ui(self):
         backdrop = ctk.CTkLabel(self, text="", image=self.background_image)
         style_image_label(backdrop)
         backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+        self.backdrop_label = backdrop
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -1158,6 +1604,7 @@ class LauncherApp(ctk.CTk):
         )
         style_image_label(logo_label)
         logo_label.place(relx=0.5, rely=0.5, anchor="center")
+        self.logo_label = logo_label
 
         action_panel = ctk.CTkFrame(content_shell, corner_radius=28)
         style_frame(
@@ -1247,13 +1694,28 @@ class LauncherApp(ctk.CTk):
         join_button.grid(
             row=2,
             column=0,
+            pady=(0, 12),
+            sticky="ew",
+        )
+
+        online_button = create_button(
+            action_stack,
+            "Online",
+            self.open_online_lobby,
+            variant="secondary",
+            width=430,
+            height=48,
+        )
+        online_button.grid(
+            row=3,
+            column=0,
             pady=(0, 18),
             sticky="ew",
         )
 
         utility_row = ctk.CTkFrame(action_stack, fg_color="transparent")
         utility_row.grid(
-            row=3,
+            row=4,
             column=0,
             pady=(0, 12),
             sticky="ew",
@@ -1362,6 +1824,42 @@ class LauncherApp(ctk.CTk):
 
         self.after(0, backdrop.lower)
 
+    def _hydrate_visual_assets(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        if self.background_image is None:
+            self.background_image = load_launcher_background_image(
+                "assets",
+                "backgrounds",
+                "launcher_twilight_bastion_bg.png",
+                size=self._background_asset_size,
+                fallback_label="twilight bastion",
+            )
+            self.backdrop_label.configure(image=self.background_image)
+            self.backdrop_label.lower()
+
+        if self.logo_image is None:
+            self.logo_image = load_app_icon_image(
+                size=(224, 224),
+                fallback_label="arena duel",
+            )
+            self.logo_label.configure(image=self.logo_image)
+
+    def _ensure_menu_audio_started(self):
+        if self._menu_audio_started:
+            return
+
+        import pygame
+
+        pygame.mixer.pre_init(44100, -16, 2, 512)
+        init_audio()
+        start_menu_music()
+        self._menu_audio_started = True
+
     def _maximize_on_launch(self):
         try:
             if not self.winfo_exists():
@@ -1402,6 +1900,10 @@ class LauncherApp(ctk.CTk):
         return "127.0.0.1"
 
     def _db_status_tone(self) -> str:
+        if self.startup_mode == "demo":
+            return "gold"
+        if self._db_probe_in_progress:
+            return "warning"
         if self.db_status_text == "prêt":
             return "success"
         if self.db_status_text == "indisponible":
@@ -1416,6 +1918,10 @@ class LauncherApp(ctk.CTk):
         return "info"
 
     def _db_badge_text(self) -> str:
+        if self.startup_mode == "demo":
+            return "Sans base"
+        if self._db_probe_in_progress:
+            return "DB en test"
         if self.db_status_text == "prêt":
             return "DB prête"
         if self.db_status_text == "indisponible":
@@ -1434,6 +1940,12 @@ class LauncherApp(ctk.CTk):
             endpoint = format_endpoint(hall_host, hall_port)
             return f"Hall accessible sur {endpoint}."
 
+        if self.startup_mode == "demo":
+            return (
+                "Mode sans base actif. Registre et chroniques restent dans "
+                "le stockage local."
+            )
+
         if self.db_status_text == "indisponible":
             return (
                 "Sanctuaire hors ligne. Réglages et diagnostic restent dans "
@@ -1445,8 +1957,8 @@ class LauncherApp(ctk.CTk):
     def _refresh_runtime_state(self, *, probe_db: bool = False):
         self._load_runtime_state()
 
-        if probe_db:
-            self.db_status_text = "prêt" if test_connection() else "indisponible"
+        if probe_db and self._db_probe_enabled:
+            self._start_db_probe()
 
         hardware_status = describe_hardware_runtime_status(self.hardware_runtime_config)
         self.hardware_status_text = hardware_status.badge_text
@@ -1458,6 +1970,51 @@ class LauncherApp(ctk.CTk):
         else:
             self.hall_status_text = self._current_invitation_text()
         self._update_footer_status()
+
+    def _start_db_probe(self):
+        if not self._db_probe_enabled:
+            return
+
+        self._db_probe_request_token += 1
+        request_token = self._db_probe_request_token
+        self._db_probe_in_progress = True
+        self.db_status_text = "à vérifier"
+
+        worker = threading.Thread(
+            target=self._db_probe_worker,
+            args=(request_token,),
+            daemon=True,
+        )
+        worker.start()
+        self.after(25, self._drain_db_probe_results)
+
+    def _db_probe_worker(self, request_token: int):
+        self._db_probe_result_queue.put((request_token, probe_database_connection()))
+
+    def _drain_db_probe_results(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        received_current_result = False
+        while True:
+            try:
+                request_token, is_available = self._db_probe_result_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if request_token != self._db_probe_request_token:
+                continue
+
+            received_current_result = True
+            self._db_probe_in_progress = False
+            self.db_status_text = "prêt" if is_available else "indisponible"
+            self._update_footer_status()
+
+        if self._db_probe_in_progress and not received_current_result:
+            self.after(40, self._drain_db_probe_results)
 
     def _update_footer_status(self):
         if self.db_badge is not None:
@@ -1513,14 +2070,21 @@ class LauncherApp(ctk.CTk):
         except TclError:
             return None
 
-    def _focus_or_open_window(self, attr_name, factory):
+    def _focus_or_open_window(self, attr_name, factory, *, hide_launcher=False):
         existing_window = self._get_live_window(getattr(self, attr_name))
-        if existing_window is not None:
-            present_window(existing_window)
-            return existing_window
+        if existing_window is None:
+            window = factory()
+            setattr(self, attr_name, window)
+        else:
+            window = existing_window
 
-        window = factory()
-        setattr(self, attr_name, window)
+        if hide_launcher:
+            try:
+                self.withdraw()
+                self.update_idletasks()
+            except TclError:
+                pass
+
         present_window(window)
         return window
 
@@ -1529,7 +2093,7 @@ class LauncherApp(ctk.CTk):
 
     def handle_settings_saved(self, message: str, *, tone: str = "success"):
         self._set_db_mode_local()
-        self._refresh_runtime_state(probe_db=True)
+        self._refresh_runtime_state(probe_db=self._db_probe_enabled)
         self._set_info(message, tone=tone)
 
     def _handle_settings(self):
@@ -1537,6 +2101,7 @@ class LauncherApp(ctk.CTk):
         self._focus_or_open_window(
             "settings_window",
             lambda: LauncherSettingsWindow(self),
+            hide_launcher=True,
         )
 
     def _handle_new_game(self):
@@ -1546,7 +2111,8 @@ class LauncherApp(ctk.CTk):
         self._set_info(info_text, tone="gold")
         self._focus_or_open_window(
             "player_select_window",
-            lambda: PlayerSelectView(self),
+            lambda: _build_player_select_view(self),
+            hide_launcher=True,
         )
 
     def _handle_history(self):
@@ -1555,10 +2121,11 @@ class LauncherApp(ctk.CTk):
         self._set_info("Ouverture de l'historique.", tone="gold")
         self._focus_or_open_window(
             "history_window",
-            lambda: HistoryView(
+            lambda: _build_history_view(
                 self,
                 source_label="Chroniques locales",
             ),
+            hide_launcher=True,
         )
 
     def _handle_host_lan(self):
@@ -1597,12 +2164,13 @@ class LauncherApp(ctk.CTk):
         )
         self._focus_or_open_window(
             "host_lobby_window",
-            lambda: NetworkLobbyView(
+            lambda: _build_network_lobby_view(
                 self,
                 default_server_invitation=self._current_invitation_text(),
                 server_port=self.get_active_hall_port() or self.tcp_port,
                 host_mode=True,
             ),
+            hide_launcher=True,
         )
 
     def _handle_join_lan(self):
@@ -1614,8 +2182,18 @@ class LauncherApp(ctk.CTk):
         )
         self._focus_or_open_window(
             "join_lobby_window",
-            lambda: NetworkLobbyView(self, server_port=self.tcp_port),
+            lambda: _build_network_lobby_view(self, server_port=self.tcp_port),
+            hide_launcher=True,
         )
+
+    def open_online_lobby(self):
+        play_transition()
+        self._set_info("Ouverture du hall online.", tone="info")
+        win = self._focus_or_open_window(
+            "online_lobby_window",
+            lambda: OnlineLobbyWindow(self),
+        )
+        win.focus()
 
     def _current_invitation_text(self) -> str:
         host = self.get_active_hall_host()
@@ -1645,5 +2223,15 @@ class LauncherApp(ctk.CTk):
 
 
 def run_launcher():
-    app = LauncherApp()
+    startup = StartupModeApp()
+    startup.mainloop()
+
+    if not startup.selection:
+        return
+
+    app = LauncherApp(
+        startup_mode=startup.selection["mode"],
+        startup_db_status=startup.selection["db_status"],
+        probe_db_on_start=startup.selection["probe_db_on_start"],
+    )
     app.mainloop()

@@ -102,6 +102,7 @@ MUSIC_CONFIG = {
 
 _audio_ready = False
 _active_music_track = None
+_missing_sound_roles = set()
 
 pickup_sound = None
 win_sound = None
@@ -117,6 +118,23 @@ lose_alt_sound = None
 trap_a_sound = None
 trap_b_sound = None
 _trap_sound_index = 0
+
+
+ROLE_SOUND_ATTRS = {
+    "pickup": "pickup_sound",
+    "bonus_spawn": "bonus_spawn_sound",
+    "win": "win_sound",
+    "draw": "draw_sound",
+    "click": "click_sound",
+    "select": "select_sound",
+    "transition": "transition_sound",
+    "lose": "lose_sound",
+    "lose_alt": "lose_alt_sound",
+    "trap_a": "trap_a_sound",
+    "trap_b": "trap_b_sound",
+    "error": "error_sound",
+    "alert": "alert_sound",
+}
 
 
 def _log_audio(message):
@@ -188,39 +206,44 @@ def _role_maxtime(role_name):
     return SOUND_CONFIG.get(role_name, {}).get("maxtime_ms")
 
 
+def _get_role_sound(role_name):
+    if not _audio_ready:
+        init_audio()
+
+    if not _audio_ready or role_name in _missing_sound_roles:
+        return None
+
+    attr_name = ROLE_SOUND_ATTRS[role_name]
+    sound = globals().get(attr_name)
+    if sound is not None:
+        return sound
+
+    sound = _load_role_sound(role_name)
+    if sound is None:
+        _missing_sound_roles.add(role_name)
+        return None
+
+    globals()[attr_name] = sound
+    return sound
+
+
 def init_audio():
     """
     Initialise l'audio sans faire planter le jeu si un fichier manque.
     """
     global _audio_ready
     global _trap_sound_index
-    global pickup_sound, win_sound, draw_sound, click_sound
-    global select_sound, transition_sound, lose_sound, error_sound, alert_sound
-    global bonus_spawn_sound, lose_alt_sound, trap_a_sound, trap_b_sound
 
     try:
         if pygame.mixer.get_init() is None:
             pygame.mixer.init()
         _audio_ready = True
+        _missing_sound_roles.clear()
+        _trap_sound_index = 0
     except Exception as e:
         _log_audio(f"initialisation audio echouee : {e}")
         _audio_ready = False
         return
-
-    pickup_sound = _load_role_sound("pickup")
-    bonus_spawn_sound = _load_role_sound("bonus_spawn")
-    win_sound = _load_role_sound("win")
-    draw_sound = _load_role_sound("draw")
-    click_sound = _load_role_sound("click")
-    select_sound = _load_role_sound("select")
-    transition_sound = _load_role_sound("transition")
-    lose_sound = _load_role_sound("lose")
-    lose_alt_sound = _load_role_sound("lose_alt")
-    trap_a_sound = _load_role_sound("trap_a")
-    trap_b_sound = _load_role_sound("trap_b")
-    error_sound = _load_role_sound("error")
-    alert_sound = _load_role_sound("alert")
-    _trap_sound_index = 0
 
 
 def play_music(track_name="menu", loops=-1, restart=False):
@@ -287,32 +310,32 @@ def stop_music(fade_ms=250):
 
 
 def play_pickup():
-    _safe_play(pickup_sound, "pickup", _role_maxtime("pickup"))
+    _safe_play(_get_role_sound("pickup"), "pickup", _role_maxtime("pickup"))
 
 
 def play_bonus_spawn():
     _safe_play(
-        bonus_spawn_sound,
+        _get_role_sound("bonus_spawn"),
         "bonus_spawn",
         _role_maxtime("bonus_spawn"),
     )
 
 
 def play_win():
-    _safe_play(win_sound, "victoire", _role_maxtime("win"))
+    _safe_play(_get_role_sound("win"), "victoire", _role_maxtime("win"))
 
 
 def play_draw():
-    _safe_play(draw_sound, "egalite", _role_maxtime("draw"))
+    _safe_play(_get_role_sound("draw"), "egalite", _role_maxtime("draw"))
 
 
 def play_click():
-    _safe_play(click_sound, "clic", _role_maxtime("click"))
+    _safe_play(_get_role_sound("click"), "clic", _role_maxtime("click"))
 
 
 def play_select():
     _safe_play(
-        select_sound or click_sound,
+        _get_role_sound("select") or _get_role_sound("click"),
         "selection",
         _role_maxtime("select"),
     )
@@ -320,28 +343,39 @@ def play_select():
 
 def play_transition():
     _safe_play(
-        transition_sound or select_sound or click_sound,
+        _get_role_sound("transition")
+        or _get_role_sound("select")
+        or _get_role_sound("click"),
         "transition",
         _role_maxtime("transition"),
     )
 
 
 def play_lose(consecutive_rematch_loss: bool = False):
-    if consecutive_rematch_loss and lose_alt_sound:
+    lose_alt = _get_role_sound("lose_alt")
+    if consecutive_rematch_loss and lose_alt:
         _safe_play(
-            lose_alt_sound,
+            lose_alt,
             "defaite_rematch",
             _role_maxtime("lose_alt"),
         )
         return
 
-    _safe_play(lose_sound or draw_sound, "defaite", _role_maxtime("lose"))
+    _safe_play(
+        _get_role_sound("lose") or _get_role_sound("draw"),
+        "defaite",
+        _role_maxtime("lose"),
+    )
 
 
 def play_trap():
     global _trap_sound_index
 
-    trap_sounds = [sound for sound in (trap_a_sound, trap_b_sound) if sound]
+    trap_sounds = [
+        sound
+        for sound in (_get_role_sound("trap_a"), _get_role_sound("trap_b"))
+        if sound
+    ]
     if not trap_sounds:
         return
 
@@ -357,8 +391,16 @@ def play_trap():
 
 
 def play_error():
-    _safe_play(error_sound or alert_sound, "erreur", _role_maxtime("error"))
+    _safe_play(
+        _get_role_sound("error") or _get_role_sound("alert"),
+        "erreur",
+        _role_maxtime("error"),
+    )
 
 
 def play_alert():
-    _safe_play(alert_sound or error_sound, "alerte", _role_maxtime("alert"))
+    _safe_play(
+        _get_role_sound("alert") or _get_role_sound("error"),
+        "alerte",
+        _role_maxtime("alert"),
+    )

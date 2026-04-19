@@ -53,6 +53,7 @@ if errorlevel 1 (
 )
 
   copy /y "app_runtime.json" "%DIST_DIR%\ArenaDuel\app_runtime.json" >nul
+  copy /y "assets\images\arena_duel.ico" "%DIST_DIR%\ArenaDuel\arena_duel.ico" >nul
 
 echo.
 echo [OK] Build terminé.

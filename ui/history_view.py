@@ -1,3 +1,5 @@
+import queue
+import threading
 import customtkinter as ctk
 from tkinter import TclError
 from collections import Counter
@@ -351,15 +353,13 @@ class HistoryView(ctk.CTkToplevel):
         self.history_rows = history_rows
         self.source_label = source_label
         self.allow_refresh = allow_refresh
+        self._history_loading = False
+        self._history_request_token = 0
+        self._history_result_queue = queue.SimpleQueue()
         screen_width = max(1320, self.winfo_screenwidth())
         screen_height = max(860, self.winfo_screenheight())
-        self.background_image = load_launcher_background_image(
-            "assets",
-            "backgrounds",
-            "launcher_twilight_bastion_bg.png",
-            size=(screen_width, screen_height),
-            fallback_label="chroniques bastion",
-        )
+        self._background_asset_size = (screen_width, screen_height)
+        self.background_image = None
         self.match_portrait_image = load_ctk_image(
             "assets",
             "portraits",
@@ -377,10 +377,12 @@ class HistoryView(ctk.CTkToplevel):
 
         self.lift()
         self.focus_force()
+        self.protocol("WM_DELETE_WINDOW", self._handle_close)
 
         self._build_ui()
         present_window(self)
-        self.refresh_history()
+        self.after(20, self._hydrate_visual_assets)
+        self.after(20, self.refresh_history)
 
     def _apply_icon(self, path: str):
         try:
@@ -392,6 +394,7 @@ class HistoryView(ctk.CTkToplevel):
         backdrop = ctk.CTkLabel(self, text="", image=self.background_image)
         style_image_label(backdrop)
         backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+        self.backdrop_label = backdrop
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
@@ -550,6 +553,23 @@ class HistoryView(ctk.CTkToplevel):
 
         self.after(0, backdrop.lower)
 
+    def _hydrate_visual_assets(self):
+        try:
+            if not self.winfo_exists() or self.background_image is not None:
+                return
+        except TclError:
+            return
+
+        self.background_image = load_launcher_background_image(
+            "assets",
+            "backgrounds",
+            "launcher_twilight_bastion_bg.png",
+            size=self._background_asset_size,
+            fallback_label="chroniques bastion",
+        )
+        self.backdrop_label.configure(image=self.background_image)
+        self.backdrop_label.lower()
+
     def _render_scroll_message(
         self,
         title_text: str,
@@ -604,30 +624,96 @@ class HistoryView(ctk.CTkToplevel):
         play_click()
         self.refresh_history()
 
+    def _handle_close(self):
+        play_click()
+        parent = self.master
+        self.destroy()
+        try:
+            if parent.winfo_exists():
+                present_window(parent)
+        except TclError:
+            return
+
     def refresh_history(self):
         if self.history_rows is not None:
-            rows = self.history_rows
-        elif not test_connection():
-            play_alert()
-            self.total_matches_label.configure(text="0")
-            self.players_label.configure(text="0")
-            self.top_winner_label.configure(text="Indisponible")
-            self.draws_label.configure(text="0")
-            self.status_label.configure(
-                text="Chroniques indisponibles : base locale hors ligne."
-            )
-            update_badge(self.source_badge, self.source_label, "danger")
-            self._render_scroll_message(
-                "Chroniques indisponibles",
-                (
-                    "La base locale ne répond pas. Relance MariaDB puis "
-                    "rouvre cette vue."
-                ),
-                "danger",
-            )
+            self._apply_history_rows(self.history_rows)
             return
-        else:
-            rows = get_match_history()
+
+        if self._history_loading:
+            return
+
+        self._history_loading = True
+        self._history_request_token += 1
+        request_token = self._history_request_token
+        self.status_label.configure(text="Lecture des chroniques en cours...")
+        update_badge(self.source_badge, self.source_label, "neutral")
+        self._render_scroll_message(
+            "Lecture en cours",
+            "Le bastion relit les archives en arrière-plan.",
+            "neutral",
+        )
+
+        worker = threading.Thread(
+            target=self._load_history_worker,
+            args=(request_token,),
+            daemon=True,
+        )
+        worker.start()
+        self.after(25, self._drain_history_results)
+
+    def _load_history_worker(self, request_token: int):
+        if not test_connection():
+            self._history_result_queue.put((request_token, "offline", None))
+            return
+
+        rows = get_match_history()
+        self._history_result_queue.put((request_token, "ready", rows))
+
+    def _drain_history_results(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        received_current_result = False
+        while True:
+            try:
+                request_token, status, rows = self._history_result_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if request_token != self._history_request_token:
+                continue
+
+            received_current_result = True
+            self._history_loading = False
+            if status == "offline":
+                self._apply_history_offline_state()
+            else:
+                self._apply_history_rows(rows or [])
+
+        if self._history_loading and not received_current_result:
+            self.after(40, self._drain_history_results)
+
+    def _apply_history_offline_state(self):
+        play_alert()
+        self.total_matches_label.configure(text="0")
+        self.players_label.configure(text="0")
+        self.top_winner_label.configure(text="Indisponible")
+        self.draws_label.configure(text="0")
+        self.status_label.configure(
+            text="Chroniques indisponibles : base locale hors ligne."
+        )
+        update_badge(self.source_badge, self.source_label, "danger")
+        self._render_scroll_message(
+            "Chroniques indisponibles",
+            ("La base locale ne répond pas. Relance MariaDB puis rouvre cette vue."),
+            "danger",
+        )
+        return
+
+    def _apply_history_rows(self, rows):
 
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()

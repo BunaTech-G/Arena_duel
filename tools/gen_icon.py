@@ -24,20 +24,11 @@ RESAMPLING_NEAREST = getattr(
     "NEAREST",
 )
 
-# Recadrages en coordonnees du logo principal 1024x1024.
+# Conserver le logo complet sur toutes les tailles pour garder le titre visible
+# dans l'icone Windows et l'EXE PyInstaller.
 FULL_CROP = None
-MEDIUM_CROP = (120, 210, 930, 980)
-SMALL_CROP = (250, 250, 760, 760)
 
-SIZE_TO_CROP = {
-    256: FULL_CROP,
-    128: FULL_CROP,
-    64: MEDIUM_CROP,
-    48: MEDIUM_CROP,
-    32: SMALL_CROP,
-    24: SMALL_CROP,
-    16: SMALL_CROP,
-}
+SIZE_TO_CROP = {size: FULL_CROP for size in ICON_SIZES}
 
 
 def _load_master_logo() -> Image.Image:

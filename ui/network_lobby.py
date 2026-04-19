@@ -1945,10 +1945,6 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 "disconnect_message": (f"Le match LAN a planté au lancement : {error}"),
             }
 
-        if parent_was_visible:
-            parent.deiconify()
-            present_window(parent)
-
         resumed_lobby = self._build_resumed_lobby(invitation_text)
         if parent_lobby_attr_name is not None:
             setattr(parent, parent_lobby_attr_name, resumed_lobby)
@@ -1961,4 +1957,10 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.running = False
         if self.client:
             self.client.close()
+        parent = self.master
         self.destroy()
+        try:
+            if parent.winfo_exists():
+                present_window(parent)
+        except TclError:
+            return

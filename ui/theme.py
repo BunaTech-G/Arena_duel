@@ -72,10 +72,14 @@ TYPOGRAPHY = {
 
 
 WINDOW_ICON_PNG_SIZES = (256, 64, 32, 16)
+LAUNCHER_BACKGROUND_WORKING_MAX_SIZE = (960, 540)
 
 RESPONSIVE_BASELINE_SIZE = (1440, 900)
 RESPONSIVE_MIN_SCALE = 0.84
 _RESPONSIVE_STATE = {"last_scale": 1.0}
+_CTK_IMAGE_CACHE = {}
+_APP_ICON_IMAGE_CACHE = {}
+_LAUNCHER_BACKGROUND_IMAGE_CACHE = {}
 
 
 BUTTON_VARIANTS = {
@@ -472,6 +476,18 @@ def update_badge(badge, text, tone="neutral"):
 
 
 def present_window(window, *, clear_topmost_after_ms: int = 180):
+    def _restore_zoom_state():
+        if not bool(getattr(window, "_arena_should_zoom", False)):
+            return
+
+        try:
+            window.state("zoomed")
+        except TclError:
+            try:
+                window.attributes("-zoomed", True)
+            except TclError:
+                pass
+
     def _clear_topmost():
         try:
             window.attributes("-topmost", False)
@@ -488,6 +504,8 @@ def present_window(window, *, clear_topmost_after_ms: int = 180):
             window.update_idletasks()
         except TclError:
             pass
+
+        _restore_zoom_state()
 
         try:
             window.lift()
@@ -564,7 +582,16 @@ def enable_large_window(
     )
 
     if not should_zoom:
+        try:
+            window._arena_should_zoom = False
+        except AttributeError:
+            pass
         return
+
+    try:
+        window._arena_should_zoom = True
+    except AttributeError:
+        pass
 
     def _zoom():
         try:
@@ -629,6 +656,19 @@ def load_ctk_image(
     crop_to_visible_bounds: bool = False,
 ) -> ctk.CTkImage:
     image_path = Path(resource_path(*parts))
+    cache_key = (
+        str(image_path),
+        tuple(size),
+        fallback_label,
+        float(brightness),
+        float(blur_radius),
+        bool(remove_edge_dark_regions),
+        bool(crop_to_visible_bounds),
+    )
+    cached_image = _CTK_IMAGE_CACHE.get(cache_key)
+    if cached_image is not None:
+        return cached_image
+
     try:
         image = Image.open(image_path).convert("RGBA")
     except (FileNotFoundError, OSError):
@@ -646,7 +686,9 @@ def load_ctk_image(
     if blur_radius > 0:
         image = image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
-    return ctk.CTkImage(light_image=image, dark_image=image, size=size)
+    ctk_image = ctk.CTkImage(light_image=image, dark_image=image, size=size)
+    _CTK_IMAGE_CACHE[cache_key] = ctk_image
+    return ctk_image
 
 
 def load_app_icon_image(
@@ -658,6 +700,11 @@ def load_app_icon_image(
         target_size = (size, size)
     else:
         target_size = size
+
+    cache_key = (tuple(target_size), fallback_label)
+    cached_image = _APP_ICON_IMAGE_CACHE.get(cache_key)
+    if cached_image is not None:
+        return cached_image
 
     requested_size = max(target_size)
     icon_path = Path(get_app_icon_png_path(requested_size))
@@ -672,11 +719,13 @@ def load_app_icon_image(
             fallback_label=fallback_label,
         )
 
-    return ctk.CTkImage(
+    ctk_image = ctk.CTkImage(
         light_image=image,
         dark_image=image,
         size=target_size,
     )
+    _APP_ICON_IMAGE_CACHE[cache_key] = ctk_image
+    return ctk_image
 
 
 def load_launcher_background_image(
@@ -685,26 +734,61 @@ def load_launcher_background_image(
     fallback_label: str | None = None,
 ) -> ctk.CTkImage:
     image_path = Path(resource_path(*parts))
+    cache_key = (str(image_path), tuple(size), fallback_label)
+    cached_image = _LAUNCHER_BACKGROUND_IMAGE_CACHE.get(cache_key)
+    if cached_image is not None:
+        return cached_image
+
+    working_size = _get_launcher_background_working_size(size)
+
     image = _load_rgba_asset(
         image_path,
-        size=size,
+        size=working_size,
         fallback_label=fallback_label,
     )
-    image = _fit_image_to_cover(image, size)
+    image = _fit_image_to_cover(image, working_size)
     image = _lift_dark_regions(
         image,
         threshold=64,
         strength=0.44,
         target_color=(30, 56, 102),
     )
-    image = image.filter(ImageFilter.GaussianBlur(radius=14))
+    blur_scale = min(
+        working_size[0] / max(size[0], 1),
+        working_size[1] / max(size[1], 1),
+    )
+    image = image.filter(
+        ImageFilter.GaussianBlur(radius=max(1, round(14 * blur_scale)))
+    )
     image = Image.alpha_composite(
         image,
         Image.new("RGBA", image.size, (18, 34, 62, 88)),
     )
     image = ImageEnhance.Brightness(image).enhance(0.92)
     image = ImageEnhance.Color(image).enhance(0.82)
-    return ctk.CTkImage(light_image=image, dark_image=image, size=size)
+
+    if working_size != size:
+        image = image.resize(size, RESAMPLING_LANCZOS)
+
+    ctk_image = ctk.CTkImage(light_image=image, dark_image=image, size=size)
+    _LAUNCHER_BACKGROUND_IMAGE_CACHE[cache_key] = ctk_image
+    return ctk_image
+
+
+def _get_launcher_background_working_size(
+    size: tuple[int, int],
+) -> tuple[int, int]:
+    width, height = size
+    max_width, max_height = LAUNCHER_BACKGROUND_WORKING_MAX_SIZE
+
+    if width <= max_width and height <= max_height:
+        return size
+
+    scale = min(max_width / width, max_height / height)
+    return (
+        max(1, round(width * scale)),
+        max(1, round(height * scale)),
+    )
 
 
 def _load_rgba_asset(

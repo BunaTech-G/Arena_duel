@@ -33,10 +33,11 @@ Name: "desktopicon"; Description: "Créer un raccourci sur le bureau"; GroupDesc
 
 [Files]
 Source: "..\dist_release\ArenaDuel\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\assets\images\arena_duel.ico"; DestDir: "{app}"; DestName: "arena_duel.ico"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Arena Duel"; Filename: "{app}\ArenaDuel.exe"; IconFilename: "{app}\ArenaDuel.exe"
-Name: "{autodesktop}\Arena Duel"; Filename: "{app}\ArenaDuel.exe"; Tasks: desktopicon; IconFilename: "{app}\ArenaDuel.exe"
+Name: "{group}\Arena Duel"; Filename: "{app}\ArenaDuel.exe"; IconFilename: "{app}\arena_duel.ico"
+Name: "{autodesktop}\Arena Duel"; Filename: "{app}\ArenaDuel.exe"; Tasks: desktopicon; IconFilename: "{app}\arena_duel.ico"
 
 [Run]
 Filename: "{app}\ArenaDuel.exe"; Description: "Lancer Arena Duel"; Flags: nowait postinstall skipifsilent

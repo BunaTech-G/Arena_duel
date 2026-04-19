@@ -584,18 +584,10 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.match_duration_var = ctk.StringVar(value=str(MATCH_DURATION_SECONDS))
         screen_width = max(1360, self.winfo_screenwidth())
         screen_height = max(860, self.winfo_screenheight())
-        self.background_image = load_launcher_background_image(
-            "assets",
-            "backgrounds",
-            "launcher_twilight_bastion_bg.png",
-            size=(screen_width, screen_height),
-            fallback_label="forge locale",
-        )
+        self._background_asset_size = (screen_width, screen_height)
+        self.background_image = None
         self.configure(fg_color=PALETTE["launcher_blend"])
-        self.logo_image = load_app_icon_image(
-            size=(104, 104),
-            fallback_label="arena duel",
-        )
+        self.logo_image = None
         self.title("Arena Duel - Forge locale")
         self.geometry("1380x900")
         enable_large_window(self, 1180, 820)
@@ -604,6 +596,7 @@ class PlayerSelectView(ctk.CTkToplevel):
 
         self.lift()
         self.focus_force()
+        self.protocol("WM_DELETE_WINDOW", self._handle_close)
 
         self._build_ui()
         self._set_info(
@@ -612,6 +605,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             tone="info",
         )
         present_window(self)
+        self.after(20, self._hydrate_visual_assets)
         self._trace_perf("ui-shell-ready")
         self._render_registry_loading_state(
             "Ouverture de la forge et lecture du registre..."
@@ -688,8 +682,8 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.close_button.configure(state="disabled" if launch_busy else "normal")
 
     def _build_ui(self):
-        self.grid_columnconfigure(0, weight=5)
-        self.grid_columnconfigure(1, weight=4)
+        self.grid_columnconfigure(0, weight=5, uniform="forge_main")
+        self.grid_columnconfigure(1, weight=4, uniform="forge_main")
         self.grid_rowconfigure(1, weight=0)
         self.grid_rowconfigure(2, weight=1)
         self.grid_rowconfigure(3, weight=0)
@@ -702,6 +696,7 @@ class PlayerSelectView(ctk.CTkToplevel):
         )
         style_image_label(backdrop)
         backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+        self.backdrop_label = backdrop
 
         header = ctk.CTkFrame(self, corner_radius=22)
         style_frame(
@@ -737,6 +732,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             "Forge en veille",
             tone="gold",
         )
+        self.status_badge.configure(width=220, anchor="center")
         self.status_badge.grid(
             row=0,
             column=1,
@@ -786,6 +782,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             pady=16,
             sticky="e",
         )
+        self.logo_label = logo_label
 
         self.info_frame = ctk.CTkFrame(self, corner_radius=18)
         style_frame(
@@ -811,6 +808,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             "Veille de la forge",
             tone="neutral",
         )
+        self.info_badge.configure(width=230, anchor="center")
         self.info_badge.grid(
             row=0,
             column=0,
@@ -823,7 +821,10 @@ class PlayerSelectView(ctk.CTkToplevel):
             self.info_frame,
             text="",
             font=TYPOGRAPHY["body"],
+            fg_color=PALETTE["panel_deep"],
+            bg_color=PALETTE["panel_deep"],
             text_color=PALETTE["text_soft"],
+            anchor="w",
             justify="left",
             wraplength=720,
         )
@@ -889,7 +890,12 @@ class PlayerSelectView(ctk.CTkToplevel):
             pady=(0, 12),
             sticky="ew",
         )
-        formation_strip.grid_columnconfigure((0, 1, 2), weight=1)
+        for column in range(3):
+            formation_strip.grid_columnconfigure(
+                column,
+                weight=1,
+                uniform="forge_formation",
+            )
 
         self.left_format_value = self._build_stat_card(
             formation_strip,
@@ -1030,8 +1036,8 @@ class PlayerSelectView(ctk.CTkToplevel):
             pady=(10, 12),
             sticky="ew",
         )
-        setup_frame.grid_columnconfigure(0, weight=1)
-        setup_frame.grid_columnconfigure(1, weight=1)
+        setup_frame.grid_columnconfigure(0, weight=1, uniform="forge_setup")
+        setup_frame.grid_columnconfigure(1, weight=1, uniform="forge_setup")
 
         title_row = ctk.CTkFrame(setup_frame, fg_color="transparent")
         title_row.grid(
@@ -1219,7 +1225,12 @@ class PlayerSelectView(ctk.CTkToplevel):
             pady=(0, 16),
             sticky="ew",
         )
-        self.selection_frame.grid_columnconfigure((0, 1), weight=1)
+        for column in range(2):
+            self.selection_frame.grid_columnconfigure(
+                column,
+                weight=1,
+                uniform="forge_selection",
+            )
 
         self.active_slots_value = self._build_stat_card(
             self.selection_frame,
@@ -1436,6 +1447,31 @@ class PlayerSelectView(ctk.CTkToplevel):
         self._sync_action_controls()
         self.after(0, backdrop.lower)
 
+    def _hydrate_visual_assets(self):
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        if self.background_image is None:
+            self.background_image = load_launcher_background_image(
+                "assets",
+                "backgrounds",
+                "launcher_twilight_bastion_bg.png",
+                size=self._background_asset_size,
+                fallback_label="forge locale",
+            )
+            self.backdrop_label.configure(image=self.background_image)
+            self.backdrop_label.lower()
+
+        if self.logo_image is None:
+            self.logo_image = load_app_icon_image(
+                size=(104, 104),
+                fallback_label="arena duel",
+            )
+            self.logo_label.configure(image=self.logo_image)
+
     def _schedule_layout_refresh(self, event=None):
         if event is not None and event.widget is not self:
             return
@@ -1472,8 +1508,8 @@ class PlayerSelectView(ctk.CTkToplevel):
             self._apply_wide_layout()
 
     def _apply_wide_layout(self):
-        self.grid_columnconfigure(0, weight=5)
-        self.grid_columnconfigure(1, weight=4)
+        self.grid_columnconfigure(0, weight=5, uniform="forge_main")
+        self.grid_columnconfigure(1, weight=4, uniform="forge_main")
         self.grid_rowconfigure(2, weight=1)
         self.grid_rowconfigure(3, weight=0)
         self.grid_rowconfigure(4, weight=0)
@@ -1644,9 +1680,14 @@ class PlayerSelectView(ctk.CTkToplevel):
             card,
             text=value_text,
             font=TYPOGRAPHY["stat"],
+            fg_color=PALETTE["panel"],
+            bg_color=PALETTE["panel"],
             text_color=PALETTE["text"],
+            anchor="w",
+            justify="left",
+            width=176,
         )
-        value.grid(row=1, column=0, padx=14, pady=(0, 12), sticky="w")
+        value.grid(row=1, column=0, padx=14, pady=(0, 12), sticky="ew")
         return value
 
     def _render_registered_players(self, rows):
@@ -1816,6 +1857,10 @@ class PlayerSelectView(ctk.CTkToplevel):
         self.info_frame.configure(
             border_color=border_color_map.get(tone, PALETTE["divider"])
         )
+        try:
+            self.update_idletasks()
+        except TclError:
+            return
 
     def _refresh_guide_window(self):
         guide_window = self._get_live_window(self.guide_window)
@@ -2324,20 +2369,29 @@ class PlayerSelectView(ctk.CTkToplevel):
         self._sync_action_controls()
         self.update_idletasks()
 
-        self.parent.withdraw()
-        self.destroy()
+        self.withdraw()
+        self.update_idletasks()
 
         stop_music(fade_ms=180)
         launch_players = self._build_launch_players(players_data)
-        result = run_local_game(
-            launch_players,
-            match_duration_seconds=selected_duration,
-        )
-
-        self.parent.deiconify()
-        init_audio()
-        start_menu_music(restart=True)
-        present_window(self.parent)
+        result = None
+        try:
+            result = run_local_game(
+                launch_players,
+                match_duration_seconds=selected_duration,
+            )
+        finally:
+            self._launch_in_progress = False
+            init_audio()
+            start_menu_music(restart=True)
+            try:
+                if self.winfo_exists():
+                    self.deiconify()
+                    present_window(self)
+            except TclError:
+                pass
+            self._sync_action_controls()
+            self._refresh_forge_state()
 
         if result:
             ok, save_message = save_team_match(
@@ -2360,7 +2414,7 @@ class PlayerSelectView(ctk.CTkToplevel):
             dialog_handler(
                 dialog_title,
                 f"{result['winner_text']}\n\n{save_message}",
-                parent=self.parent,
+                parent=self,
             )
 
     def _open_history(self):
@@ -2383,4 +2437,10 @@ class PlayerSelectView(ctk.CTkToplevel):
 
     def _handle_close(self):
         play_click()
+        parent = self.parent
         self.destroy()
+        try:
+            if parent.winfo_exists():
+                present_window(parent)
+        except TclError:
+            return
