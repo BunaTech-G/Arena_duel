@@ -1621,7 +1621,7 @@ class LauncherApp(ctk.CTk):
             sticky="nsew",
         )
         action_panel.grid_columnconfigure(0, weight=1)
-        action_panel.grid_rowconfigure(2, weight=1)
+        action_panel.grid_rowconfigure(3, weight=1)
 
         create_badge(action_panel, "Actions", tone="info").grid(
             row=0,
@@ -1644,9 +1644,28 @@ class LauncherApp(ctk.CTk):
             sticky="w",
         )
 
+        ctk.CTkLabel(
+            action_panel,
+            text=(
+                "Local lance immédiatement la joute. "
+                "LAN et online ouvrent d'abord un salon, "
+                "puis l'hôte lance le jeu."
+            ),
+            font=TYPOGRAPHY["small"],
+            text_color=PALETTE["text_soft"],
+            justify="left",
+            wraplength=400,
+        ).grid(
+            row=2,
+            column=0,
+            padx=24,
+            pady=(0, 16),
+            sticky="w",
+        )
+
         action_stack = ctk.CTkFrame(action_panel, fg_color="transparent")
         action_stack.grid(
-            row=2,
+            row=3,
             column=0,
             padx=24,
             pady=(0, 20),
@@ -1700,7 +1719,7 @@ class LauncherApp(ctk.CTk):
 
         online_button = create_button(
             action_stack,
-            "Online",
+            "Jouer en ligne",
             self.open_online_lobby,
             variant="secondary",
             width=430,
@@ -2188,7 +2207,7 @@ class LauncherApp(ctk.CTk):
 
     def open_online_lobby(self):
         play_transition()
-        self._set_info("Ouverture du hall online.", tone="info")
+        self._set_info("Ouverture de l'espace jouer en ligne.", tone="info")
         win = self._focus_or_open_window(
             "online_lobby_window",
             lambda: OnlineLobbyWindow(self),

@@ -1,0 +1,274 @@
+import asyncio
+import importlib
+import unittest
+from unittest import mock
+
+
+online_server = importlib.import_module("network.online_server")
+
+
+class _DummyWriter:
+    def __init__(self):
+        self.messages = []
+
+
+class _FinishedGameState:
+    def __init__(self):
+        self.snapshots = []
+
+    def update(self, dt, snapshot):
+        self.snapshots.append((dt, snapshot))
+
+    def export_state(self):
+        return {"type": "GAME_STATE"}
+
+    def is_finished(self):
+        return True
+
+    def build_end_message(self):
+        return {"type": "END", "winner": "A"}
+
+
+class OnlineServerReadyTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        online_server.clients.clear()
+        online_server.rooms.clear()
+        online_server.registry_lock = asyncio.Lock()
+        self.send_patcher = mock.patch.object(
+            online_server,
+            "send",
+            new=self._capture_send,
+        )
+        self.send_patcher.start()
+
+    async def asyncTearDown(self):
+        self.send_patcher.stop()
+
+        pending_tasks = []
+        for room in online_server.rooms.values():
+            task = room.game_task
+            if task is not None and not task.done():
+                task.cancel()
+                pending_tasks.append(task)
+
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+        online_server.clients.clear()
+        online_server.rooms.clear()
+
+    async def _capture_send(self, writer, obj):
+        writer.messages.append(dict(obj))
+
+    async def _register_client(
+        self,
+        client_id: str,
+        pseudo: str,
+    ) -> _DummyWriter:
+        writer = _DummyWriter()
+        async with online_server.registry_lock:
+            online_server.clients[client_id] = online_server.ClientSession(
+                client_id=client_id,
+                writer=writer,
+                pseudo=pseudo,
+            )
+        return writer
+
+    async def _create_room_with_two_players(self):
+        host_writer = await self._register_client("host", "HostPlayer")
+        guest_writer = await self._register_client("guest", "GuestPlayer")
+
+        await online_server.create_room("host", "Ready Room", 2)
+        room_id = next(iter(online_server.rooms))
+        await online_server.join_room("guest", room_id)
+        return room_id, host_writer, guest_writer
+
+    def _clear_messages(self, *writers: _DummyWriter) -> None:
+        for writer in writers:
+            writer.messages.clear()
+
+    def _last_message_of_type(
+        self,
+        writer: _DummyWriter,
+        message_type: str,
+    ) -> dict:
+        for message in reversed(writer.messages):
+            if message.get("type") == message_type:
+                return message
+        self.fail(f"Message {message_type} introuvable dans {writer.messages!r}")
+
+    async def test_set_ready_state_broadcasts_ready_players(self):
+        room_id, host_writer, guest_writer = await self._create_room_with_two_players()
+
+        self._clear_messages(host_writer, guest_writer)
+        await online_server.set_ready_state("host", True)
+
+        host_update = self._last_message_of_type(host_writer, "ROOM_UPDATE")
+        guest_update = self._last_message_of_type(guest_writer, "ROOM_UPDATE")
+
+        self.assertEqual(host_update["room"]["room_id"], room_id)
+        self.assertEqual(host_update["room"]["ready_players"], ["HostPlayer"])
+        self.assertEqual(guest_update["room"]["ready_players"], ["HostPlayer"])
+        self.assertTrue(online_server.clients["host"].ready_to_start)
+        self.assertFalse(online_server.clients["guest"].ready_to_start)
+
+    async def test_start_match_requires_all_players_ready(self):
+        room_id, host_writer, guest_writer = await self._create_room_with_two_players()
+
+        await online_server.set_ready_state("host", True)
+        self._clear_messages(host_writer, guest_writer)
+
+        await online_server.start_match("host")
+
+        self.assertEqual(
+            host_writer.messages,
+            [{"type": "ERROR", "code": "PLAYERS_NOT_READY"}],
+        )
+        self.assertEqual(guest_writer.messages, [])
+        self.assertEqual(online_server.rooms[room_id].state, "lobby")
+
+        await online_server.set_ready_state("guest", True)
+        self._clear_messages(host_writer, guest_writer)
+
+        async def _run_room_match_stub(_room_id: str) -> None:
+            return None
+
+        with mock.patch.object(
+            online_server,
+            "run_room_match",
+            new=_run_room_match_stub,
+        ):
+            await online_server.start_match("host")
+            await asyncio.sleep(0)
+
+        host_message_types = [message.get("type") for message in host_writer.messages]
+        guest_message_types = [message.get("type") for message in guest_writer.messages]
+
+        self.assertEqual(
+            host_message_types,
+            ["MATCH_STARTED", "START", "ROOM_UPDATE"],
+        )
+        self.assertEqual(
+            guest_message_types,
+            ["MATCH_STARTED", "START", "ROOM_UPDATE"],
+        )
+        self.assertEqual(online_server.rooms[room_id].state, "in_game")
+
+        host_room_update = self._last_message_of_type(
+            host_writer,
+            "ROOM_UPDATE",
+        )
+        self.assertEqual(host_room_update["room"]["state"], "in_game")
+        self.assertEqual(
+            host_room_update["room"]["ready_players"],
+            ["HostPlayer", "GuestPlayer"],
+        )
+
+    async def test_run_room_match_resets_ready_players_after_end(self):
+        room_id, host_writer, guest_writer = await self._create_room_with_two_players()
+
+        await online_server.set_ready_state("host", True)
+        await online_server.set_ready_state("guest", True)
+        self._clear_messages(host_writer, guest_writer)
+
+        game_state = _FinishedGameState()
+
+        async with online_server.registry_lock:
+            room = online_server.rooms[room_id]
+            room.state = "in_game"
+            room.game_state = game_state
+
+        await online_server.run_room_match(room_id)
+
+        async with online_server.registry_lock:
+            room = online_server.rooms[room_id]
+            self.assertEqual(room.state, "lobby")
+            self.assertIsNone(room.game_state)
+            self.assertIsNone(room.game_task)
+            self.assertFalse(online_server.clients["host"].ready_to_start)
+            self.assertFalse(online_server.clients["guest"].ready_to_start)
+
+        host_message_types = [message.get("type") for message in host_writer.messages]
+        guest_message_types = [message.get("type") for message in guest_writer.messages]
+
+        self.assertEqual(
+            host_message_types,
+            ["GAME_STATE", "END", "ROOM_UPDATE", "ASSIGN_SLOT"],
+        )
+        self.assertEqual(
+            guest_message_types,
+            ["GAME_STATE", "END", "ROOM_UPDATE", "ASSIGN_SLOT"],
+        )
+
+        host_room_update = self._last_message_of_type(
+            host_writer,
+            "ROOM_UPDATE",
+        )
+        guest_room_update = self._last_message_of_type(
+            guest_writer,
+            "ROOM_UPDATE",
+        )
+
+        self.assertEqual(host_room_update["room"]["state"], "lobby")
+        self.assertEqual(host_room_update["room"]["ready_players"], [])
+        self.assertEqual(guest_room_update["room"]["ready_players"], [])
+        self.assertEqual(len(game_state.snapshots), 1)
+
+    async def test_leave_room_removes_ready_player_and_transfers_host(self):
+        room_id, host_writer, guest_writer = await self._create_room_with_two_players()
+
+        await online_server.set_ready_state("host", True)
+        await online_server.set_ready_state("guest", True)
+        self._clear_messages(host_writer, guest_writer)
+
+        await online_server.leave_room("host")
+
+        async with online_server.registry_lock:
+            room = online_server.rooms[room_id]
+            host_client = online_server.clients["host"]
+            guest_client = online_server.clients["guest"]
+            self.assertEqual(room.host_client_id, "guest")
+            self.assertEqual(room.client_ids, ["guest"])
+            self.assertIsNone(host_client.room_id)
+            self.assertFalse(host_client.ready_to_start)
+            self.assertIsNone(host_client.slot)
+            self.assertIsNone(host_client.team)
+            self.assertEqual(guest_client.room_id, room_id)
+            self.assertTrue(guest_client.ready_to_start)
+
+        self.assertEqual(host_writer.messages, [])
+
+        guest_message_types = [message.get("type") for message in guest_writer.messages]
+        self.assertEqual(
+            guest_message_types,
+            ["HOST_CHANGED", "ROOM_UPDATE", "ASSIGN_SLOT"],
+        )
+
+        guest_host_changed = self._last_message_of_type(
+            guest_writer,
+            "HOST_CHANGED",
+        )
+        guest_room_update = self._last_message_of_type(
+            guest_writer,
+            "ROOM_UPDATE",
+        )
+        guest_assign_slot = self._last_message_of_type(
+            guest_writer,
+            "ASSIGN_SLOT",
+        )
+
+        self.assertEqual(guest_host_changed["room_id"], room_id)
+        self.assertEqual(guest_host_changed["host_client_id"], "guest")
+        self.assertEqual(guest_host_changed["host_pseudo"], "GuestPlayer")
+        self.assertEqual(guest_room_update["room"]["players"], ["GuestPlayer"])
+        self.assertEqual(
+            guest_room_update["room"]["ready_players"],
+            ["GuestPlayer"],
+        )
+        self.assertEqual(guest_room_update["room"]["host_client_id"], "guest")
+        self.assertEqual(guest_assign_slot["client_id"], "guest")
+        self.assertEqual(guest_assign_slot["slot"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
