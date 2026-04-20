@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import queue
+import threading
 from datetime import datetime
 from time import monotonic
 from tkinter import TclError, messagebox
@@ -12,6 +14,9 @@ from ui.online_client import (
     DEFAULT_ONLINE_PORT,
     OnlineClient,
     OnlineConnectionError,
+    OnlineNetworkStatus,
+    get_online_network_status,
+    probe_online_service,
 )
 from ui.theme import (
     PALETTE,
@@ -34,6 +39,8 @@ from ui.theme import (
 POLL_INTERVAL_MS = 80
 MANUAL_REFRESH_FEEDBACK_SECONDS = 0.45
 ROOM_CREATED_JOIN_FALLBACK_MS = 700
+NETWORK_STATUS_REFRESH_MS = 2400
+NETWORK_STATUS_POLL_MS = 40
 
 MODE_JOIN = "join"
 MODE_CREATE = "create"
@@ -50,10 +57,236 @@ ONLINE_MATCH_LAUNCH_ERRORS = (
 START_MATCH_BUTTON_LABEL = "Lancer le jeu"
 READY_UP_BUTTON_LABEL = "Se mettre prêt"
 READY_CANCEL_BUTTON_LABEL = "Annuler prêt"
+ONLINE_ENTRY_REQUIRED_TITLE = "Connexion requise"
+ONLINE_ENTRY_REQUIRED_MESSAGE = "Active Internet avant d'ouvrir l'Online."
+
+
+class OnlineWifiIndicator(ctk.CTkFrame):
+    def __init__(
+        self,
+        master=None,
+        *,
+        available: bool,
+        host_getter=None,
+        port_getter=None,
+    ):
+        super().__init__(master, fg_color="transparent")
+        self.available = bool(available)
+        self._bars: list[ctk.CTkFrame] = []
+        self._host_getter = host_getter or (lambda: DEFAULT_ONLINE_HOST)
+        self._port_getter = port_getter or (lambda: DEFAULT_ONLINE_PORT)
+        self._status_result_queue: "queue.Queue[tuple[int, OnlineNetworkStatus]]" = (
+            queue.Queue()
+        )
+        self._status_request_token = 0
+        self._status_probe_in_progress = False
+        self._status_refresh_after_id = None
+        self._status_poll_after_id = None
+        self.last_status: OnlineNetworkStatus | None = None
+        self.grid_columnconfigure(1, weight=0)
+
+        bars_shell = ctk.CTkFrame(self, fg_color="transparent")
+        bars_shell.grid(row=0, column=0, sticky="e")
+        bars_shell.grid_rowconfigure(0, weight=1)
+
+        for column, height in enumerate((6, 10, 14, 18)):
+            bar = ctk.CTkFrame(
+                bars_shell,
+                width=5,
+                height=height,
+                corner_radius=2,
+            )
+            bar.grid(
+                row=0,
+                column=column,
+                padx=(0, 3) if column < 3 else 0,
+                sticky="s",
+            )
+            bar.grid_propagate(False)
+            self._bars.append(bar)
+
+        self.label = ctk.CTkLabel(
+            self,
+            text="Wi-Fi",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_soft"],
+        )
+        self.label.grid(row=0, column=1, padx=(8, 0), sticky="e")
+
+        self.set_available(self.available)
+        self.bind("<Destroy>", self._handle_destroy, add="+")
+        self.after(90, self.refresh_network_status)
+
+    def _handle_destroy(self, _event=None) -> None:
+        self.shutdown()
+
+    def _initial_status(self, available: bool) -> OnlineNetworkStatus:
+        if available:
+            return OnlineNetworkStatus(
+                transport_kind="network",
+                transport_label="Réseau",
+                tone="success",
+                signal_bars=4,
+                online_available=True,
+                is_connected=True,
+                quality_label="Stable",
+            )
+
+        return OnlineNetworkStatus(
+            transport_kind="offline",
+            transport_label="Hors ligne",
+            tone="neutral",
+            signal_bars=0,
+            online_available=False,
+            is_connected=False,
+            quality_label="Aucun",
+        )
+
+    def _probe_target(self) -> tuple[str, int]:
+        host = DEFAULT_ONLINE_HOST
+        port = DEFAULT_ONLINE_PORT
+
+        try:
+            host = str(self._host_getter() or DEFAULT_ONLINE_HOST).strip()
+        except (AttributeError, TclError, TypeError, ValueError):
+            host = DEFAULT_ONLINE_HOST
+
+        try:
+            port = int(self._port_getter())
+        except (AttributeError, TclError, TypeError, ValueError):
+            port = DEFAULT_ONLINE_PORT
+
+        return host or DEFAULT_ONLINE_HOST, port
+
+    def _schedule_next_refresh(self) -> None:
+        if self._status_refresh_after_id is not None:
+            try:
+                self.after_cancel(self._status_refresh_after_id)
+            except TclError:
+                pass
+            self._status_refresh_after_id = None
+
+        try:
+            self._status_refresh_after_id = self.after(
+                NETWORK_STATUS_REFRESH_MS,
+                self.refresh_network_status,
+            )
+        except TclError:
+            self._status_refresh_after_id = None
+
+    def _status_worker(
+        self,
+        request_token: int,
+        host: str,
+        port: int,
+    ) -> None:
+        status = get_online_network_status(host=host, port=port)
+        self._status_result_queue.put((request_token, status))
+
+    def refresh_network_status(self) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        if self._status_probe_in_progress:
+            return
+
+        self._status_request_token += 1
+        request_token = self._status_request_token
+        self._status_probe_in_progress = True
+        host, port = self._probe_target()
+
+        worker = threading.Thread(
+            target=self._status_worker,
+            args=(request_token, host, port),
+            daemon=True,
+        )
+        worker.start()
+        self._status_poll_after_id = self.after(
+            NETWORK_STATUS_POLL_MS,
+            self._drain_network_status_results,
+        )
+
+    def _drain_network_status_results(self) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        received_current_result = False
+        while True:
+            try:
+                request_token, status = self._status_result_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if request_token != self._status_request_token:
+                continue
+
+            received_current_result = True
+            self._status_probe_in_progress = False
+            self.apply_network_status(status)
+
+        if self._status_probe_in_progress and not received_current_result:
+            self._status_poll_after_id = self.after(
+                NETWORK_STATUS_POLL_MS,
+                self._drain_network_status_results,
+            )
+            return
+
+        self._status_poll_after_id = None
+        self._schedule_next_refresh()
+
+    def apply_network_status(self, status: OnlineNetworkStatus) -> None:
+        tone_colors = {
+            "success": PALETTE["success"],
+            "warning": PALETTE["warning"],
+            "danger": PALETTE["danger"],
+            "neutral": PALETTE["neutral"],
+        }
+        active_color = tone_colors.get(status.tone, PALETTE["neutral"])
+        inactive_color = PALETTE["neutral_dim"]
+        active_bars = max(0, min(4, int(status.signal_bars)))
+
+        self.available = bool(status.online_available)
+        self.last_status = status
+
+        for index, bar in enumerate(self._bars, start=1):
+            bar.configure(
+                fg_color=(active_color if index <= active_bars else inactive_color)
+            )
+
+        self.label.configure(
+            text=status.transport_label,
+            text_color=active_color,
+        )
+
+    def set_available(self, available: bool) -> None:
+        self.apply_network_status(self._initial_status(available))
+
+    def shutdown(self) -> None:
+        for after_id_name in (
+            "_status_refresh_after_id",
+            "_status_poll_after_id",
+        ):
+            after_id = getattr(self, after_id_name)
+            if after_id is None:
+                continue
+
+            try:
+                self.after_cancel(after_id)
+            except TclError:
+                pass
+            setattr(self, after_id_name, None)
+
+        self._status_probe_in_progress = False
 
 
 class OnlineLobbyWindow(ctk.CTkToplevel):
-    def __init__(self, master=None):
+    def __init__(self, master=None, *, network_available: bool = True):
         super().__init__(master)
         style_window(self)
         self.configure(fg_color=PALETTE["launcher_blend"])
@@ -61,11 +294,13 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
         self.title("Arena Duel - Jouer en ligne")
         apply_window_icon(self, default=True, retry_after_ms=220)
         self.geometry("920x620")
-        enable_large_window(self, 820, 560, start_zoomed=False)
+        enable_large_window(self, 820, 560, start_zoomed=True)
         self.protocol("WM_DELETE_WINDOW", self.shutdown)
 
         self.join_window = None
         self.create_window = None
+        self.network_available = bool(network_available)
+        self.network_indicator = None
 
         self._build_ui()
         present_window(self)
@@ -83,6 +318,7 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
         )
         header.grid(row=0, column=0, padx=24, pady=(24, 16), sticky="ew")
         header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=0)
 
         create_badge(header, "Online", tone="info").grid(
             row=0,
@@ -111,6 +347,19 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
             justify="left",
             wraplength=720,
         ).grid(row=2, column=0, padx=20, pady=(8, 18), sticky="w")
+
+        self.network_indicator = OnlineWifiIndicator(
+            header,
+            available=self.network_available,
+        )
+        self.network_indicator.grid(
+            row=0,
+            column=1,
+            rowspan=3,
+            padx=(12, 20),
+            pady=20,
+            sticky="ne",
+        )
 
         content = ctk.CTkFrame(
             self,
@@ -246,16 +495,20 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
         ).grid(row=4, column=0, padx=20, pady=(0, 20), sticky="ew")
 
     def _focus_or_open_window(self, attr_name: str, factory) -> None:
+        self._close_other_child_windows(attr_name)
+
         current_window = getattr(self, attr_name)
         if current_window is not None:
             try:
                 if current_window.winfo_exists():
+                    self._hide_for_child_window()
                     present_window(current_window)
                     return
             except TclError:
                 pass
 
         window = factory()
+        self._hide_for_child_window()
         setattr(self, attr_name, window)
         window.bind(
             "<Destroy>",
@@ -265,6 +518,32 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
             add="+",
         )
 
+    def _hide_for_child_window(self) -> None:
+        try:
+            if self.winfo_exists() and self.winfo_viewable():
+                self.withdraw()
+                self.update_idletasks()
+        except TclError:
+            pass
+
+    def _close_other_child_windows(self, keep_attr_name: str) -> None:
+        for attr_name in ("join_window", "create_window"):
+            if attr_name == keep_attr_name:
+                continue
+
+            child_window = getattr(self, attr_name)
+            if child_window is None:
+                continue
+
+            try:
+                if child_window.winfo_exists():
+                    child_window.shutdown(restore_parent=False)
+            except TclError:
+                pass
+            finally:
+                if getattr(self, attr_name) is child_window:
+                    setattr(self, attr_name, None)
+
     def _clear_child_reference(self, attr_name: str, window) -> None:
         current_window = getattr(self, attr_name)
         if current_window is window:
@@ -273,16 +552,29 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
     def open_join_window(self) -> None:
         self._focus_or_open_window(
             "join_window",
-            lambda: OnlineSessionWindow(self, mode=MODE_JOIN),
+            lambda: OnlineSessionWindow(
+                self,
+                mode=MODE_JOIN,
+                network_available=self.network_available,
+            ),
         )
 
     def open_create_window(self) -> None:
         self._focus_or_open_window(
             "create_window",
-            lambda: OnlineSessionWindow(self, mode=MODE_CREATE),
+            lambda: OnlineSessionWindow(
+                self,
+                mode=MODE_CREATE,
+                network_available=self.network_available,
+            ),
         )
 
     def shutdown(self) -> None:
+        parent = self.master
+
+        if self.network_indicator is not None:
+            self.network_indicator.shutdown()
+
         for attr_name in ("join_window", "create_window"):
             child_window = getattr(self, attr_name)
             if child_window is None:
@@ -296,10 +588,218 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
             setattr(self, attr_name, None)
 
         self.destroy()
+        try:
+            if parent is not None and parent.winfo_exists():
+                present_window(parent)
+        except TclError:
+            pass
+
+
+class RoomIdPromptWindow(ctk.CTkToplevel):
+    def __init__(self, master: OnlineSessionWindow):
+        super().__init__(master)
+        style_window(self)
+        self.configure(fg_color=PALETTE["launcher_blend"])
+
+        self.title("Arena Duel - Entrer un ID")
+        apply_window_icon(self, default=True, retry_after_ms=220)
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+        self.entry = None
+        self.feedback_label = None
+        self.submit_button = None
+
+        self._build_ui()
+        self._fit_window_to_content()
+        present_window(self)
+        self.after(40, self.focus_input)
+
+    def _fit_window_to_content(self) -> None:
+        try:
+            self.update_idletasks()
+        except TclError:
+            return
+
+        width = max(500, self.winfo_reqwidth())
+        height = max(340, self.winfo_reqheight())
+        self.geometry(f"{width}x{height}")
+        self.minsize(width, height)
+
+    def _build_ui(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+
+        card = ctk.CTkFrame(self, corner_radius=24)
+        style_frame(
+            card,
+            tone="panel_soft",
+            border_color=PALETTE["border"],
+            border_width=0,
+        )
+        card.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        card.grid_columnconfigure(0, weight=1)
+
+        create_badge(card, "ID", tone="info").grid(
+            row=0,
+            column=0,
+            padx=18,
+            pady=(18, 10),
+            sticky="w",
+        )
+
+        ctk.CTkLabel(
+            card,
+            text="Rejoindre avec un ID de session",
+            font=TYPOGRAPHY["subtitle"],
+            text_color=PALETTE["text"],
+            justify="left",
+        ).grid(row=1, column=0, padx=18, sticky="w")
+
+        ctk.CTkLabel(
+            card,
+            text=(
+                "Colle l'ID partagé par l'hôte, puis confirme pour "
+                "envoyer la demande au serveur online."
+            ),
+            font=TYPOGRAPHY["small"],
+            text_color=PALETTE["text_soft"],
+            justify="left",
+            wraplength=380,
+        ).grid(row=2, column=0, padx=18, pady=(8, 10), sticky="w")
+
+        ctk.CTkLabel(
+            card,
+            text="ID de session",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_muted"],
+        ).grid(row=3, column=0, padx=18, pady=(0, 4), sticky="w")
+
+        self.entry = ctk.CTkEntry(
+            card,
+            textvariable=self.master.room_id_var,
+            placeholder_text="Ex. room-7A9F",
+        )
+        style_entry(self.entry)
+        self.entry.grid(
+            row=4,
+            column=0,
+            padx=18,
+            pady=(0, 12),
+            sticky="ew",
+        )
+        self.entry.bind("<Return>", lambda _event: self.submit())
+
+        self.feedback_label = ctk.CTkLabel(
+            card,
+            text="",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["warning"],
+            justify="left",
+            wraplength=380,
+        )
+        self.feedback_label.grid(
+            row=5,
+            column=0,
+            padx=18,
+            pady=(0, 10),
+            sticky="w",
+        )
+        self.feedback_label.grid_remove()
+
+        actions_row = ctk.CTkFrame(card, fg_color="transparent")
+        actions_row.grid(
+            row=6,
+            column=0,
+            padx=18,
+            pady=(0, 18),
+            sticky="ew",
+        )
+        actions_row.grid_columnconfigure(0, weight=1)
+        actions_row.grid_columnconfigure(1, weight=0)
+
+        create_button(
+            actions_row,
+            "Annuler",
+            self.close,
+            variant="ghost",
+            width=120,
+            height=40,
+            font=TYPOGRAPHY["button_small"],
+        ).grid(row=0, column=0, padx=(0, 8), sticky="w")
+
+        self.submit_button = create_button(
+            actions_row,
+            "Rejoindre",
+            self.submit,
+            variant="accent",
+            width=140,
+            height=40,
+            font=TYPOGRAPHY["button_small"],
+        )
+        self.submit_button.grid(row=0, column=1, sticky="e")
+
+    def focus_input(self) -> None:
+        if self.entry is None:
+            return
+        try:
+            self.entry.focus_force()
+        except TclError:
+            pass
+
+    def set_interaction_state(self, state: str) -> None:
+        if self.entry is not None:
+            self.entry.configure(state=state)
+        if self.submit_button is not None:
+            self.submit_button.configure(state=state)
+
+    def show_feedback(self, text: str, *, tone: str = "warning") -> None:
+        if self.feedback_label is None:
+            return
+
+        color_map = {
+            "info": PALETTE["cyan"],
+            "success": PALETTE["success"],
+            "warning": PALETTE["warning"],
+            "danger": PALETTE["danger"],
+        }
+        self.feedback_label.configure(
+            text=text,
+            text_color=color_map.get(tone, PALETTE["text_soft"]),
+        )
+        if text:
+            self.feedback_label.grid()
+        else:
+            self.feedback_label.grid_remove()
+
+    def submit(self) -> None:
+        master = self.master
+        try:
+            if master is None or not master.winfo_exists():
+                return
+        except TclError:
+            return
+
+        self.show_feedback("")
+
+        if master.on_join_room_id():
+            self.close()
+
+    def close(self) -> None:
+        try:
+            if self.winfo_exists():
+                self.destroy()
+        except TclError:
+            pass
 
 
 class OnlineSessionWindow(ctk.CTkToplevel):
-    def __init__(self, master=None, *, mode: str):
+    def __init__(
+        self,
+        master=None,
+        *,
+        mode: str,
+        network_available: bool = True,
+    ):
         if mode not in {MODE_JOIN, MODE_CREATE}:
             raise ValueError(f"Mode online inconnu : {mode}")
 
@@ -308,15 +808,17 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self.configure(fg_color=PALETTE["launcher_blend"])
 
         self.mode = mode
+        self.network_available = bool(network_available)
         self.title(self._window_title())
         apply_window_icon(self, default=True, retry_after_ms=220)
         self.geometry("1160x760")
-        enable_large_window(self, 960, 640, start_zoomed=False)
+        enable_large_window(self, 960, 640, start_zoomed=True)
         self.protocol("WM_DELETE_WINDOW", self.shutdown)
 
         self.client = OnlineClient()
         self.connected = False
         self.connecting = False
+        self._shutdown_requested = False
         self._poll_after_id = None
         self._manual_refresh_feedback = False
         self._manual_refresh_started_at = 0.0
@@ -324,18 +826,22 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._pending_rooms = None
         self._room_created_join_after_id = None
         self._pending_created_room_id: str | None = None
+        self._pending_join_room_id: str | None = None
         self._match_launch_after_id = None
+        self._room_id_prompt_window = None
 
         self.host_var = ctk.StringVar(value=DEFAULT_ONLINE_HOST)
         self.port_var = ctk.StringVar(value=str(DEFAULT_ONLINE_PORT))
         self.pseudo_var = ctk.StringVar(value="")
         self.room_name_var = ctk.StringVar(value="Session Arena")
         self.max_players_var = ctk.StringVar(value=str(MIN_ONLINE_ROOM_PLAYERS))
+        self.room_id_var = ctk.StringVar(value="")
 
         self.status_badge = None
         self.status_label = None
         self.rooms_meta_label = None
         self.rooms_scroll = None
+        self.room_id_entry = None
         self.active_room_title_label = None
         self.active_room_meta_label = None
         self.active_room_state_label = None
@@ -348,11 +854,13 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self.btn_connect = None
         self.btn_disconnect = None
         self.btn_refresh = None
+        self.btn_join_room_id = None
         self.btn_create = None
         self.btn_copy_room_id = None
         self.btn_ready = None
         self.btn_start_match = None
         self.match_running = False
+        self.network_indicator = None
         self.last_refresh_text = "jamais"
         self.current_room_id: str | None = None
         self.current_room_name: str | None = None
@@ -368,6 +876,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self.local_team: str | None = None
         self.local_sprite_id: str | None = None
         self._known_rooms_by_id: dict[str, dict] = {}
+        self.server_capabilities: dict[str, bool] = {}
         self._match_start_prompt_signature: tuple[str, tuple[str, ...], int] | None = (
             None
         )
@@ -375,14 +884,16 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             tuple[str, tuple[str, ...], int] | None
         ) = None
         self._last_match_status_text: str | None = None
+        self._pending_host_change_pseudo: str | None = None
+        self._pending_match_room_notice: str | None = None
 
         self._build_ui()
         self._apply_disconnected_state(
             self._default_disconnected_message(),
             tone="neutral",
         )
+        self._show_connection_required()
         present_window(self)
-        self._schedule_poll()
 
     def _window_title(self) -> str:
         if self.mode == MODE_JOIN:
@@ -417,19 +928,20 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
     def _profile_hint_text(self) -> str:
         if self.mode == MODE_JOIN:
-            return (
-                "Aucun réglage technique à faire ici. Entre seulement ton "
-                "pseudo pour charger les sessions ouvertes."
-            )
-        return (
-            "Le serveur online est déjà configuré dans le client. "
-            "Tu choisis uniquement ton pseudo et les infos de la session."
-        )
+            return "Entre ton pseudo pour jouer en ligne."
+        return "Entre ton pseudo pour ouvrir une session en ligne."
 
     def _connect_button_text(self) -> str:
-        if self.mode == MODE_JOIN:
-            return "Voir les sessions"
-        return "Préparer la création"
+        if self.connecting:
+            return "Connexion..."
+        if self.connected:
+            return "Connecté"
+        return "Se connecter"
+
+    def _secondary_profile_button_text(self) -> str:
+        if self.connected or self.connecting:
+            return "Se déconnecter"
+        return "Retour"
 
     def _left_panel_badge_text(self) -> str:
         if self.mode == MODE_JOIN:
@@ -445,7 +957,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         if self.mode == MODE_JOIN:
             return (
                 "Les sessions publiques apparaissent ici après la connexion. "
-                "Choisis-en une pour entrer dans son salon d'attente."
+                "Choisis-en une pour entrer dans son salon d'attente, "
+                "ou utilise le bouton ID si l'hôte t'en a envoyé un."
             )
         return (
             "Choisis un nom et un nombre de joueurs. Après création, "
@@ -470,15 +983,20 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         return "Les joueurs qui entrent dans ta session apparaîtront ici."
 
     def _idle_placeholder_title(self) -> str:
+        if not self.connected and not self.connecting:
+            return "Connexion requise"
         if self.mode == MODE_JOIN:
             return "En attente d'une session"
         return "En attente de création"
 
     def _idle_placeholder_body(self) -> str:
+        if not self.connected and not self.connecting:
+            return "Choisis Se connecter ou Retour."
         if self.mode == MODE_JOIN:
             return (
                 "Entre ton pseudo puis charge la liste des sessions pour en "
-                "rejoindre une."
+                "rejoindre une, ou ouvre la saisie d'ID si l'hôte "
+                "t'en a donné un."
             )
         return (
             "Entre ton pseudo, crée une session et garde cette fenêtre "
@@ -486,9 +1004,63 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         )
 
     def _default_disconnected_message(self) -> str:
-        if self.mode == MODE_JOIN:
-            return "Entre ton pseudo puis charge les sessions ouvertes."
-        return "Entre ton pseudo pour préparer ta session."
+        return "Vous devez être connecté pour jouer en ligne."
+
+    def _player_connection_issue(
+        self,
+        raw_message: str,
+    ) -> tuple[str, str, str]:
+        normalized = str(raw_message or "").strip().lower()
+
+        if "pseudo" in normalized:
+            return (
+                "Pseudo requis",
+                "Entre ton pseudo avant de te connecter.",
+                "Entre ton pseudo avant de jouer en ligne.",
+            )
+
+        if any(
+            token in normalized
+            for token in (
+                "injoignable",
+                "indisponible",
+                "introuvable",
+                "refuse",
+                "impossible",
+                "invalide",
+                "joignable",
+                "repond plus",
+            )
+        ):
+            return (
+                "Serveur indisponible",
+                "Réessaie plus tard ou reviens au menu.",
+                "Serveur indisponible.",
+            )
+
+        if any(
+            token in normalized
+            for token in (
+                "perdue",
+                "interrompue",
+                "fermée",
+                "fermee",
+                "coupée",
+                "coupee",
+                "rompu",
+            )
+        ):
+            return (
+                "Connexion perdue",
+                "Reconnecte-toi pour jouer en ligne.",
+                "Connexion perdue.",
+            )
+
+        return (
+            "Connexion requise",
+            "Choisis Se connecter ou Retour.",
+            self._default_disconnected_message(),
+        )
 
     def _connected_ready_message(self, pseudo: str) -> str:
         if self.mode == MODE_JOIN:
@@ -541,13 +1113,22 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             pady=20,
             sticky="e",
         )
+        status_shell.grid_columnconfigure(0, weight=1)
+
+        self.network_indicator = OnlineWifiIndicator(
+            status_shell,
+            available=self.network_available,
+            host_getter=self.host_var.get,
+            port_getter=self.port_var.get,
+        )
+        self.network_indicator.grid(row=0, column=0, sticky="e")
 
         self.status_badge = create_badge(
             status_shell,
             "Déconnecté",
             tone="neutral",
         )
-        self.status_badge.grid(row=0, column=0, sticky="e")
+        self.status_badge.grid(row=1, column=0, pady=(10, 0), sticky="e")
 
         self.status_label = ctk.CTkLabel(
             status_shell,
@@ -557,7 +1138,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             justify="right",
             wraplength=320,
         )
-        self.status_label.grid(row=1, column=0, pady=(10, 0), sticky="e")
+        self.status_label.grid(row=2, column=0, pady=(10, 0), sticky="e")
 
         content = ctk.CTkFrame(
             self,
@@ -607,8 +1188,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             border_width=0,
         )
         card.grid(row=0, column=0, padx=20, pady=(20, 12), sticky="ew")
-        card.grid_columnconfigure(0, weight=1)
-        card.grid_columnconfigure(1, weight=1)
+        card.grid_columnconfigure(0, weight=5)
+        card.grid_columnconfigure(1, weight=4)
 
         create_badge(card, "Profil", tone="info").grid(
             row=0,
@@ -618,28 +1199,44 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             sticky="w",
         )
 
+        pseudo_shell = ctk.CTkFrame(card, fg_color="transparent")
+        pseudo_shell.grid(
+            row=0,
+            column=1,
+            rowspan=2,
+            padx=(12, 16),
+            pady=(16, 10),
+            sticky="nsew",
+        )
+        pseudo_shell.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            pseudo_shell,
+            text="Ton pseudo",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["text_muted"],
+        ).grid(row=0, column=0, pady=(0, 4), sticky="w")
+
+        self.pseudo_entry = ctk.CTkEntry(
+            pseudo_shell,
+            textvariable=self.pseudo_var,
+        )
+        style_entry(self.pseudo_entry)
+        self.pseudo_entry.grid(row=1, column=0, sticky="ew")
+
         ctk.CTkLabel(
             card,
             text=self._profile_hint_text(),
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
             justify="left",
-            wraplength=560,
+            wraplength=380,
         ).grid(
             row=1,
             column=0,
-            columnspan=2,
             padx=16,
             pady=(0, 10),
             sticky="w",
-        )
-
-        self.pseudo_entry = self._build_entry_field(
-            card,
-            row=2,
-            label="Ton pseudo",
-            variable=self.pseudo_var,
-            columnspan=2,
         )
 
         self.btn_connect = create_button(
@@ -650,7 +1247,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             height=44,
         )
         self.btn_connect.grid(
-            row=4,
+            row=2,
             column=0,
             padx=(16, 8),
             pady=(8, 16),
@@ -659,13 +1256,13 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
         self.btn_disconnect = create_button(
             card,
-            "Se déconnecter",
-            self.on_disconnect,
+            self._secondary_profile_button_text(),
+            self.on_secondary_profile_action,
             variant="danger",
             height=44,
         )
         self.btn_disconnect.grid(
-            row=4,
+            row=2,
             column=1,
             padx=(8, 16),
             pady=(8, 16),
@@ -722,6 +1319,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         )
         actions_row.grid_columnconfigure(0, weight=1)
         actions_row.grid_columnconfigure(1, weight=0)
+        actions_row.grid_columnconfigure(2, weight=0)
 
         self.rooms_meta_label = ctk.CTkLabel(
             actions_row,
@@ -730,7 +1328,23 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             text_color=PALETTE["text_soft"],
             justify="left",
         )
-        self.rooms_meta_label.grid(row=0, column=0, padx=(0, 12), sticky="w")
+        self.rooms_meta_label.grid(
+            row=0,
+            column=0,
+            padx=(0, 12),
+            sticky="w",
+        )
+
+        self.btn_join_room_id = create_button(
+            actions_row,
+            "Entrer un ID",
+            self.open_room_id_prompt,
+            variant="accent",
+            width=150,
+            height=40,
+            font=TYPOGRAPHY["button_small"],
+        )
+        self.btn_join_room_id.grid(row=0, column=1, padx=(0, 8), sticky="e")
 
         self.btn_refresh = create_button(
             actions_row,
@@ -740,7 +1354,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             width=150,
             height=40,
         )
-        self.btn_refresh.grid(row=0, column=1, sticky="e")
+        self.btn_refresh.grid(row=0, column=2, sticky="e")
 
         self.rooms_scroll = ctk.CTkScrollableFrame(
             sessions_card,
@@ -855,7 +1469,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             sticky="nsew",
         )
         waiting_card.grid_columnconfigure(0, weight=1)
-        waiting_card.grid_rowconfigure(5, weight=1)
+        waiting_card.grid_rowconfigure(6, weight=1)
 
         create_badge(waiting_card, "Salon d'attente", tone="success").grid(
             row=0,
@@ -996,9 +1610,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             row=5,
             column=0,
             padx=16,
-            pady=(0, 10),
+            pady=(0, 6),
             sticky="w",
         )
+        self.active_room_hint_label.grid_remove()
 
         self.active_room_players_frame = ctk.CTkScrollableFrame(
             waiting_card,
@@ -1022,6 +1637,73 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             sticky="nsew",
         )
         self.active_room_players_frame.grid_columnconfigure(0, weight=1)
+
+    def _can_use_join_room_controls(self) -> bool:
+        return self.current_room_id is None and not self.match_running
+
+    def open_room_id_prompt(self) -> None:
+        if not self._can_use_join_room_controls():
+            self._set_status(
+                "Quitte le salon en cours avant d'ouvrir une autre jointure par ID.",
+                tone="warning",
+                badge_text="ID",
+            )
+            return
+
+        prompt = self._room_id_prompt_window
+        if prompt is not None:
+            try:
+                if prompt.winfo_exists():
+                    present_window(prompt)
+                    prompt.focus_input()
+                    return
+            except TclError:
+                pass
+
+        prompt = RoomIdPromptWindow(self)
+        self._room_id_prompt_window = prompt
+        self.room_id_entry = prompt.entry
+        prompt.set_interaction_state("normal")
+        prompt.bind(
+            "<Destroy>",
+            lambda _event, ref=prompt: self._clear_room_id_prompt_reference(ref),
+            add="+",
+        )
+
+    def _clear_room_id_prompt_reference(self, prompt) -> None:
+        if self._room_id_prompt_window is prompt:
+            self._room_id_prompt_window = None
+        self.room_id_entry = None
+
+    def _close_room_id_prompt(self) -> None:
+        prompt = self._room_id_prompt_window
+        if prompt is None:
+            self.room_id_entry = None
+            return
+
+        try:
+            if prompt.winfo_exists():
+                prompt.close()
+        except TclError:
+            pass
+        finally:
+            if self._room_id_prompt_window is prompt:
+                self._room_id_prompt_window = None
+            self.room_id_entry = None
+
+    def _show_connection_required(self) -> None:
+        self._set_status(
+            self._default_disconnected_message(),
+            tone="neutral",
+            badge_text="Connexion requise",
+        )
+
+    def on_secondary_profile_action(self) -> None:
+        if self.connected or self.connecting:
+            self.on_disconnect()
+            return
+
+        self.shutdown()
 
     def _build_entry_field(
         self,
@@ -1097,30 +1779,58 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         return option_menu
 
     def _schedule_poll(self) -> None:
-        self._poll_after_id = self.after(
-            POLL_INTERVAL_MS,
-            self._process_events,
-        )
+        if self._shutdown_requested:
+            return
 
-    def _process_events(self) -> None:
         try:
             if not self.winfo_exists():
                 return
         except TclError:
             return
 
-        while True:
+        self._poll_after_id = self.after(
+            POLL_INTERVAL_MS,
+            self._process_events,
+        )
+
+    def _should_poll_events(self) -> bool:
+        return bool(
+            self.connecting
+            or self.connected
+            or self.match_running
+            or self.client.running
+        )
+
+    def _process_events(self) -> None:
+        self._poll_after_id = None
+
+        if self._shutdown_requested:
+            return
+
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        while not self._shutdown_requested:
             message = self.client.poll()
             if message is None:
                 break
             self._handle_message(message)
 
-        self._schedule_poll()
+        if self._shutdown_requested:
+            return
+
+        if self._should_poll_events():
+            self._schedule_poll()
 
     def _handle_message(self, message: dict) -> None:
         message_type = str(message.get("type") or "").strip().upper()
 
         if message_type == "WELCOME":
+            self._update_server_capabilities(message.get("capabilities"))
+            self._render_waiting_room_panel()
             if not self.connected:
                 self._set_status(
                     "Serveur prêt. Authentification en cours.",
@@ -1151,6 +1861,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 tone="success",
                 badge_text="Connecté",
             )
+            pending_room_id = self._pending_join_room_id
+            self._pending_join_room_id = None
+            if pending_room_id:
+                self._join_room_id(pending_room_id)
             self._request_rooms_refresh()
             return
 
@@ -1257,6 +1971,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         if message_type == "ROOM_UPDATE":
             room_payload = message.get("room")
             if isinstance(room_payload, dict):
+                previous_room_id = self.current_room_id
+                previous_state_code = self.current_room_state_code
+                previous_players = list(self.current_room_players)
+                previous_host_pseudo = self.current_room_host_pseudo
                 room_id = str(room_payload.get("room_id") or "").strip() or None
                 players = [
                     str(player).strip()
@@ -1313,6 +2031,30 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                     host_pseudo=host_pseudo,
                     is_active=True,
                 )
+
+                notice = self._build_room_update_notice(
+                    room_id=room_id,
+                    state_code=self._normalize_room_state_code(raw_state),
+                    players=players,
+                    previous_room_id=previous_room_id,
+                    previous_state_code=previous_state_code,
+                    previous_players=previous_players,
+                    previous_host_pseudo=previous_host_pseudo,
+                )
+                if notice is not None:
+                    text, tone, badge_text = notice
+                    is_match_notice = (
+                        previous_state_code == "in_game"
+                        or self.current_room_state_code == "in_game"
+                    )
+                    if is_match_notice:
+                        self._pending_match_room_notice = text
+                    self._set_status(
+                        text,
+                        tone=tone,
+                        badge_text=badge_text,
+                    )
+                    return
 
             self._set_status(
                 "Salon synchronisé.",
@@ -1379,16 +2121,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 self._known_rooms_by_id[room_id] = room_info
 
                 if room_id == self.current_room_id:
-                    self.current_room_host_pseudo = host_pseudo
-                    self._render_waiting_room_panel()
-                    if self.mode == MODE_JOIN:
-                        self._render_rooms(self._ordered_rooms())
-
-                self._set_status(
-                    f"Nouvel hôte : {host_pseudo}.",
-                    tone="info",
-                    badge_text="Hôte",
-                )
+                    self._pending_host_change_pseudo = host_pseudo
             return
 
         if message_type == "ERROR":
@@ -1398,6 +2131,9 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             is_ready_compatibility_error = (
                 raw_code == "UNKNOWN_TYPE" and raw_got == "SET_READY"
             )
+            if is_ready_compatibility_error:
+                self.server_capabilities["ready_state"] = False
+                self._render_waiting_room_panel()
             self._set_status(
                 f"Erreur serveur : {code}",
                 tone=("warning" if is_ready_compatibility_error else "danger"),
@@ -1536,13 +2272,15 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 title = "Aucune session publique trouvée"
                 detail = (
                     "Aucune session n'est ouverte pour le moment. "
-                    "Actualise plus tard ou demande à un ami d'en créer une."
+                    "Actualise plus tard, demande à un ami d'en créer une, "
+                    "ou utilise un ID de session si tu en as reçu un."
                 )
             else:
                 title = "Connecte-toi pour voir les sessions"
                 detail = (
                     "Dès que tu es connecté, les sessions publiques déjà "
-                    "ouvertes apparaissent ici."
+                    "ouvertes apparaissent ici, et tu peux aussi rejoindre "
+                    "une session en collant son ID."
                 )
 
             ctk.CTkLabel(
@@ -1688,6 +2426,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         local_pseudo = self.pseudo_var.get().strip()
 
         if self.current_room_id is None:
+            self.active_room_players_frame.grid_rowconfigure(0, weight=1)
             self.active_room_title_label.configure(
                 text=self._idle_room_title(),
                 text_color=PALETTE["text"],
@@ -1701,9 +2440,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 text_color=PALETTE["text_muted"],
             )
             self.active_room_hint_label.configure(
-                text=self._idle_room_hint(),
+                text="",
                 text_color=PALETTE["text_soft"],
             )
+            self.active_room_hint_label.grid_remove()
             self.btn_copy_room_id.configure(state="disabled")
 
             placeholder = ctk.CTkFrame(
@@ -1721,27 +2461,31 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 column=0,
                 padx=4,
                 pady=4,
-                sticky="ew",
+                sticky="nsew",
             )
             placeholder.grid_columnconfigure(0, weight=1)
+            placeholder.grid_rowconfigure(2, weight=1)
 
             ctk.CTkLabel(
                 placeholder,
                 text=self._idle_placeholder_title(),
-                font=TYPOGRAPHY["body_bold"],
+                font=TYPOGRAPHY["subtitle"],
                 text_color=PALETTE["text"],
-            ).grid(row=0, column=0, padx=16, pady=(16, 6), sticky="w")
+            ).grid(row=0, column=0, padx=20, pady=(20, 8), sticky="w")
 
             ctk.CTkLabel(
                 placeholder,
                 text=self._idle_placeholder_body(),
-                font=TYPOGRAPHY["small"],
+                font=TYPOGRAPHY["body"],
                 text_color=PALETTE["text_soft"],
                 justify="left",
                 wraplength=340,
-            ).grid(row=1, column=0, padx=16, pady=(0, 16), sticky="w")
+            ).grid(row=1, column=0, padx=20, pady=(0, 20), sticky="w")
             self._refresh_waiting_room_actions()
             return
+
+        self.active_room_players_frame.grid_rowconfigure(0, weight=0)
+        self.active_room_hint_label.grid()
 
         room_title = self.current_room_name or self.current_room_id
         room_meta_parts = [f"ID : {self.current_room_id}"]
@@ -1893,13 +2637,15 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             wraplength=320,
         ).grid(row=1, column=0, padx=14, pady=(0, 6), sticky="w")
 
+        player_status_text, player_status_color = self._player_status_text_and_color(
+            is_ready_player
+        )
+
         ctk.CTkLabel(
             card,
-            text=("Statut : prêt" if is_ready_player else "Statut : en attente"),
+            text=player_status_text,
             font=TYPOGRAPHY["small_bold"],
-            text_color=(
-                PALETTE["success"] if is_ready_player else PALETTE["text_muted"]
-            ),
+            text_color=player_status_color,
             justify="left",
         ).grid(row=2, column=0, padx=14, pady=(0, 14), sticky="w")
 
@@ -1946,6 +2692,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         previous_room_id = self.current_room_id
         if not is_active or room_id != previous_room_id:
             self._clear_post_match_feedback()
+            self._pending_host_change_pseudo = None
 
         self.current_room_id = room_id if is_active else None
         self.current_room_name = room_name if is_active else None
@@ -1993,6 +2740,67 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             is_active=False,
         )
 
+    def _format_departed_players_notice(
+        self,
+        departed_players: list[str],
+        *,
+        in_game: bool,
+    ) -> str:
+        context = "la joute" if in_game else "la session"
+        if len(departed_players) == 1:
+            return f"{departed_players[0]} a quitté {context}."
+        return f"{', '.join(departed_players)} ont quitté {context}."
+
+    def _build_room_update_notice(
+        self,
+        *,
+        room_id: str | None,
+        state_code: str | None,
+        players: list[str],
+        previous_room_id: str | None,
+        previous_state_code: str | None,
+        previous_players: list[str],
+        previous_host_pseudo: str | None,
+    ) -> tuple[str, str, str] | None:
+        if room_id is None or room_id != previous_room_id:
+            return None
+
+        notice_parts: list[str] = []
+        tone = "info"
+        badge_text = "Update"
+        match_context = state_code == "in_game" or previous_state_code == "in_game"
+
+        departed_players = [
+            player_name
+            for player_name in previous_players
+            if player_name not in players
+        ]
+        if departed_players:
+            notice_parts.append(
+                self._format_departed_players_notice(
+                    departed_players,
+                    in_game=match_context,
+                )
+            )
+            tone = "warning"
+            badge_text = "Match" if match_context else "Salon"
+
+        next_host_pseudo = self._pending_host_change_pseudo
+        self._pending_host_change_pseudo = None
+        if next_host_pseudo and next_host_pseudo != previous_host_pseudo:
+            local_pseudo = self.pseudo_var.get().strip()
+            if local_pseudo and next_host_pseudo == local_pseudo:
+                notice_parts.append("Tu es maintenant l'hôte.")
+            else:
+                notice_parts.append(f"Nouvel hôte : {next_host_pseudo}.")
+            if badge_text == "Update":
+                badge_text = "Hôte"
+
+        if not notice_parts:
+            return None
+
+        return (" ".join(notice_parts), tone, badge_text)
+
     def _refresh_current_room_from_directory(self) -> None:
         if self.current_room_id is None:
             return
@@ -2038,6 +2846,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         clear_completed_signature: bool = True,
     ) -> None:
         self._last_match_status_text = None
+        self._pending_match_room_notice = None
         if clear_completed_signature:
             self._last_completed_match_signature = None
 
@@ -2183,25 +2992,89 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             self._launch_match,
         )
 
+    def _completed_match_signature(
+        self,
+    ) -> tuple[str, tuple[str, ...], int] | None:
+        if self.current_room_id is None:
+            return None
+        if self.current_room_max_players is None:
+            return None
+        if not self.current_room_players:
+            return None
+
+        return (
+            self.current_room_id,
+            tuple(self.current_room_players),
+            self.current_room_max_players,
+        )
+
+    def _restore_waiting_room_after_match(self) -> None:
+        if self.current_room_id is None:
+            return
+
+        room_id = self.current_room_id
+        room_info = dict(self._known_rooms_by_id.get(room_id, {}))
+        room_info["room_id"] = room_id
+        room_info["state"] = "lobby"
+        room_info["players"] = self.current_room_player_count
+        if self.current_room_max_players is not None:
+            room_info["max_players"] = self.current_room_max_players
+        if self.current_room_host_pseudo is not None:
+            room_info["host_pseudo"] = self.current_room_host_pseudo
+        if self.current_room_name:
+            room_info["name"] = self.current_room_name
+        self._known_rooms_by_id[room_id] = room_info
+
+        self._set_current_room_status(
+            room_id=room_id,
+            room_name=(
+                str(room_info.get("name") or "").strip() or self.current_room_name
+            ),
+            state_code="lobby",
+            state_text=self._format_room_state("lobby"),
+            players=list(self.current_room_players),
+            ready_players=[],
+            max_players=self._room_max_players(room_info),
+            capacity=(
+                self._format_room_capacity(room_info) or self.current_room_capacity
+            ),
+            host_pseudo=(
+                self._room_host_pseudo(room_info) or self.current_room_host_pseudo
+            ),
+            is_active=True,
+        )
+
     def _resume_after_match(self, match_summary: dict) -> None:
         for message in match_summary.get("deferred_messages", []):
             self._handle_message(message)
 
         disconnect_message = str(match_summary.get("disconnect_message") or "").strip()
-        if disconnect_message:
-            self.client.disconnect()
-            self._apply_disconnected_state(disconnect_message, tone="danger")
-            return
-
         end_message = match_summary.get("end_message") or {}
+        post_match_status = None
+        room_notice = str(self._pending_match_room_notice or "").strip()
+        self._pending_match_room_notice = None
+
         if end_message:
-            self._last_match_status_text = self._format_post_match_status(end_message)
-            self._last_completed_match_signature = self._match_start_offer_signature()
+            post_match_status = self._format_post_match_status(end_message)
+            if room_notice:
+                post_match_status = f"{post_match_status} {room_notice}"
+            self._last_match_status_text = post_match_status
+            self._last_completed_match_signature = self._completed_match_signature()
+            self._restore_waiting_room_after_match()
             self._set_status(
-                self._last_match_status_text,
+                post_match_status,
                 tone="success",
                 badge_text="Fin",
             )
+
+        if disconnect_message:
+            if room_notice and not post_match_status:
+                disconnect_message = f"{room_notice} {disconnect_message}"
+            if post_match_status:
+                disconnect_message = f"{post_match_status} {disconnect_message}"
+            self.client.disconnect()
+            self._apply_disconnected_state(disconnect_message, tone="danger")
+            return
 
         if self.client.running:
             if self._poll_after_id is None:
@@ -2209,8 +3082,13 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             self._request_rooms_refresh()
         else:
             self.client.disconnect()
+            disconnect_text = "Connexion interrompue à la fin du match."
+            if room_notice and not post_match_status:
+                disconnect_text = f"{room_notice} {disconnect_text}"
+            if post_match_status:
+                disconnect_text = f"{post_match_status} {disconnect_text}"
             self._apply_disconnected_state(
-                "Connexion interrompue à la fin du match.",
+                disconnect_text,
                 tone="danger",
             )
             return
@@ -2283,6 +3161,36 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         local_pseudo = self.pseudo_var.get().strip()
         return bool(local_pseudo) and (local_pseudo == self.current_room_host_pseudo)
 
+    def _update_server_capabilities(self, raw_capabilities: object) -> None:
+        if not isinstance(raw_capabilities, dict):
+            self.server_capabilities = {}
+            return
+
+        self.server_capabilities = {
+            str(name).strip().lower(): bool(value)
+            for name, value in raw_capabilities.items()
+            if str(name).strip()
+        }
+
+    def _ready_state_capability(self) -> bool | None:
+        capability = self.server_capabilities.get("ready_state")
+        if isinstance(capability, bool):
+            return capability
+        return None
+
+    def _supports_ready_state(self) -> bool:
+        return self._ready_state_capability() is not False
+
+    def _player_status_text_and_color(
+        self,
+        is_ready_player: bool,
+    ) -> tuple[str, str]:
+        if not self._supports_ready_state():
+            return ("Statut : connecté", PALETTE["cyan"])
+        if is_ready_player:
+            return ("Statut : prêt", PALETTE["success"])
+        return ("Statut : en attente", PALETTE["text_muted"])
+
     def _filtered_current_room_ready_players(self) -> set[str]:
         return {
             player_name
@@ -2317,6 +3225,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             return False
         if self.current_room_player_count < self.current_room_max_players:
             return False
+        if not self._supports_ready_state():
+            return True
         return self._all_current_players_ready()
 
     def _match_start_offer_signature(
@@ -2348,12 +3258,25 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         if self._is_local_host():
             if self.current_room_max_players is None:
                 return "L'hôte pourra lancer le jeu quand la session sera prête."
+            if not self._supports_ready_state():
+                return (
+                    "Ce serveur ne gère pas le prêt. Tu peux lancer le jeu "
+                    "dès que la session est complète."
+                )
             if self._can_start_current_match():
                 return "Tous les joueurs sont prêts. Tu peux lancer le jeu."
             return (
                 f"En attente des prêts {self._current_ready_count()}/"
                 f"{self.current_room_player_count} avant le départ."
             )
+
+        if not self._supports_ready_state():
+            if self.current_room_host_pseudo:
+                return (
+                    "Ce serveur ne gère pas le prêt. En attente que "
+                    f"{self.current_room_host_pseudo} lance le jeu."
+                )
+            return "Ce serveur ne gère pas le prêt. En attente que l'hôte lance le jeu."
 
         if not self._is_local_ready():
             return "Passe en prêt pour signaler que tu es prêt."
@@ -2382,6 +3305,17 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             ready_state = "disabled"
             button_text = "Jeu lancé"
             button_state = "disabled"
+        elif not self._supports_ready_state():
+            ready_text = "Prêt indisponible"
+            ready_state = "disabled"
+            if self._is_local_host():
+                button_text = START_MATCH_BUTTON_LABEL
+                button_state = (
+                    "normal" if self._can_start_current_match() else "disabled"
+                )
+            else:
+                button_text = "Lancement réservé à l'hôte"
+                button_state = "disabled"
         elif self._is_local_ready():
             ready_text = READY_CANCEL_BUTTON_LABEL
             ready_state = "normal"
@@ -2492,21 +3426,32 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             text=self._connect_button_text(),
             state=connect_state,
         )
-        self.btn_disconnect.configure(state=disconnect_state)
+        self.btn_disconnect.configure(
+            text=self._secondary_profile_button_text(),
+            state=("normal" if not self.match_running else disconnect_state),
+        )
         self.btn_copy_room_id.configure(state=copy_state)
         self._refresh_waiting_room_actions()
 
         if self.mode == MODE_JOIN:
+            prompt_state = (
+                "normal" if self._can_use_join_room_controls() else "disabled"
+            )
+            refresh_state = (
+                "normal"
+                if self.connected
+                and not self.connecting
+                and not self._manual_refresh_feedback
+                and self.current_room_id is None
+                else "disabled"
+            )
             if self.btn_refresh is not None:
-                refresh_state = (
-                    "normal"
-                    if self.connected
-                    and not self.connecting
-                    and not self._manual_refresh_feedback
-                    and self.current_room_id is None
-                    else "disabled"
-                )
                 self.btn_refresh.configure(state=refresh_state)
+            if self.btn_join_room_id is not None:
+                self.btn_join_room_id.configure(state=prompt_state)
+            prompt = self._room_id_prompt_window
+            if prompt is not None:
+                prompt.set_interaction_state(prompt_state)
             self._render_rooms(self._ordered_rooms())
             return
 
@@ -2528,13 +3473,22 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         *,
         tone: str,
     ) -> None:
+        if self._poll_after_id is not None:
+            try:
+                self.after_cancel(self._poll_after_id)
+            except TclError:
+                pass
+            self._poll_after_id = None
+
         self.connected = False
         self.connecting = False
         self.match_running = False
         self._manual_refresh_feedback = False
         self._pending_rooms = None
         self._pending_created_room_id = None
+        self._pending_join_room_id = None
         self._known_rooms_by_id = {}
+        self.server_capabilities = {}
         self.local_slot = None
         self.local_team = None
         self.local_sprite_id = None
@@ -2543,6 +3497,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._cancel_manual_refresh_timer()
         self._cancel_room_created_join_timer()
         self._cancel_match_launch_timer()
+        self._close_room_id_prompt()
         self._clear_current_room(message)
         if self.mode == MODE_JOIN:
             self._set_rooms_meta("Connecte-toi pour charger les sessions.")
@@ -2575,14 +3530,16 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         return max_players
 
     def _send_message(self, payload: dict, *, action_label: str) -> bool:
+        _ = action_label
         try:
             self.client.send(payload)
         except OnlineConnectionError as error:
+            title, dialog_text, status_text = self._player_connection_issue(str(error))
             self.client.disconnect()
-            self._apply_disconnected_state(str(error), tone="danger")
+            self._apply_disconnected_state(status_text, tone="danger")
             messagebox.showerror(
-                "Connexion online perdue",
-                f"Impossible de {action_label} : {error}",
+                title,
+                dialog_text,
             )
             return False
 
@@ -2599,14 +3556,17 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             port = self._parse_port()
             self.client.connect(host, port, pseudo)
         except (OnlineConnectionError, ValueError) as error:
-            self._apply_disconnected_state(str(error), tone="danger")
+            title, dialog_text, status_text = self._player_connection_issue(str(error))
+            self._apply_disconnected_state(status_text, tone="danger")
             messagebox.showerror(
-                "Connexion online impossible",
-                str(error),
+                title,
+                dialog_text,
             )
             return
 
         self.connecting = True
+        if self._poll_after_id is None:
+            self._schedule_poll()
         self._sync_controls_state()
         self._set_status(
             "Connexion au serveur online en cours.",
@@ -2617,9 +3577,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
     def on_disconnect(self) -> None:
         self.client.disconnect()
         self._apply_disconnected_state(
-            "Connexion online fermée.",
+            self._default_disconnected_message(),
             tone="neutral",
         )
+        self._show_connection_required()
 
     def _request_rooms_refresh(self, *, manual: bool = False) -> None:
         if not self._send_message(
@@ -2645,7 +3606,98 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         )
 
     def on_list_rooms(self) -> None:
+        if not self.connected:
+            self._show_connection_required()
+            return
+
         self._request_rooms_refresh(manual=True)
+
+    def on_join_room_id(self) -> bool:
+        prompt_window = self._room_id_prompt_window
+        room_id = self.room_id_var.get().strip()
+        if not room_id:
+            self._set_status(
+                "Entre l'ID d'une session avant de l'envoyer.",
+                tone="warning",
+                badge_text="ID",
+            )
+            if prompt_window is not None:
+                prompt_window.show_feedback(
+                    "Entre d'abord l'ID de session à rejoindre.",
+                    tone="warning",
+                )
+            if self.room_id_entry is not None:
+                try:
+                    self.room_id_entry.focus_force()
+                except TclError:
+                    pass
+            return False
+
+        self.room_id_var.set(room_id)
+
+        if self.current_room_id is not None:
+            self._set_status(
+                "Déconnecte-toi du salon actuel avant de rejoindre un autre ID.",
+                tone="warning",
+                badge_text="ID",
+            )
+            if prompt_window is not None:
+                prompt_window.show_feedback(
+                    "Déconnecte-toi d'abord du salon actuel.",
+                    tone="warning",
+                )
+            return False
+
+        if self.connected:
+            if not self._join_room_id(room_id):
+                return False
+
+            self._pending_join_room_id = None
+            self._close_room_id_prompt()
+            return True
+
+        pseudo = self.pseudo_var.get().strip()
+        if not pseudo:
+            self._set_status(
+                "Entre d'abord ton pseudo avant d'utiliser un ID de session.",
+                tone="warning",
+                badge_text="Pseudo",
+            )
+            if prompt_window is not None:
+                prompt_window.show_feedback(
+                    "Renseigne d'abord ton pseudo dans le panneau Profil.",
+                    tone="warning",
+                )
+            if self.pseudo_entry is not None:
+                try:
+                    self.pseudo_entry.focus_force()
+                except TclError:
+                    pass
+            return False
+
+        self._pending_join_room_id = room_id
+
+        if self.connecting:
+            self._set_status(
+                f"ID {room_id} mémorisé. La jointure partira après la connexion.",
+                tone="info",
+                badge_text="ID",
+            )
+            self._close_room_id_prompt()
+            return True
+
+        self.on_connect()
+        if not self.connected and not self.connecting:
+            self._pending_join_room_id = None
+            return False
+
+        self._set_status(
+            f"Connexion lancée. La demande pour {room_id} partira ensuite.",
+            tone="info",
+            badge_text="ID",
+        )
+        self._close_room_id_prompt()
+        return True
 
     def _join_room_id(self, room_id: str, *, show_status: bool = True) -> bool:
         normalized_room_id = str(room_id or "").strip()
@@ -2684,6 +3736,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         )
 
     def on_create_room(self) -> None:
+        if not self.connected:
+            self._show_connection_required()
+            return
+
         room_name = self.room_name_var.get().strip() or "Session Arena"
 
         try:
@@ -2709,7 +3765,19 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         )
 
     def on_toggle_ready(self) -> None:
+        if not self.connected:
+            self._show_connection_required()
+            return
+
         if self.current_room_id is None or self.current_room_state_code != "lobby":
+            return
+
+        if not self._supports_ready_state():
+            self._set_status(
+                "Ce serveur online ne gère pas le bouton prêt.",
+                tone="warning",
+                badge_text="Serveur",
+            )
             return
 
         next_ready_state = not self._is_local_ready()
@@ -2731,6 +3799,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         )
 
     def on_start_match(self) -> None:
+        if not self.connected:
+            self._show_connection_required()
+            return
+
         if not self._can_start_current_match():
             return
 
@@ -2747,7 +3819,13 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             badge_text="Départ",
         )
 
-    def shutdown(self) -> None:
+    def shutdown(self, *, restore_parent: bool = True) -> None:
+        parent = self.master
+        self._shutdown_requested = True
+
+        if self.network_indicator is not None:
+            self.network_indicator.shutdown()
+
         if self._poll_after_id is not None:
             try:
                 self.after_cancel(self._poll_after_id)
@@ -2758,8 +3836,18 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._cancel_manual_refresh_timer()
         self._cancel_room_created_join_timer()
         self._cancel_match_launch_timer()
+        self._close_room_id_prompt()
         self.client.disconnect()
         self.destroy()
+
+        if not restore_parent:
+            return
+
+        try:
+            if parent is not None and parent.winfo_exists():
+                present_window(parent)
+        except TclError:
+            pass
 
 
 def run_online_lobby() -> None:
@@ -2768,7 +3856,21 @@ def run_online_lobby() -> None:
     app = ctk.CTk()
     app.withdraw()
 
-    window = OnlineLobbyWindow(app)
+    network_available = probe_online_service()
+    if not network_available:
+        messagebox.showwarning(
+            ONLINE_ENTRY_REQUIRED_TITLE,
+            ONLINE_ENTRY_REQUIRED_MESSAGE,
+            parent=app,
+        )
+        try:
+            if app.winfo_exists():
+                app.destroy()
+        except TclError:
+            pass
+        return
+
+    window = OnlineLobbyWindow(app, network_available=network_available)
 
     def close_all() -> None:
         window.shutdown()

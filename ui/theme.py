@@ -282,10 +282,73 @@ def apply_window_icon(window, *, default: bool = False, retry_after_ms: int = 0)
 
         _apply_window_icon_once(window, default=default)
 
+    _schedule_window_after(window, retry_after_ms, _retry)
+
+
+def _window_after_callback_ids(window):
+    callback_ids = getattr(window, "_arena_after_callback_ids", None)
+    if callback_ids is None:
+        callback_ids = set()
+        try:
+            window._arena_after_callback_ids = callback_ids
+        except AttributeError:
+            return None
+
+    if bool(getattr(window, "_arena_after_destroy_bound", False)):
+        return callback_ids
+
+    def _cancel_on_destroy(event=None):
+        if event is not None and getattr(event, "widget", None) is not window:
+            return
+        _cancel_window_after_callbacks(window)
+
     try:
-        window.after(retry_after_ms, _retry)
-    except TclError:
+        window.bind("<Destroy>", _cancel_on_destroy, add="+")
+        window._arena_after_destroy_bound = True
+    except (AttributeError, TclError):
         pass
+    return callback_ids
+
+
+def _cancel_window_after_callbacks(window):
+    callback_ids = getattr(window, "_arena_after_callback_ids", None)
+    if not callback_ids:
+        return
+
+    for callback_id in tuple(callback_ids):
+        try:
+            window.after_cancel(callback_id)
+        except TclError:
+            pass
+        callback_ids.discard(callback_id)
+
+
+def _schedule_window_after(window, delay_ms: int, callback):
+    callback_ids = _window_after_callback_ids(window)
+    callback_ref = {"id": None}
+
+    def _wrapped_callback():
+        callback_id = callback_ref["id"]
+        if callback_ids is not None and callback_id is not None:
+            callback_ids.discard(callback_id)
+
+        try:
+            if not window.winfo_exists():
+                return
+        except TclError:
+            return
+
+        callback()
+
+    try:
+        callback_id = window.after(delay_ms, _wrapped_callback)
+    except TclError:
+        return None
+
+    callback_ref["id"] = callback_id
+    if callback_ids is not None:
+        callback_ids.add(callback_id)
+    return callback_id
 
 
 def style_frame(frame, tone="panel", border_color=None, border_width=0):
@@ -516,8 +579,12 @@ def present_window(window, *, clear_topmost_after_ms: int = 180):
             return
 
         try:
-            window.after(120, _repulse)
-            window.after(clear_topmost_after_ms + 120, _clear_topmost)
+            _schedule_window_after(window, 120, _repulse)
+            _schedule_window_after(
+                window,
+                clear_topmost_after_ms + 120,
+                _clear_topmost,
+            )
         except TclError:
             _clear_topmost()
 
@@ -529,9 +596,7 @@ def present_window(window, *, clear_topmost_after_ms: int = 180):
         except TclError:
             _clear_topmost()
 
-    try:
-        window.after(0, _present)
-    except TclError:
+    if _schedule_window_after(window, 0, _present) is None:
         _present()
 
 
@@ -602,10 +667,7 @@ def enable_large_window(
             except TclError:
                 pass
 
-    try:
-        window.after(40, _zoom)
-    except TclError:
-        pass
+    _schedule_window_after(window, 40, _zoom)
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:

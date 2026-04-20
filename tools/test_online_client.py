@@ -187,6 +187,15 @@ def wait_for_post_match_reset(
     }
 
 
+def room_players_from_messages(messages: dict[str, dict]) -> list[str]:
+    room_payload = room_payload_from_messages(messages)
+    return [
+        str(player).strip()
+        for player in room_payload.get("players", [])
+        if str(player).strip()
+    ]
+
+
 def run_basic_scenario(args, *, OnlineClient, OnlineConnectionError) -> int:
     client = OnlineClient()
 
@@ -728,12 +737,28 @@ def run_end_match_scenario(
     )
 
 
+def run_mid_match_leave_scenario(
+    args,
+    *,
+    OnlineClient,
+    OnlineConnectionError,
+) -> int:
+    return run_match_flow_scenario(
+        args,
+        OnlineClient=OnlineClient,
+        OnlineConnectionError=OnlineConnectionError,
+        wait_for_end=True,
+        leave_during_match_role=args.leave_role,
+    )
+
+
 def run_match_flow_scenario(
     args,
     *,
     OnlineClient,
     OnlineConnectionError,
     wait_for_end: bool,
+    leave_during_match_role: str | None = None,
 ) -> int:
     creator = OnlineClient()
     joiner = OnlineClient()
@@ -973,7 +998,134 @@ def run_match_flow_scenario(
             )
             return 1
 
+        remaining_client = None
+        remaining_login_pseudo = None
+
+        if leave_during_match_role is not None:
+            if leave_during_match_role == "host":
+                print(f">>> départ en match de l'hôte {creator_login_pseudo}")
+                creator.disconnect()
+                remaining_client = joiner
+                remaining_login_pseudo = joiner_login_pseudo
+                remaining_expected_host = joiner_login_pseudo
+                leave_required_types = {"HOST_CHANGED", "ROOM_UPDATE"}
+            else:
+                print(f">>> départ en match du rejoignant {joiner_login_pseudo}")
+                joiner.disconnect()
+                remaining_client = creator
+                remaining_login_pseudo = creator_login_pseudo
+                remaining_expected_host = creator_login_pseudo
+                leave_required_types = {"ROOM_UPDATE"}
+
+            remaining_after_leave = wait_for_messages(
+                remaining_client,
+                timeout_seconds=args.timeout,
+                required_types=leave_required_types,
+            )
+            error = disconnect_error(remaining_after_leave)
+            if error is not None:
+                print(
+                    "Client restant interrompu après le départ en match:",
+                    error,
+                )
+                return 1
+
+            if (
+                leave_during_match_role == "host"
+                and "HOST_CHANGED" not in remaining_after_leave
+            ):
+                print(
+                    "HOST_CHANGED manquant après le départ de l'hôte:",
+                    remaining_after_leave,
+                )
+                return 1
+
+            if room_state_from_messages(remaining_after_leave) != "in_game":
+                print(
+                    ("Le salon n'est pas resté en in_game après le départ en match:"),
+                    room_payload_from_messages(remaining_after_leave),
+                )
+                return 1
+
+            remaining_players = room_players_from_messages(remaining_after_leave)
+            if remaining_players != [remaining_login_pseudo]:
+                print(
+                    "Etat joueur inattendu après le départ en match:",
+                    remaining_players,
+                )
+                return 1
+
+            remaining_host = room_host_pseudo(remaining_after_leave)
+            if remaining_host != remaining_expected_host:
+                print(
+                    "Hôte inattendu après le départ en match:",
+                    room_payload_from_messages(remaining_after_leave),
+                )
+                return 1
+
         if wait_for_end:
+            if leave_during_match_role is not None:
+                remaining_reset = wait_for_post_match_reset(
+                    remaining_client,
+                    timeout_seconds=args.match_timeout,
+                )
+                error = disconnect_error(remaining_reset["messages"])
+                if error is not None:
+                    print("Client restant interrompu avant END:", error)
+                    return 1
+
+                if not remaining_reset["end_seen"]:
+                    print(
+                        (
+                            "Le serveur n'a pas terminé la joute "
+                            "après le départ en match."
+                        )
+                    )
+                    return 1
+
+                if not remaining_reset["lobby_update_seen"]:
+                    print(
+                        (
+                            "Le salon n'est pas repassé en lobby "
+                            "après le départ en match:"
+                        ),
+                        remaining_reset["messages"].get("ROOM_UPDATE"),
+                    )
+                    return 1
+
+                if not remaining_reset["assignment_after_end"]:
+                    print(
+                        ("ASSIGN_SLOT n'a pas été renvoyé après départ en match."),
+                        remaining_reset,
+                    )
+                    return 1
+
+                final_players = room_players_from_messages(remaining_reset["messages"])
+                if final_players != [remaining_login_pseudo]:
+                    print(
+                        "ROOM_UPDATE final restant inattendu:",
+                        final_players,
+                    )
+                    return 1
+
+                remaining_end = remaining_reset["messages"].get("END") or {}
+                final_room_state = room_state_from_messages(remaining_reset["messages"])
+                print("MID_MATCH_LEAVE_SMOKE_OK")
+                print(
+                    {
+                        "leave_role": leave_during_match_role,
+                        "room_id": room_id,
+                        "room_name": room_name,
+                        "remaining_player": remaining_login_pseudo,
+                        "host_after_leave": remaining_expected_host,
+                        "state": final_room_state,
+                        "winner_text": remaining_end.get("winner_text"),
+                        "team_a_score": remaining_end.get("team_a_score"),
+                        "team_b_score": remaining_end.get("team_b_score"),
+                    }
+                )
+                return 0
+
             creator_reset = wait_for_post_match_reset(
                 creator,
                 timeout_seconds=args.match_timeout,
@@ -1100,6 +1252,7 @@ def main() -> int:
             "host-migration",
             "start-match",
             "end-match",
+            "mid-match-leave",
         ),
         default="basic",
         help=(
@@ -1107,7 +1260,8 @@ def main() -> int:
             "create-join = scénario complet, "
             "host-migration = transfert d'hôte, "
             "start-match = départ réservé à l'hôte, "
-            "end-match = attend END puis le retour en lobby."
+            "end-match = attend END puis le retour en lobby, "
+            "mid-match-leave = un joueur quitte pendant in_game."
         ),
     )
     parser.add_argument("--host", default=DEFAULT_ONLINE_HOST)
@@ -1118,6 +1272,12 @@ def main() -> int:
     parser.add_argument("--max-players", type=int, default=2)
     parser.add_argument("--list-retries", type=int, default=5)
     parser.add_argument("--list-retry-delay", type=float, default=1.0)
+    parser.add_argument(
+        "--leave-role",
+        choices=("host", "joiner"),
+        default="host",
+        help="Pour mid-match-leave: joueur qui quitte pendant la joute.",
+    )
     args = parser.parse_args()
 
     scenario_args = SimpleNamespace(
@@ -1129,6 +1289,7 @@ def main() -> int:
         max_players=args.max_players,
         list_retries=max(1, args.list_retries),
         list_retry_delay=max(0.0, args.list_retry_delay),
+        leave_role=args.leave_role,
     )
 
     if args.scenario == "create-join":
@@ -1154,6 +1315,13 @@ def main() -> int:
 
     if args.scenario == "end-match":
         return run_end_match_scenario(
+            scenario_args,
+            OnlineClient=OnlineClient,
+            OnlineConnectionError=OnlineConnectionError,
+        )
+
+    if args.scenario == "mid-match-leave":
+        return run_mid_match_leave_scenario(
             scenario_args,
             OnlineClient=OnlineClient,
             OnlineConnectionError=OnlineConnectionError,

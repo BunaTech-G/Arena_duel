@@ -52,6 +52,13 @@ Le projet combine :
 - l'historique LAN est demande au serveur de l'hote pendant la session
 - le mode local du client reste independant
 
+### Online proto 1
+
+- le serveur online TCP est porte par network/online_server.py
+- le message WELCOME peut inclure un champ optionnel capabilities
+- capabilities.ready_state annonce le support du bouton prêt, de ready_players et du démarrage conditionné aux joueurs prêts
+- si capabilities est absent, le client doit rester compatible avec un serveur plus ancien
+
 ## Entrees principales
 
 - main.py : launcher principal recommande pour la V1

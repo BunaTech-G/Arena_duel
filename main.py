@@ -1,4 +1,4 @@
-from ui.launcher import run_launcher
+from ui.launcher import run_main_mode_menu
 
 if __name__ == "__main__":
-    run_launcher()
+    run_main_mode_menu()

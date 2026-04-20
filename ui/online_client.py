@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import contextlib
+from dataclasses import dataclass
 import errno
 import json
 import queue
+import re
 import socket
 import struct
+import subprocess
 import threading
 import time
+import unicodedata
 
 from network.net_utils import format_endpoint, get_network_logger
 
@@ -15,8 +20,13 @@ PROTO_VERSION = 1
 DEFAULT_ONLINE_HOST = "165.227.166.21"
 DEFAULT_ONLINE_PORT = 27015
 DEFAULT_ONLINE_CONNECT_TIMEOUT_SECONDS = 5.0
+DEFAULT_ONLINE_PROBE_TIMEOUT_SECONDS = 0.45
+DEFAULT_ONLINE_NETSH_TIMEOUT_SECONDS = 1.2
 ONLINE_READ_TIMEOUT_SECONDS = 0.5
 MAX_ONLINE_MESSAGE_BYTES = 1024 * 1024
+ONLINE_HEARTBEAT_INTERVAL_SECONDS = 10.0
+ONLINE_HEARTBEAT_TIMEOUT_SECONDS = 30.0
+ONLINE_NETWORK_GOOD_LATENCY_MS = 180
 
 LOGGER = get_network_logger()
 
@@ -31,6 +41,18 @@ class OnlineConnectionError(OnlineClientError):
 
 class OnlineProtocolError(OnlineClientError):
     pass
+
+
+@dataclass(frozen=True)
+class OnlineNetworkStatus:
+    transport_kind: str
+    transport_label: str
+    tone: str
+    signal_bars: int
+    online_available: bool
+    is_connected: bool
+    quality_label: str
+    latency_ms: int | None = None
 
 
 def _format_connect_error(host: str, port: int, error: OSError) -> str:
@@ -101,6 +123,190 @@ def _format_runtime_error(error: BaseException) -> str:
     return f"Erreur online inattendue: {error}."
 
 
+def _normalize_network_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(text or ""))
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    return ascii_text.strip().lower()
+
+
+def _classify_interface_name(interface_name: str) -> str:
+    normalized_name = _normalize_network_text(interface_name)
+    if any(token in normalized_name for token in ("wi-fi", "wifi", "wlan", "wireless")):
+        return "wifi"
+
+    if any(
+        token in normalized_name
+        for token in ("ethernet", "local area", "local connection", "lan")
+    ):
+        return "ethernet"
+
+    return "network"
+
+
+def _transport_label(transport_kind: str) -> str:
+    if transport_kind == "ethernet":
+        return "Ethernet"
+    if transport_kind == "wifi":
+        return "Wi-Fi"
+    if transport_kind == "offline":
+        return "Hors ligne"
+    return "Réseau"
+
+
+def _run_netsh_interface_listing() -> str:
+    try:
+        completed = subprocess.run(
+            ["netsh", "interface", "show", "interface"],
+            capture_output=True,
+            text=True,
+            errors="ignore",
+            timeout=DEFAULT_ONLINE_NETSH_TIMEOUT_SECONDS,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+    return str(completed.stdout or "")
+
+
+def _connected_interface_kinds() -> list[str]:
+    output = _run_netsh_interface_listing()
+    interface_kinds: list[str] = []
+
+    for raw_line in output.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+
+        normalized_line = _normalize_network_text(stripped)
+        if not normalized_line:
+            continue
+        if "admin" in normalized_line and "type" in normalized_line:
+            continue
+        if set(normalized_line) == {"-"}:
+            continue
+
+        parts = re.split(r"\s{2,}", stripped, maxsplit=3)
+        if len(parts) < 4:
+            continue
+
+        admin_state, state, _interface_type, interface_name = parts
+        normalized_admin_state = _normalize_network_text(admin_state)
+        normalized_state = _normalize_network_text(state)
+
+        if not normalized_admin_state.startswith(("activ", "enabl")):
+            continue
+        if normalized_state.startswith(("deconnect", "dconnect", "disconnect")):
+            continue
+        if not normalized_state.startswith(("connect", "link")):
+            continue
+
+        interface_kinds.append(_classify_interface_name(interface_name))
+
+    return interface_kinds
+
+
+def _primary_interface_kind() -> str | None:
+    interface_kinds = _connected_interface_kinds()
+    if not interface_kinds:
+        return None
+
+    priorities = {"ethernet": 0, "wifi": 1, "network": 2}
+    return min(interface_kinds, key=lambda kind: priorities.get(kind, 9))
+
+
+def probe_online_service(
+    host: str = DEFAULT_ONLINE_HOST,
+    port: int = DEFAULT_ONLINE_PORT,
+    *,
+    timeout_seconds: float = DEFAULT_ONLINE_PROBE_TIMEOUT_SECONDS,
+) -> bool:
+    normalized_host = str(host or "").strip()
+    if not normalized_host:
+        return False
+
+    try:
+        normalized_port = int(port)
+    except (TypeError, ValueError):
+        return False
+
+    if not 1 <= normalized_port <= 65535:
+        return False
+
+    try:
+        with contextlib.closing(
+            socket.create_connection(
+                (normalized_host, normalized_port),
+                timeout=max(0.1, float(timeout_seconds)),
+            )
+        ):
+            return True
+    except OSError:
+        return False
+
+
+def get_online_network_status(
+    host: str = DEFAULT_ONLINE_HOST,
+    port: int = DEFAULT_ONLINE_PORT,
+    *,
+    timeout_seconds: float = DEFAULT_ONLINE_PROBE_TIMEOUT_SECONDS,
+) -> OnlineNetworkStatus:
+    interface_kind = _primary_interface_kind()
+    if interface_kind is None:
+        return OnlineNetworkStatus(
+            transport_kind="offline",
+            transport_label=_transport_label("offline"),
+            tone="neutral",
+            signal_bars=0,
+            online_available=False,
+            is_connected=False,
+            quality_label="Aucun",
+        )
+
+    started_at = time.perf_counter()
+    is_online_available = probe_online_service(
+        host,
+        port,
+        timeout_seconds=timeout_seconds,
+    )
+    latency_ms = max(1, int(round((time.perf_counter() - started_at) * 1000)))
+
+    if not is_online_available:
+        return OnlineNetworkStatus(
+            transport_kind=interface_kind,
+            transport_label=_transport_label(interface_kind),
+            tone="danger",
+            signal_bars=1,
+            online_available=False,
+            is_connected=True,
+            quality_label="Faible",
+        )
+
+    if latency_ms <= ONLINE_NETWORK_GOOD_LATENCY_MS:
+        return OnlineNetworkStatus(
+            transport_kind=interface_kind,
+            transport_label=_transport_label(interface_kind),
+            tone="success",
+            signal_bars=4,
+            online_available=True,
+            is_connected=True,
+            quality_label="Stable",
+            latency_ms=latency_ms,
+        )
+
+    return OnlineNetworkStatus(
+        transport_kind=interface_kind,
+        transport_label=_transport_label(interface_kind),
+        tone="warning",
+        signal_bars=3,
+        online_available=True,
+        is_connected=True,
+        quality_label="Moyen",
+        latency_ms=latency_ms,
+    )
+
+
 class OnlineClient:
     def __init__(self):
         self.sock: socket.socket | None = None
@@ -109,10 +315,13 @@ class OnlineClient:
         self.rx_thread: threading.Thread | None = None
         self.events: "queue.Queue[dict]" = queue.Queue()
         self._lock = threading.Lock()
+        self._send_lock = threading.Lock()
         self._disconnect_requested = False
         self._endpoint: str | None = None
         self.last_input_state: dict[str, bool] | None = None
         self.last_input_send_time = 0.0
+        self._last_server_activity_time = 0.0
+        self._last_ping_sent_time = 0.0
 
     @property
     def endpoint(self) -> str | None:
@@ -148,6 +357,8 @@ class OnlineClient:
             self._endpoint = format_endpoint(normalized_host, normalized_port)
             self.last_input_state = None
             self.last_input_send_time = 0.0
+            self._last_server_activity_time = 0.0
+            self._last_ping_sent_time = 0.0
             self._clear_events_locked()
             self.rx_thread = threading.Thread(
                 target=self._connection_loop,
@@ -175,7 +386,8 @@ class OnlineClient:
             raise OnlineConnectionError("Aucune connexion online active.")
 
         try:
-            sock.sendall(payload)
+            with self._send_lock:
+                sock.sendall(payload)
         except OSError as error:
             raise OnlineConnectionError(_format_runtime_error(error)) from error
 
@@ -189,6 +401,8 @@ class OnlineClient:
             self._endpoint = None
             self.last_input_state = None
             self.last_input_send_time = 0.0
+            self._last_server_activity_time = 0.0
+            self._last_ping_sent_time = 0.0
 
         if sock is not None:
             try:
@@ -274,6 +488,7 @@ class OnlineClient:
                     timeout=DEFAULT_ONLINE_CONNECT_TIMEOUT_SECONDS,
                 )
                 sock.settimeout(ONLINE_READ_TIMEOUT_SECONDS)
+                self._configure_socket_keepalive(sock)
             except OSError as error:
                 disconnect_message = {
                     "type": "DISCONNECTED",
@@ -288,6 +503,8 @@ class OnlineClient:
                 self.sock = sock
                 self.running = True
                 self.connecting = False
+                self._last_server_activity_time = time.monotonic()
+                self._last_ping_sent_time = 0.0
 
             self._send_on_socket(
                 sock,
@@ -352,7 +569,48 @@ class OnlineClient:
         return struct.pack("!I", len(raw)) + raw
 
     def _send_on_socket(self, sock: socket.socket, obj: dict) -> None:
-        sock.sendall(self._pack(obj))
+        with self._send_lock:
+            sock.sendall(self._pack(obj))
+
+    def _configure_socket_keepalive(self, sock: socket.socket) -> None:
+        with contextlib.suppress(OSError):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+    def _mark_server_activity(self) -> None:
+        with self._lock:
+            self._last_server_activity_time = time.monotonic()
+
+    def _handle_socket_timeout(self, sock: socket.socket) -> None:
+        now = time.monotonic()
+
+        with self._lock:
+            if not self.running:
+                raise ConnectionAbortedError(
+                    "Connexion online fermee avant la fin de la lecture."
+                )
+            last_server_activity_time = self._last_server_activity_time
+            last_ping_sent_time = self._last_ping_sent_time
+
+        if (
+            last_server_activity_time
+            and (now - last_server_activity_time) >= ONLINE_HEARTBEAT_TIMEOUT_SECONDS
+        ):
+            raise ConnectionError("Le serveur online ne repond plus.")
+
+        if (now - last_ping_sent_time) < ONLINE_HEARTBEAT_INTERVAL_SECONDS:
+            return
+
+        try:
+            self._send_on_socket(
+                sock,
+                {"type": "PING", "ts": time.time()},
+            )
+        except OSError as error:
+            raise ConnectionError(_format_runtime_error(error)) from error
+
+        with self._lock:
+            if self.sock is sock:
+                self._last_ping_sent_time = now
 
     def _recv_exact(self, sock: socket.socket, size: int) -> bytes:
         buffer = bytearray()
@@ -367,6 +625,7 @@ class OnlineClient:
             try:
                 chunk = sock.recv(size - len(buffer))
             except socket.timeout:
+                self._handle_socket_timeout(sock)
                 continue
             except OSError as error:
                 raise ConnectionError(_format_runtime_error(error)) from error
@@ -374,6 +633,7 @@ class OnlineClient:
             if not chunk:
                 raise ConnectionError("Le serveur online a ferme la connexion.")
 
+            self._mark_server_activity()
             buffer.extend(chunk)
 
         return bytes(buffer)

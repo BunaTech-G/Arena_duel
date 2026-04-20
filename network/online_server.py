@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import inspect
 import json
 import secrets
 import struct
@@ -28,6 +29,9 @@ DEFAULT_SPRITE_BY_TEAM = {
 }
 SERVER_CONFIG = {
     "match_duration_seconds": MATCH_DURATION_SECONDS,
+}
+SERVER_CAPABILITIES = {
+    "ready_state": True,
 }
 
 
@@ -149,6 +153,28 @@ def generate_room_id() -> str:
     stamp = int(time.time() * 1000)
     token = secrets.token_hex(2)
     return f"r{stamp}{token}"
+
+
+def _supports_start_server_keep_alive() -> bool:
+    try:
+        start_server_signature = inspect.signature(asyncio.start_server)
+        return "keep_alive" in start_server_signature.parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def build_start_server_kwargs() -> dict[str, bool]:
+    if _supports_start_server_keep_alive():
+        return {"keep_alive": True}
+    return {}
+
+
+def build_welcome_payload() -> dict:
+    return {
+        "type": "WELCOME",
+        "proto": PROTO_VERSION,
+        "capabilities": dict(SERVER_CAPABILITIES),
+    }
 
 
 def default_sprite_id_for_team(team_code: str) -> str:
@@ -766,7 +792,7 @@ async def handle(
             )
             return
 
-        await send(writer, {"type": "WELCOME", "proto": PROTO_VERSION})
+        await send(writer, build_welcome_payload())
 
         login = await read_msg(reader)
         if str(login.get("type") or "").strip().upper() != "LOGIN":
@@ -874,7 +900,12 @@ async def main(
         match_duration_seconds
     )
 
-    server = await asyncio.start_server(handle, host, port)
+    server = await asyncio.start_server(
+        handle,
+        host,
+        port,
+        **build_start_server_kwargs(),
+    )
     addresses = ", ".join(str(sock.getsockname()) for sock in server.sockets)
     print(
         f"[ONLINE] Serveur TCP+JSON en ecoute sur {addresses} "

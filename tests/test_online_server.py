@@ -269,6 +269,35 @@ class OnlineServerReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(guest_assign_slot["client_id"], "guest")
         self.assertEqual(guest_assign_slot["slot"], 1)
 
+    def test_build_start_server_kwargs_enables_keep_alive_when_supported(self):
+        with mock.patch.object(
+            online_server,
+            "_supports_start_server_keep_alive",
+            return_value=True,
+        ):
+            self.assertEqual(
+                online_server.build_start_server_kwargs(),
+                {"keep_alive": True},
+            )
+
+    def test_build_start_server_kwargs_is_empty_without_support(self):
+        with mock.patch.object(
+            online_server,
+            "_supports_start_server_keep_alive",
+            return_value=False,
+        ):
+            self.assertEqual(online_server.build_start_server_kwargs(), {})
+
+    def test_build_welcome_payload_includes_ready_capability(self):
+        payload = online_server.build_welcome_payload()
+
+        self.assertEqual(payload["type"], "WELCOME")
+        self.assertEqual(payload["proto"], online_server.PROTO_VERSION)
+        self.assertEqual(
+            payload["capabilities"],
+            {"ready_state": True},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

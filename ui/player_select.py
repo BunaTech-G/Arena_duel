@@ -403,7 +403,7 @@ class ForgeGuideWindow(ctk.CTkToplevel):
         apply_window_icon(self, retry_after_ms=220)
 
         self.geometry("760x560")
-        enable_large_window(self, 680, 480, start_zoomed=False)
+        enable_large_window(self, 680, 480, start_zoomed=True)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 

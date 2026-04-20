@@ -24,7 +24,13 @@ from runtime_utils import (
     set_runtime_override,
     save_runtime_user_overrides,
 )
-from ui.online_lobby import OnlineLobbyWindow
+from ui.auto_update import bind_auto_update_window
+from ui.online_client import probe_online_service
+from ui.online_lobby import (
+    ONLINE_ENTRY_REQUIRED_MESSAGE,
+    ONLINE_ENTRY_REQUIRED_TITLE,
+    OnlineLobbyWindow,
+)
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
@@ -149,6 +155,42 @@ def _build_network_lobby_view(parent, **kwargs):
     return NetworkLobbyView(parent, **kwargs)
 
 
+def _build_online_session_window(parent, **kwargs):
+    from ui.online_lobby import OnlineSessionWindow
+
+    return OnlineSessionWindow(parent, **kwargs)
+
+
+def _show_online_entry_warning(parent=None) -> None:
+    if parent is None:
+        messagebox.showwarning(
+            ONLINE_ENTRY_REQUIRED_TITLE,
+            ONLINE_ENTRY_REQUIRED_MESSAGE,
+        )
+        return
+
+    try:
+        messagebox.showwarning(
+            ONLINE_ENTRY_REQUIRED_TITLE,
+            ONLINE_ENTRY_REQUIRED_MESSAGE,
+            parent=parent,
+        )
+    except TclError:
+        messagebox.showwarning(
+            ONLINE_ENTRY_REQUIRED_TITLE,
+            ONLINE_ENTRY_REQUIRED_MESSAGE,
+        )
+
+
+def _guard_online_entry(*, parent=None) -> bool:
+    if probe_online_service():
+        return True
+
+    play_error()
+    _show_online_entry_warning(parent=parent)
+    return False
+
+
 def _warm_launcher_visual_cache(background_size: tuple[int, int]):
     load_launcher_background_image(
         "assets",
@@ -161,6 +203,261 @@ def _warm_launcher_visual_cache(background_size: tuple[int, int]):
         size=(224, 224),
         fallback_label="arena duel",
     )
+
+
+def _center_fixed_window(window, *, width: int, height: int) -> None:
+    screen_width = max(width, window.winfo_screenwidth())
+    screen_height = max(height, window.winfo_screenheight())
+    origin_x = max(0, (screen_width - width) // 2)
+    origin_y = max(0, (screen_height - height) // 2 - 20)
+
+    window.geometry(f"{width}x{height}+{origin_x}+{origin_y}")
+    try:
+        window.resizable(False, False)
+        window.minsize(width, height)
+        window.maxsize(width, height)
+    except TclError:
+        pass
+
+
+class ModeSelectionMenuApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.selection: str | None = None
+        self._configure_window()
+        self._build_ui()
+        present_window(self)
+        bind_auto_update_window(self)
+
+    def _menu_title(self) -> str:
+        return "Arena Duel - Menu"
+
+    def _menu_size(self) -> tuple[int, int]:
+        return (420, 430)
+
+    def _configure_window(self) -> None:
+        style_window(self)
+        self.configure(fg_color=PALETTE["launcher_blend"])
+
+        width, height = self._menu_size()
+        self.title(self._menu_title())
+        apply_window_icon(self, default=True, retry_after_ms=220)
+        _center_fixed_window(self, width=width, height=height)
+        self.protocol("WM_DELETE_WINDOW", self._handle_close)
+
+    def _build_menu_shell(
+        self,
+        *,
+        badge_text: str,
+        title_text: str,
+        subtitle_text: str,
+        wraplength: int,
+        actions: list[dict[str, object]],
+    ) -> None:
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        shell = ctk.CTkFrame(self, corner_radius=26)
+        style_frame(
+            shell,
+            tone="panel_deep",
+            border_color=PALETTE["gold_dim"],
+            border_width=0,
+        )
+        shell.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        shell.grid_columnconfigure(0, weight=1)
+
+        create_badge(shell, badge_text, tone="gold").grid(
+            row=0,
+            column=0,
+            padx=20,
+            pady=(20, 10),
+            sticky="w",
+        )
+
+        ctk.CTkLabel(
+            shell,
+            text=title_text,
+            font=TYPOGRAPHY["title"],
+            text_color=PALETTE["text"],
+        ).grid(row=1, column=0, padx=20, sticky="w")
+
+        ctk.CTkLabel(
+            shell,
+            text=subtitle_text,
+            font=TYPOGRAPHY["body"],
+            text_color=PALETTE["text_soft"],
+            justify="left",
+            wraplength=wraplength,
+        ).grid(row=2, column=0, padx=20, pady=(8, 18), sticky="w")
+
+        actions_frame = ctk.CTkFrame(shell, fg_color="transparent")
+        actions_frame.grid(row=3, column=0, padx=20, pady=(0, 20), sticky="ew")
+        actions_frame.grid_columnconfigure(0, weight=1)
+
+        last_index = len(actions) - 1
+        for index, action in enumerate(actions):
+            create_button(
+                actions_frame,
+                str(action["text"]),
+                action["command"],
+                variant=str(action["variant"]),
+                height=int(action["height"]),
+            ).grid(
+                row=index,
+                column=0,
+                pady=(0, 12 if index < last_index else 0),
+                sticky="ew",
+            )
+
+    def _set_selection(self, value: str) -> None:
+        self.selection = value
+        self.destroy()
+
+    def _build_ui(self) -> None:
+        self._build_menu_shell(
+            badge_text="Menu",
+            title_text="Arena Duel - Menu",
+            subtitle_text="Choisissez votre mode de jeu",
+            wraplength=320,
+            actions=[
+                {
+                    "text": "Jouer en Local",
+                    "command": self._handle_local,
+                    "variant": "primary",
+                    "height": 50,
+                },
+                {
+                    "text": "Jouer en Online",
+                    "command": self._handle_online,
+                    "variant": "accent",
+                    "height": 48,
+                },
+                {
+                    "text": "Quitter",
+                    "command": self._handle_quit,
+                    "variant": "ghost",
+                    "height": 44,
+                },
+            ],
+        )
+
+    def _handle_local(self) -> None:
+        self._set_selection("local")
+
+    def _handle_online(self) -> None:
+        self._set_selection("online")
+
+    def _handle_quit(self) -> None:
+        self._set_selection("quit")
+
+    def _handle_close(self) -> None:
+        self.selection = None
+        self.destroy()
+
+
+class LocalModeMenuApp(ModeSelectionMenuApp):
+    def _menu_title(self) -> str:
+        return "Arena Duel - Local"
+
+    def _menu_size(self) -> tuple[int, int]:
+        return (440, 520)
+
+    def _build_ui(self) -> None:
+        self._build_menu_shell(
+            badge_text="Local",
+            title_text="Arena Duel - Local",
+            subtitle_text=(
+                "Choisissez une joute locale, un hall LAN hôte "
+                "ou un hall LAN à rejoindre."
+            ),
+            wraplength=340,
+            actions=[
+                {
+                    "text": "LAN Admin",
+                    "command": self._handle_lan_host,
+                    "variant": "primary",
+                    "height": 48,
+                },
+                {
+                    "text": "LAN Rejoindre",
+                    "command": self._handle_lan_join,
+                    "variant": "accent",
+                    "height": 48,
+                },
+                {
+                    "text": "Local",
+                    "command": self._handle_local_game,
+                    "variant": "secondary",
+                    "height": 48,
+                },
+                {
+                    "text": "Retour",
+                    "command": self._handle_back,
+                    "variant": "ghost",
+                    "height": 44,
+                },
+            ],
+        )
+
+    def _handle_lan_host(self) -> None:
+        self._set_selection("lan_host")
+
+    def _handle_lan_join(self) -> None:
+        self._set_selection("lan_join")
+
+    def _handle_local_game(self) -> None:
+        self._set_selection("local")
+
+    def _handle_back(self) -> None:
+        self._set_selection("back")
+
+
+class OnlineModeMenuApp(ModeSelectionMenuApp):
+    def _menu_title(self) -> str:
+        return "Arena Duel - Online"
+
+    def _menu_size(self) -> tuple[int, int]:
+        return (420, 430)
+
+    def _build_ui(self) -> None:
+        self._build_menu_shell(
+            badge_text="Online",
+            title_text="Arena Duel - Online",
+            subtitle_text=(
+                "Voulez-vous héberger une session ou rejoindre une session existante ?"
+            ),
+            wraplength=320,
+            actions=[
+                {
+                    "text": "Héberger",
+                    "command": self._handle_host,
+                    "variant": "primary",
+                    "height": 48,
+                },
+                {
+                    "text": "Rejoindre",
+                    "command": self._handle_join,
+                    "variant": "accent",
+                    "height": 48,
+                },
+                {
+                    "text": "Retour",
+                    "command": self._handle_back,
+                    "variant": "ghost",
+                    "height": 44,
+                },
+            ],
+        )
+
+    def _handle_host(self) -> None:
+        self._set_selection("host")
+
+    def _handle_join(self) -> None:
+        self._set_selection("join")
+
+    def _handle_back(self) -> None:
+        self._set_selection("back")
 
 
 class StartupModeApp(ctk.CTk):
@@ -183,11 +480,12 @@ class StartupModeApp(ctk.CTk):
         self.title("Arena Duel - Démarrage")
         apply_window_icon(self, default=True, retry_after_ms=220)
         self.geometry("620x420")
-        enable_large_window(self, 560, 360, start_zoomed=False)
+        enable_large_window(self, 560, 360, start_zoomed=True)
         self.protocol("WM_DELETE_WINDOW", self._handle_close)
 
         self._build_ui()
         present_window(self)
+        bind_auto_update_window(self)
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
@@ -536,7 +834,7 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         apply_window_icon(self, retry_after_ms=220)
 
         self.geometry("1180x760")
-        enable_large_window(self, 980, 640, start_zoomed=False)
+        enable_large_window(self, 980, 640, start_zoomed=True)
         self.protocol("WM_DELETE_WINDOW", self._handle_close)
 
         screen_width = max(1180, self.winfo_screenwidth())
@@ -1468,6 +1766,7 @@ class LauncherApp(ctk.CTk):
         )
         self.after(100, self._ensure_menu_audio_started)
         self._set_info("Choisis un mode.", tone="gold")
+        bind_auto_update_window(self)
 
     def _build_ui(self):
         backdrop = ctk.CTkLabel(self, text="", image=self.background_image)
@@ -2089,7 +2388,13 @@ class LauncherApp(ctk.CTk):
         except TclError:
             return None
 
-    def _focus_or_open_window(self, attr_name, factory, *, hide_launcher=False):
+    def _focus_or_open_window(
+        self,
+        attr_name,
+        factory,
+        *,
+        hide_launcher=False,
+    ):
         existing_window = self._get_live_window(getattr(self, attr_name))
         if existing_window is None:
             window = factory()
@@ -2206,11 +2511,19 @@ class LauncherApp(ctk.CTk):
         )
 
     def open_online_lobby(self):
+        if not _guard_online_entry(parent=self):
+            self._set_info(
+                "Connexion Internet requise pour l'Online.",
+                tone="warning",
+            )
+            return
+
         play_transition()
         self._set_info("Ouverture de l'espace jouer en ligne.", tone="info")
         win = self._focus_or_open_window(
             "online_lobby_window",
-            lambda: OnlineLobbyWindow(self),
+            lambda: OnlineLobbyWindow(self, network_available=True),
+            hide_launcher=True,
         )
         win.focus()
 
@@ -2239,6 +2552,210 @@ class LauncherApp(ctk.CTk):
         self.active_server_port = None
         stop_music(fade_ms=150)
         self.destroy()
+
+
+def run_local_forge() -> None:
+    app = ctk.CTk()
+    app.withdraw()
+
+    window = _build_player_select_view(app)
+
+    def close_all() -> None:
+        try:
+            if window.winfo_exists():
+                window.destroy()
+        except TclError:
+            pass
+
+        try:
+            if app.winfo_exists():
+                app.destroy()
+        except TclError:
+            pass
+
+    window.protocol("WM_DELETE_WINDOW", close_all)
+    app.mainloop()
+
+
+def _run_menu(menu_factory) -> str | None:
+    menu = menu_factory()
+    menu.mainloop()
+    return menu.selection
+
+
+def run_local_mode_menu() -> str | None:
+    return _run_menu(LocalModeMenuApp)
+
+
+def run_online_mode_menu() -> str | None:
+    return _run_menu(OnlineModeMenuApp)
+
+
+def _run_online_session_mode(mode: str) -> None:
+    if not _guard_online_entry():
+        return
+
+    app = ctk.CTk()
+    app.withdraw()
+
+    window = _build_online_session_window(
+        app,
+        mode=mode,
+        network_available=True,
+    )
+
+    def close_all() -> None:
+        try:
+            if window.winfo_exists():
+                window.shutdown(restore_parent=False)
+        except TclError:
+            pass
+
+        try:
+            if app.winfo_exists():
+                app.destroy()
+        except TclError:
+            pass
+
+    window.protocol("WM_DELETE_WINDOW", close_all)
+    app.mainloop()
+
+
+def run_online_host_session() -> None:
+    _run_online_session_mode("create")
+
+
+def run_online_join_session() -> None:
+    _run_online_session_mode("join")
+
+
+def _bind_lan_lobby_close(
+    window,
+    close_all,
+    window_ref: dict[str, object],
+) -> None:
+    window_ref["window"] = window
+    window.protocol("WM_DELETE_WINDOW", close_all)
+    original_build_resumed_lobby = getattr(window, "_build_resumed_lobby")
+
+    def _build_resumed_lobby_with_close(invitation: str):
+        resumed_lobby = original_build_resumed_lobby(invitation)
+        _bind_lan_lobby_close(resumed_lobby, close_all, window_ref)
+        return resumed_lobby
+
+    setattr(window, "_build_resumed_lobby", _build_resumed_lobby_with_close)
+
+
+def _run_lan_lobby(*, host_mode: bool) -> None:
+    app = ctk.CTk()
+    app.withdraw()
+
+    network_config = load_lan_runtime_config()
+    tcp_port = int(network_config.port)
+    embedded_server = None
+    default_server_invitation = None
+
+    if host_mode:
+        try:
+            embedded_server, _thread, address_info = start_server_in_background(
+                network_config.bind_host,
+                tcp_port,
+            )
+        except (OSError, RuntimeError) as error:
+            messagebox.showerror(
+                "Hall indisponible",
+                f"Impossible d'ouvrir le hall : {error}",
+            )
+            try:
+                if app.winfo_exists():
+                    app.destroy()
+            except TclError:
+                pass
+            return
+
+        active_host = address_info.primary_ip or "127.0.0.1"
+        default_server_invitation = format_endpoint(active_host, tcp_port)
+
+    lobby_kwargs = {"server_port": tcp_port, "host_mode": host_mode}
+    if default_server_invitation is not None:
+        lobby_kwargs["default_server_invitation"] = default_server_invitation
+
+    window_ref: dict[str, object] = {"window": None}
+
+    def shutdown_server() -> None:
+        nonlocal embedded_server
+        if embedded_server is None:
+            return
+        try:
+            embedded_server.shutdown()
+            embedded_server.server_close()
+        except (OSError, RuntimeError):
+            pass
+        embedded_server = None
+
+    def close_all() -> None:
+        current_window = window_ref.get("window")
+
+        try:
+            if current_window is not None and current_window.winfo_exists():
+                current_window.running = False
+                if current_window.client is not None:
+                    current_window.client.close()
+                current_window.destroy()
+        except TclError:
+            pass
+
+        shutdown_server()
+
+        try:
+            if app.winfo_exists():
+                app.destroy()
+        except TclError:
+            pass
+
+    window = _build_network_lobby_view(app, **lobby_kwargs)
+    _bind_lan_lobby_close(window, close_all, window_ref)
+    app.mainloop()
+
+
+def run_lan_host_lobby() -> None:
+    _run_lan_lobby(host_mode=True)
+
+
+def run_lan_join_lobby() -> None:
+    _run_lan_lobby(host_mode=False)
+
+
+def run_main_mode_menu() -> None:
+    while True:
+        main_selection = _run_menu(ModeSelectionMenuApp)
+
+        if main_selection == "local":
+            local_selection = run_local_mode_menu()
+            if local_selection == "back":
+                continue
+            if local_selection == "lan_host":
+                run_lan_host_lobby()
+            elif local_selection == "lan_join":
+                run_lan_join_lobby()
+            elif local_selection == "local":
+                run_local_forge()
+            return
+
+        if main_selection == "online":
+            if not _guard_online_entry():
+                continue
+
+            online_selection = run_online_mode_menu()
+            if online_selection == "back":
+                continue
+            if online_selection == "host":
+                run_online_host_session()
+            elif online_selection == "join":
+                run_online_join_session()
+            return
+
+        return
 
 
 def run_launcher():
