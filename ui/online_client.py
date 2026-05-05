@@ -14,11 +14,33 @@ import time
 import unicodedata
 
 from network.net_utils import format_endpoint, get_network_logger
+from runtime_utils import load_runtime_config
 
 
 PROTO_VERSION = 1
-DEFAULT_ONLINE_HOST = "165.227.166.21"
-DEFAULT_ONLINE_PORT = 27015
+FALLBACK_ONLINE_HOST = "165.232.108.225"
+FALLBACK_ONLINE_PORT = 27015
+
+
+def _load_default_online_endpoint() -> tuple[str, int]:
+    runtime_config = load_runtime_config(include_session_overrides=False)
+    host = (
+        str(runtime_config.get("online_server_host") or FALLBACK_ONLINE_HOST).strip()
+        or FALLBACK_ONLINE_HOST
+    )
+
+    try:
+        port = int(runtime_config.get("online_server_port") or FALLBACK_ONLINE_PORT)
+    except (TypeError, ValueError):
+        port = FALLBACK_ONLINE_PORT
+
+    if not 1 <= port <= 65535:
+        port = FALLBACK_ONLINE_PORT
+
+    return host, port
+
+
+DEFAULT_ONLINE_HOST, DEFAULT_ONLINE_PORT = _load_default_online_endpoint()
 DEFAULT_ONLINE_CONNECT_TIMEOUT_SECONDS = 5.0
 DEFAULT_ONLINE_PROBE_TIMEOUT_SECONDS = 0.45
 DEFAULT_ONLINE_NETSH_TIMEOUT_SECONDS = 1.2

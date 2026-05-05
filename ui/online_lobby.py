@@ -401,8 +401,8 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
         ctk.CTkLabel(
             header,
             text=(
-                "Choisis rejoindre ou créer, puis vérifie l'adresse du "
-                "serveur si ton groupe joue sur un VPS ou un port dédié."
+                "Choisis rejoindre ou créer, puis entre dans la session qui "
+                "te correspond."
             ),
             font=TYPOGRAPHY["body"],
             text_color=PALETTE["text_soft"],
@@ -474,9 +474,8 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
         ctk.CTkLabel(
             footer,
             text=(
-                "Le serveur par défaut est prérempli dans la fenêtre "
-                "suivante. Tu peux l'ajuster si ton équipe utilise un autre "
-                "VPS ou un autre port."
+                "Le serveur online reste configuré en interne. Cette fenêtre "
+                "sert seulement à orienter le joueur vers la bonne expérience."
             ),
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
@@ -1007,14 +1006,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
     def _profile_hint_text(self) -> str:
         if self.mode == MODE_JOIN:
-            return (
-                "Entre ton pseudo, puis vérifie l'adresse du serveur avant "
-                "de te connecter."
-            )
-        return (
-            "Entre ton pseudo, puis vérifie l'adresse du serveur avant "
-            "d'ouvrir la session."
-        )
+            return "Entre ton pseudo pour jouer en ligne."
+        return "Entre ton pseudo pour ouvrir une session en ligne."
 
     def _connect_button_text(self) -> str:
         if self.connecting:
@@ -1095,7 +1088,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self,
         raw_message: str,
     ) -> tuple[str, str, str]:
-        normalized = str(raw_message or "").strip().lower()
+        detailed_message = str(raw_message or "").strip()
+        normalized = detailed_message.lower()
 
         if "pseudo" in normalized:
             return (
@@ -1119,8 +1113,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         ):
             return (
                 "Serveur indisponible",
-                "Réessaie plus tard ou reviens au menu.",
-                "Serveur indisponible.",
+                (detailed_message or "Réessaie plus tard ou reviens au menu."),
+                detailed_message or "Serveur indisponible.",
             )
 
         if any(
@@ -1137,8 +1131,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         ):
             return (
                 "Connexion perdue",
-                "Reconnecte-toi pour jouer en ligne.",
-                "Connexion perdue.",
+                detailed_message or "Reconnecte-toi pour jouer en ligne.",
+                detailed_message or "Connexion perdue.",
             )
 
         return (
@@ -1308,40 +1302,6 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         )
         style_entry(self.pseudo_entry)
         self.pseudo_entry.grid(row=1, column=0, sticky="ew")
-
-        server_shell = ctk.CTkFrame(pseudo_shell, fg_color="transparent")
-        server_shell.grid(row=2, column=0, pady=(10, 0), sticky="ew")
-        server_shell.grid_columnconfigure(0, weight=1)
-        server_shell.grid_columnconfigure(1, weight=0)
-
-        ctk.CTkLabel(
-            server_shell,
-            text="Serveur",
-            font=TYPOGRAPHY["small_bold"],
-            text_color=PALETTE["text_muted"],
-        ).grid(row=0, column=0, pady=(0, 4), sticky="w")
-
-        ctk.CTkLabel(
-            server_shell,
-            text="Port",
-            font=TYPOGRAPHY["small_bold"],
-            text_color=PALETTE["text_muted"],
-        ).grid(row=0, column=1, padx=(10, 0), pady=(0, 4), sticky="w")
-
-        self.host_entry = ctk.CTkEntry(
-            server_shell,
-            textvariable=self.host_var,
-        )
-        style_entry(self.host_entry)
-        self.host_entry.grid(row=1, column=0, padx=(0, 10), sticky="ew")
-
-        self.port_entry = ctk.CTkEntry(
-            server_shell,
-            textvariable=self.port_var,
-            width=110,
-        )
-        style_entry(self.port_entry)
-        self.port_entry.grid(row=1, column=1, sticky="ew")
 
         ctk.CTkLabel(
             card,

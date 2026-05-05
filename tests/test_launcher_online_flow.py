@@ -1129,16 +1129,8 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             create_window.btn_connect.cget("text"),
             "Se connecter",
         )
-        self.assertIsNotNone(create_window.host_entry)
-        self.assertIsNotNone(create_window.port_entry)
-        self.assertEqual(
-            create_window.host_var.get(),
-            online_client_module.DEFAULT_ONLINE_HOST,
-        )
-        self.assertEqual(
-            create_window.port_var.get(),
-            str(online_client_module.DEFAULT_ONLINE_PORT),
-        )
+        self.assertIsNone(create_window.host_entry)
+        self.assertIsNone(create_window.port_entry)
         self.assertEqual(create_window.btn_disconnect.cget("text"), "Retour")
         self.assertEqual(create_window.btn_disconnect.cget("state"), "normal")
         self.assertEqual(
@@ -1170,16 +1162,8 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             join_window.btn_connect.cget("text"),
             "Se connecter",
         )
-        self.assertIsNotNone(join_window.host_entry)
-        self.assertIsNotNone(join_window.port_entry)
-        self.assertEqual(
-            join_window.host_var.get(),
-            online_client_module.DEFAULT_ONLINE_HOST,
-        )
-        self.assertEqual(
-            join_window.port_var.get(),
-            str(online_client_module.DEFAULT_ONLINE_PORT),
-        )
+        self.assertIsNone(join_window.host_entry)
+        self.assertIsNone(join_window.port_entry)
         self.assertIsNotNone(join_window.network_indicator)
         self.assertTrue(join_window.network_indicator.available)
         self.assertEqual(join_window.btn_disconnect.cget("text"), "Retour")
@@ -1534,6 +1518,48 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         )
         schedule_poll.assert_called_once_with()
         self.assertTrue(create_window.connecting)
+
+    def test_online_connect_shows_detailed_network_error(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_create_window()
+        self._update_ui()
+
+        create_window = online_window.create_window
+        create_window.pseudo_var.set("HostPlayer")
+        error_message = (
+            "Serveur online injoignable sur 165.232.108.225:27015. "
+            "Verifie l'hote, le port et la connexion Internet."
+        )
+
+        with (
+            mock.patch.object(
+                create_window.client,
+                "connect",
+                side_effect=online_client_module.OnlineConnectionError(error_message),
+            ) as connect,
+            mock.patch.object(
+                online_lobby_module.messagebox,
+                "showerror",
+            ) as showerror,
+        ):
+            create_window.on_connect()
+
+        connect.assert_called_once_with(
+            create_window.host_var.get().strip(),
+            int(create_window.port_var.get().strip()),
+            "HostPlayer",
+        )
+        showerror.assert_called_once_with(
+            "Serveur indisponible",
+            error_message,
+        )
+        self.assertEqual(
+            create_window.status_label.cget("text"),
+            error_message,
+        )
 
     def test_online_create_window_enables_start_button_for_ready_host(self):
         self.app.open_online_lobby()
