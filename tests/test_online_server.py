@@ -112,6 +112,50 @@ class OnlineServerReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(online_server.clients["host"].ready_to_start)
         self.assertFalse(online_server.clients["guest"].ready_to_start)
 
+    async def test_create_room_keeps_room_duration_in_directory_payloads(self):
+        host_writer = await self._register_client("host", "HostPlayer")
+
+        await online_server.create_room(
+            "host",
+            "Long Room",
+            4,
+            90,
+        )
+
+        room_id = next(iter(online_server.rooms))
+        async with online_server.registry_lock:
+            room = online_server.rooms[room_id]
+            summary = online_server.serialize_room_summary_unlocked(room)
+            state = online_server.serialize_room_state_unlocked(room)
+
+        self.assertEqual(room.match_duration_seconds, 90)
+        self.assertEqual(summary["match_duration_seconds"], 90)
+        self.assertEqual(state["match_duration_seconds"], 90)
+        created_message = self._last_message_of_type(host_writer, "ROOM_CREATED")
+        self.assertEqual(created_message["match_duration_seconds"], 90)
+
+    async def test_prelogin_room_listing_returns_rooms_before_login(self):
+        writer = _DummyWriter()
+        await self._register_client("host", "HostPlayer")
+        await online_server.create_room("host", "Preview Room", 2, 75)
+
+        reader = mock.AsyncMock()
+        with mock.patch.object(
+            online_server,
+            "read_msg",
+            side_effect=[
+                {"type": "LIST_ROOMS"},
+                {"type": "LOGIN", "pseudo": "PreviewGuest"},
+            ],
+        ):
+            login = await online_server.read_login_or_prelogin_request(reader, writer)
+
+        self.assertEqual(login, {"type": "LOGIN", "pseudo": "PreviewGuest"})
+        rooms_message = self._last_message_of_type(writer, "ROOMS")
+        self.assertEqual(len(rooms_message["rooms"]), 1)
+        self.assertEqual(rooms_message["rooms"][0]["name"], "Preview Room")
+        self.assertEqual(rooms_message["rooms"][0]["match_duration_seconds"], 75)
+
     async def test_start_match_requires_all_players_ready(self):
         room_id, host_writer, guest_writer = await self._create_room_with_two_players()
 

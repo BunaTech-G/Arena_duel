@@ -1255,7 +1255,7 @@ def _draw_control_marker(
     label_rect = label_surface.get_rect()
     bob_offset = int(math.sin((elapsed_ms / 220.0) + center_x * 0.016) * 2.0)
     panel_rect = label_rect.inflate(max(24, radius), max(12, radius // 2))
-    panel_rect.center = (center_x, center_y - int(radius * 2.75) + bob_offset)
+    panel_rect.center = (center_x, center_y - int(radius * 3.45) + bob_offset)
     if panel_rect.top < 6:
         panel_rect.top = 6
 
@@ -1522,8 +1522,8 @@ def draw_player_avatar(
 ) -> None:
     center_x = int(x)
     center_y = int(y)
+    del direction_name
     display_radius = max(radius, int(radius * 1.18))
-    resolved_direction = direction_name or ("right" if facing >= 0 else "left")
     direction = 1 if facing >= 0 else -1
     accent_bright = tuple(
         min(255, int(channel * 0.88 + 32)) for channel in accent_color
@@ -1582,15 +1582,6 @@ def draw_player_avatar(
         )
         surface.blit(sprite, sprite_rect)
 
-        if highlight:
-            pygame.draw.circle(
-                surface,
-                (244, 241, 223),
-                (center_x, center_y - int(display_radius * 0.08)),
-                int(display_radius * 1.55),
-                width=2,
-            )
-
         _draw_nameplate(
             surface,
             center_x=center_x,
@@ -1618,24 +1609,6 @@ def draw_player_avatar(
                 accent_bright=accent_bright,
                 elapsed_ms=elapsed_ms,
             )
-
-        focus_offsets = {
-            "left": (-int(display_radius * 0.8), int(display_radius * 0.18)),
-            "right": (int(display_radius * 0.8), int(display_radius * 0.18)),
-            "up": (0, -int(display_radius * 0.32)),
-            "down": (0, int(display_radius * 0.18)),
-        }
-        offset_x, offset_y = focus_offsets.get(
-            resolved_direction,
-            (int(display_radius * 0.8), int(display_radius * 0.18)),
-        )
-        focus_pos = (center_x + offset_x, center_y + offset_y)
-        pygame.draw.circle(
-            surface,
-            (*accent_bright, 215),
-            focus_pos,
-            max(3, display_radius // 6),
-        )
         return
 
     _draw_procedural_player_avatar(

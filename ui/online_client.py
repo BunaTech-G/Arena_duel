@@ -65,6 +65,115 @@ class OnlineProtocolError(OnlineClientError):
     pass
 
 
+def _pack_online_message(obj: dict) -> bytes:
+    raw = json.dumps(
+        obj,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return struct.pack("!I", len(raw)) + raw
+
+
+def _send_online_message(sock: socket.socket, obj: dict) -> None:
+    sock.sendall(_pack_online_message(obj))
+
+
+def _recv_exact_from_socket(sock: socket.socket, size: int) -> bytes:
+    buffer = bytearray()
+
+    while len(buffer) < size:
+        chunk = sock.recv(size - len(buffer))
+        if not chunk:
+            raise ConnectionError("Le serveur online a ferme la connexion.")
+        buffer.extend(chunk)
+
+    return bytes(buffer)
+
+
+def _recv_online_message(sock: socket.socket) -> dict:
+    header = _recv_exact_from_socket(sock, 4)
+    message_size = struct.unpack("!I", header)[0]
+
+    if message_size <= 0 or message_size > MAX_ONLINE_MESSAGE_BYTES:
+        raise OnlineProtocolError(f"Taille de message online invalide: {message_size}.")
+
+    payload = _recv_exact_from_socket(sock, message_size)
+    message = json.loads(payload.decode("utf-8"))
+    if not isinstance(message, dict):
+        raise OnlineProtocolError("Le serveur online a renvoye un message non objet.")
+    return message
+
+
+def fetch_public_room_directory(
+    host: str = DEFAULT_ONLINE_HOST,
+    port: int = DEFAULT_ONLINE_PORT,
+    *,
+    timeout_seconds: float = DEFAULT_ONLINE_CONNECT_TIMEOUT_SECONDS,
+) -> list[dict]:
+    normalized_host = str(host or "").strip()
+    if not normalized_host:
+        raise ValueError("Saisis l'adresse du serveur online.")
+
+    try:
+        normalized_port = int(port)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "Le port du serveur online doit etre un entier valide."
+        ) from error
+
+    if not 1 <= normalized_port <= 65535:
+        raise ValueError("Le port du serveur online doit rester entre 1 et 65535.")
+
+    sock: socket.socket | None = None
+    connected = False
+
+    try:
+        sock = socket.create_connection(
+            (normalized_host, normalized_port),
+            timeout=max(0.2, float(timeout_seconds)),
+        )
+        connected = True
+        sock.settimeout(max(0.2, float(timeout_seconds)))
+
+        _send_online_message(sock, {"type": "HELLO", "proto": PROTO_VERSION})
+        welcome = _recv_online_message(sock)
+        if str(welcome.get("type") or "").strip().upper() != "WELCOME":
+            raise OnlineProtocolError(
+                "Le serveur online a repondu avec une poignee de main invalide."
+            )
+
+        _send_online_message(sock, {"type": "LIST_ROOMS"})
+        response = _recv_online_message(sock)
+        response_type = str(response.get("type") or "").strip().upper()
+
+        if response_type == "ROOMS":
+            rooms = response.get("rooms", [])
+            if not isinstance(rooms, list):
+                return []
+            return [room for room in rooms if isinstance(room, dict)]
+
+        if (
+            response_type == "ERROR"
+            and str(response.get("code") or "").strip().upper() == "LOGIN_REQUIRED"
+        ):
+            return []
+
+        raise OnlineProtocolError(
+            f"Le serveur online a renvoye une reponse inattendue: {response_type or 'inconnue'}."
+        )
+    except OSError as error:
+        error_message = (
+            _format_runtime_error(error)
+            if connected
+            else _format_connect_error(normalized_host, normalized_port, error)
+        )
+        raise OnlineConnectionError(error_message) from error
+    finally:
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.close()
+
+
 @dataclass(frozen=True)
 class OnlineNetworkStatus:
     transport_kind: str
@@ -583,12 +692,7 @@ class OnlineClient:
                 )
 
     def _pack(self, obj: dict) -> bytes:
-        raw = json.dumps(
-            obj,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-        return struct.pack("!I", len(raw)) + raw
+        return _pack_online_message(obj)
 
     def _send_on_socket(self, sock: socket.socket, obj: dict) -> None:
         with self._send_lock:

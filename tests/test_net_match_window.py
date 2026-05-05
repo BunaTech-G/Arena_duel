@@ -80,6 +80,8 @@ class RunNetworkMatchTests(unittest.TestCase):
     def _run_match(
         self,
         polls,
+        *,
+        tick_ms: int = 2000,
     ) -> tuple[dict, _FakeClient, dict[str, object]]:
         client = _FakeClient(polls)
         layout = SimpleNamespace(window_size=(640, 360))
@@ -160,7 +162,7 @@ class RunNetworkMatchTests(unittest.TestCase):
                 mock.patch.object(
                     net_match_window,
                     "_tick_frame",
-                    return_value=2000,
+                    return_value=tick_ms,
                 )
             )
             stack.enter_context(
@@ -262,6 +264,28 @@ class RunNetworkMatchTests(unittest.TestCase):
             handles["stop_music"].call_args_list[-1].kwargs,
             {"fade_ms": 120},
         )
+
+    def test_run_network_match_keeps_end_overlay_visible_multiple_frames(self):
+        end_message = {
+            "type": "END",
+            "winner_team": "A",
+            "winner_text": "Victoire équipe A",
+            "team_a_score": 4,
+            "team_b_score": 2,
+            "players": [],
+        }
+
+        result, client, handles = self._run_match(
+            [[end_message], [], [], [], []],
+            tick_ms=1000,
+        )
+
+        self.assertTrue(result["completed"])
+        self.assertEqual(
+            client.sent_inputs,
+            [(False, False, False, False)] * 5,
+        )
+        self.assertEqual(handles["draw_end_overlay"].call_count, 5)
 
     def test_run_network_match_uses_last_error_message_when_stream_stops(self):
         result, client, handles = self._run_match(
@@ -625,7 +649,7 @@ class RunNetworkMatchTests(unittest.TestCase):
             small_font.render_calls,
         )
         self.assertIn(
-            "Retour au hall dans un instant...",
+            "Entrée, Espace ou Échap pour revenir.",
             small_font.render_calls,
         )
         self.assertEqual(draw_end_team_card.call_count, 2)

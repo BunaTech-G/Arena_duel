@@ -918,6 +918,11 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             mock.patch.object(online_lobby_module, "enable_large_window"),
             mock.patch.object(
                 online_lobby_module,
+                "fetch_public_room_directory",
+                return_value=[],
+            ),
+            mock.patch.object(
+                online_lobby_module,
                 "get_online_network_status",
                 return_value=_make_network_status(),
             ),
@@ -1315,6 +1320,96 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         self.assertIsNone(join_window._room_id_prompt_window)
         self.assertIsNone(join_window.room_id_entry)
 
+    def test_join_window_requests_preview_on_open(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+
+        with mock.patch.object(
+            online_lobby_module.OnlineSessionWindow,
+            "_request_room_preview",
+            autospec=True,
+        ) as request_room_preview:
+            online_window.open_join_window()
+            self._update_ui()
+
+        join_window = online_window.join_window
+        self.assertIsNotNone(join_window)
+        request_room_preview.assert_called_once_with(join_window)
+
+    def test_join_window_disconnected_refresh_uses_preview(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_join_window()
+        self._update_ui()
+
+        join_window = online_window.join_window
+        self.assertIsNotNone(join_window)
+        join_window.connected = False
+        join_window.connecting = False
+
+        with mock.patch.object(
+            join_window,
+            "_request_room_preview",
+        ) as request_room_preview:
+            join_window.on_list_rooms()
+
+        request_room_preview.assert_called_once_with(manual=True)
+
+    def test_join_window_preview_renders_visible_and_in_game_sessions(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_join_window()
+        self._update_ui()
+
+        join_window = online_window.join_window
+        self.assertIsNotNone(join_window)
+
+        getattr(join_window, "_apply_room_preview")(
+            [
+                {
+                    "room_id": "room-open",
+                    "name": "Salon ouvert",
+                    "players": 1,
+                    "max_players": 2,
+                    "match_duration_seconds": 90,
+                    "state": "lobby",
+                    "host_pseudo": "HostPlayer",
+                },
+                {
+                    "room_id": "room-live",
+                    "name": "Partie déjà lancée",
+                    "players": 2,
+                    "max_players": 2,
+                    "match_duration_seconds": 60,
+                    "state": "in_game",
+                    "host_pseudo": "OtherHost",
+                },
+            ],
+            manual=False,
+        )
+        self._update_ui()
+
+        room_texts = _collect_label_texts(join_window.rooms_scroll)
+        room_buttons = _collect_button_texts(join_window.rooms_scroll)
+        self.assertIn("Salon ouvert", room_texts)
+        self.assertIn("Partie déjà lancée", room_texts)
+        self.assertIn(
+            "Partie lancée • Places : 2/2 • Durée : 60 s",
+            room_texts,
+        )
+        self.assertIn("Entre ton pseudo", room_buttons)
+        self.assertIn("En cours", room_buttons)
+        self.assertIn(
+            "session(s) visible(s)",
+            join_window.rooms_meta_label.cget("text"),
+        )
+
     def test_join_window_room_id_submit_starts_connection_when_needed(self):
         self.app.open_online_lobby()
         self._update_ui()
@@ -1518,6 +1613,37 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         )
         schedule_poll.assert_called_once_with()
         self.assertTrue(create_window.connecting)
+
+    def test_create_room_sends_selected_match_duration(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_create_window()
+        self._update_ui()
+
+        create_window = online_window.create_window
+        create_window.connected = True
+        create_window.room_name_var.set("Session longue")
+        create_window.max_players_var.set("4")
+        create_window.match_duration_var.set("90")
+
+        with mock.patch.object(
+            create_window,
+            "_send_message",
+            return_value=True,
+        ) as send_message:
+            create_window.on_create_room()
+
+        send_message.assert_called_once_with(
+            {
+                "type": "CREATE_ROOM",
+                "name": "Session longue",
+                "max_players": 4,
+                "match_duration_seconds": 90,
+            },
+            action_label="créer la session",
+        )
 
     def test_online_connect_shows_detailed_network_error(self):
         self.app.open_online_lobby()

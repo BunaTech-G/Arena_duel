@@ -81,6 +81,7 @@ class RoomState:
     room_id: str
     name: str
     max_players: int
+    match_duration_seconds: int = MATCH_DURATION_SECONDS
     state: str = "lobby"
     client_ids: list[str] = field(default_factory=list)
     host_client_id: str | None = None
@@ -305,6 +306,7 @@ def serialize_room_summary_unlocked(room: RoomState) -> dict:
         "name": room.name,
         "players": len(room_players_unlocked(room)),
         "max_players": room.max_players,
+        "match_duration_seconds": room.match_duration_seconds,
         "state": room.state,
         "host_client_id": host_client_id,
         "host_pseudo": host_pseudo,
@@ -319,10 +321,36 @@ def serialize_room_state_unlocked(room: RoomState) -> dict:
         "players": room_players_unlocked(room),
         "ready_players": room_ready_players_unlocked(room),
         "max_players": room.max_players,
+        "match_duration_seconds": room.match_duration_seconds,
         "state": room.state,
         "host_client_id": host_client_id,
         "host_pseudo": host_pseudo,
     }
+
+
+async def read_login_or_prelogin_request(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+) -> dict:
+    while True:
+        message = await read_msg(reader)
+        message_type = str(message.get("type") or "").strip().upper()
+
+        if message_type == "PING":
+            await send(writer, {"type": "PONG", "ts": time.time()})
+            continue
+
+        if message_type == "LIST_ROOMS":
+            await send(
+                writer,
+                {
+                    "type": "ROOMS",
+                    "rooms": await list_rooms(),
+                },
+            )
+            continue
+
+        return message
 
 
 async def list_rooms() -> list[dict]:
@@ -634,9 +662,15 @@ async def create_room(
     client_id: str,
     name: object,
     max_players: object,
+    match_duration_seconds: object | None = None,
 ) -> None:
     normalized_name = normalize_room_name(name)
     normalized_max_players = normalize_max_players(max_players)
+    normalized_match_duration = normalize_match_duration(
+        SERVER_CONFIG["match_duration_seconds"]
+        if match_duration_seconds is None
+        else match_duration_seconds
+    )
 
     await leave_room(client_id)
 
@@ -649,6 +683,7 @@ async def create_room(
             room_id=room_id,
             name=normalized_name,
             max_players=normalized_max_players,
+            match_duration_seconds=normalized_match_duration,
         )
 
         client = clients.get(client_id)
@@ -664,6 +699,7 @@ async def create_room(
             "room_id": room_id,
             "name": normalized_name,
             "max_players": normalized_max_players,
+            "match_duration_seconds": normalized_match_duration,
         },
     )
     await join_room(client_id, room_id)
@@ -734,7 +770,7 @@ async def start_match(client_id: str) -> None:
                 room.game_state = GameState(snapshot)
                 apply_match_duration_override(
                     room.game_state,
-                    SERVER_CONFIG["match_duration_seconds"],
+                    room.match_duration_seconds,
                 )
                 room.state = "in_game"
                 room_payload = serialize_room_state_unlocked(room)
@@ -794,7 +830,7 @@ async def handle(
 
         await send(writer, build_welcome_payload())
 
-        login = await read_msg(reader)
+        login = await read_login_or_prelogin_request(reader, writer)
         if str(login.get("type") or "").strip().upper() != "LOGIN":
             await send(writer, {"type": "ERROR", "code": "LOGIN_REQUIRED"})
             return
@@ -831,6 +867,7 @@ async def handle(
                     client_id,
                     message.get("name"),
                     message.get("max_players"),
+                    message.get("match_duration_seconds"),
                 )
                 continue
 

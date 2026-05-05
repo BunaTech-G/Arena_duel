@@ -10,12 +10,15 @@ from tkinter import TclError, messagebox
 import customtkinter as ctk
 
 from game.net_match_window import run_network_match
+from game.settings import MATCH_DURATION_SECONDS
 from ui.online_client import (
     DEFAULT_ONLINE_HOST,
     DEFAULT_ONLINE_PORT,
     OnlineClient,
     OnlineConnectionError,
     OnlineNetworkStatus,
+    OnlineProtocolError,
+    fetch_public_room_directory,
     get_online_network_status,
     probe_online_service,
 )
@@ -42,11 +45,18 @@ MANUAL_REFRESH_FEEDBACK_SECONDS = 0.45
 ROOM_CREATED_JOIN_FALLBACK_MS = 700
 NETWORK_STATUS_REFRESH_MS = 2400
 NETWORK_STATUS_POLL_MS = 40
+ROOM_PREVIEW_POLL_MS = 40
 
 MODE_JOIN = "join"
 MODE_CREATE = "create"
 MIN_ONLINE_ROOM_PLAYERS = 2
 MAX_ONLINE_ROOM_PLAYERS = 6
+ONLINE_MATCH_DURATION_OPTIONS_SECONDS = (30, 45, 60, 90, 120, 180)
+DEFAULT_ONLINE_MATCH_DURATION_SECONDS = (
+    MATCH_DURATION_SECONDS
+    if MATCH_DURATION_SECONDS in ONLINE_MATCH_DURATION_OPTIONS_SECONDS
+    else 60
+)
 ONLINE_MATCH_LAUNCH_DELAY_MS = 50
 ONLINE_MATCH_LAUNCH_ERRORS = (
     AttributeError,
@@ -573,8 +583,8 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
         setattr(self, attr_name, window)
         window.bind(
             "<Destroy>",
-            lambda _event, name=attr_name, ref=window: self._clear_child_reference(
-                name, ref
+            lambda event, name=attr_name, ref=window: self._clear_child_reference(
+                name, ref, event.widget
             ),
             add="+",
         )
@@ -605,7 +615,10 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
                 if getattr(self, attr_name) is child_window:
                     setattr(self, attr_name, None)
 
-    def _clear_child_reference(self, attr_name: str, window) -> None:
+    def _clear_child_reference(self, attr_name: str, window, event_widget=None) -> None:
+        if event_widget is not None and event_widget is not window:
+            return
+
         current_window = getattr(self, attr_name)
         if current_window is window:
             setattr(self, attr_name, None)
@@ -910,6 +923,9 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self.pseudo_var = ctk.StringVar(value="")
         self.room_name_var = ctk.StringVar(value="Session Arena")
         self.max_players_var = ctk.StringVar(value=str(MIN_ONLINE_ROOM_PLAYERS))
+        self.match_duration_var = ctk.StringVar(
+            value=str(DEFAULT_ONLINE_MATCH_DURATION_SECONDS)
+        )
         self.room_id_var = ctk.StringVar(value="")
 
         self.status_badge = None
@@ -928,6 +944,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self.pseudo_entry = None
         self.room_name_entry = None
         self.max_players_entry = None
+        self.match_duration_entry = None
         self.btn_connect = None
         self.btn_disconnect = None
         self.btn_refresh = None
@@ -948,6 +965,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self.current_room_player_count = 0
         self.current_room_capacity: str | None = None
         self.current_room_max_players: int | None = None
+        self.current_room_match_duration_seconds: int | None = None
         self.current_room_host_pseudo: str | None = None
         self.local_slot: int | None = None
         self.local_team: str | None = None
@@ -963,6 +981,11 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._last_match_status_text: str | None = None
         self._pending_host_change_pseudo: str | None = None
         self._pending_match_room_notice: str | None = None
+        self._room_preview_result_queue: "queue.Queue[tuple[int, list[dict] | None, str | None]]" = queue.Queue()
+        self._room_preview_request_token = 0
+        self._room_preview_manual_request_token: int | None = None
+        self._room_preview_in_progress = False
+        self._room_preview_poll_after_id = None
 
         self._build_ui()
         self._apply_disconnected_state(
@@ -996,12 +1019,14 @@ class OnlineSessionWindow(ctk.CTkToplevel):
     def _hero_subtitle(self) -> str:
         if self.mode == MODE_JOIN:
             return (
-                "Saisis ton pseudo, charge la liste des sessions ouvertes "
-                "puis rejoins celle qui t'intéresse."
+                "Les sessions visibles se chargent tout de suite, même si une "
+                "partie est déjà lancée. Entre ton pseudo quand tu veux en "
+                "rejoindre une."
             )
         return (
-            "Saisis ton pseudo, définis ta session, puis garde cette "
-            "fenêtre ouverte pendant que les autres joueurs arrivent."
+            "Saisis ton pseudo, définis ta session, choisis la durée de la "
+            "partie, puis garde cette fenêtre ouverte pendant que les autres "
+            "joueurs arrivent."
         )
 
     def _profile_hint_text(self) -> str:
@@ -1034,13 +1059,14 @@ class OnlineSessionWindow(ctk.CTkToplevel):
     def _left_panel_body(self) -> str:
         if self.mode == MODE_JOIN:
             return (
-                "Les sessions publiques apparaissent ici après la connexion. "
-                "Choisis-en une pour entrer dans son salon d'attente, "
-                "ou utilise le bouton ID si l'hôte t'en a envoyé un."
+                "Les sessions publiques visibles apparaissent ici dès "
+                "l'ouverture, y compris celles déjà en cours. Entre ton pseudo "
+                "pour rejoindre un salon encore ouvert, ou utilise le bouton ID "
+                "si l'hôte t'en a envoyé un."
             )
         return (
-            "Choisis un nom et un nombre de joueurs. Après création, "
-            "le salon d'attente s'ouvre à droite et le bouton "
+            "Choisis un nom, un nombre de joueurs et une durée. Après "
+            "création, le salon d'attente s'ouvre à droite et le bouton "
             f"{START_MATCH_BUTTON_LABEL} se débloque quand la session "
             "est complète."
         )
@@ -1052,7 +1078,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
     def _idle_room_meta(self) -> str:
         if self.mode == MODE_JOIN:
-            return "Charge les sessions à gauche, puis rejoins celle que tu veux."
+            return "Les sessions visibles se chargent à gauche avant la connexion."
         return "Crée ta session à gauche pour ouvrir ton propre salon d'attente."
 
     def _idle_room_hint(self) -> str:
@@ -1069,12 +1095,15 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
     def _idle_placeholder_body(self) -> str:
         if not self.connected and not self.connecting:
+            if self.mode == MODE_JOIN:
+                return (
+                    "Entre ton pseudo pour rejoindre une session, ou reviens au menu."
+                )
             return "Choisis Se connecter ou Retour."
         if self.mode == MODE_JOIN:
             return (
-                "Entre ton pseudo puis charge la liste des sessions pour en "
-                "rejoindre une, ou ouvre la saisie d'ID si l'hôte "
-                "t'en a donné un."
+                "Choisis une session visible à gauche, puis rejoins-la, ou "
+                "ouvre la saisie d'ID si l'hôte t'en a donné un."
             )
         return (
             "Entre ton pseudo, crée une session et garde cette fenêtre "
@@ -1473,7 +1502,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             sticky="nsew",
         )
         create_card.grid_columnconfigure(0, weight=1)
-        create_card.grid_rowconfigure(7, weight=1)
+        create_card.grid_rowconfigure(9, weight=1)
 
         create_badge(
             create_card,
@@ -1516,6 +1545,13 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 )
             ],
         )
+        self.match_duration_entry = self._build_option_field(
+            create_card,
+            row=7,
+            label="Durée de la partie (secondes)",
+            variable=self.match_duration_var,
+            values=[str(value) for value in ONLINE_MATCH_DURATION_OPTIONS_SECONDS],
+        )
 
         self.btn_create = create_button(
             create_card,
@@ -1525,7 +1561,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             height=44,
         )
         self.btn_create.grid(
-            row=7,
+            row=9,
             column=0,
             padx=16,
             pady=(8, 16),
@@ -1907,6 +1943,169 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         if self._should_poll_events():
             self._schedule_poll()
 
+    def _room_preview_worker(
+        self,
+        request_token: int,
+        host: str,
+        port: int,
+    ) -> None:
+        try:
+            rooms = fetch_public_room_directory(host=host, port=port)
+            self._room_preview_result_queue.put((request_token, rooms, None))
+        except (
+            OnlineConnectionError,
+            OnlineProtocolError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ) as error:
+            self._room_preview_result_queue.put((request_token, None, str(error)))
+
+    def _request_room_preview(self, *, manual: bool = False) -> None:
+        if self.mode != MODE_JOIN:
+            return
+
+        if self.connecting or self.match_running or self.current_room_id is not None:
+            return
+
+        if self._room_preview_in_progress:
+            return
+
+        host = self.host_var.get().strip()
+        if not host:
+            self._set_rooms_meta("Adresse du serveur online indisponible.")
+            return
+
+        try:
+            port = self._parse_port()
+        except ValueError as error:
+            if manual:
+                play_error()
+                self._set_status(str(error), tone="warning", badge_text="Sessions")
+            self._set_rooms_meta("Port online invalide pour charger les sessions.")
+            return
+
+        self._room_preview_request_token += 1
+        request_token = self._room_preview_request_token
+        self._room_preview_in_progress = True
+
+        if manual:
+            self._room_preview_manual_request_token = request_token
+            self._manual_refresh_feedback = True
+            self._manual_refresh_started_at = monotonic()
+            self._cancel_manual_refresh_timer()
+            self._pending_rooms = None
+            self._set_rooms_meta("Recherche des sessions visibles...")
+            self._set_status(
+                "Actualisation des sessions visibles en cours.",
+                tone="info",
+                badge_text="Sessions",
+            )
+        elif not self._known_rooms_by_id:
+            self._set_rooms_meta("Recherche des sessions visibles...")
+
+        worker = threading.Thread(
+            target=self._room_preview_worker,
+            args=(request_token, host, port),
+            daemon=True,
+        )
+        worker.start()
+        self._room_preview_poll_after_id = self.after(
+            ROOM_PREVIEW_POLL_MS,
+            self._drain_room_preview_results,
+        )
+
+    def _drain_room_preview_results(self) -> None:
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        received_current_result = False
+        while True:
+            try:
+                request_token, rooms, error_message = (
+                    self._room_preview_result_queue.get_nowait()
+                )
+            except queue.Empty:
+                break
+
+            if request_token != self._room_preview_request_token:
+                continue
+
+            received_current_result = True
+            self._room_preview_in_progress = False
+            manual_request = request_token == self._room_preview_manual_request_token
+            if manual_request:
+                self._room_preview_manual_request_token = None
+
+            if self.connected or self.connecting:
+                self._manual_refresh_feedback = False
+                self._sync_controls_state()
+                continue
+
+            if error_message:
+                self._apply_room_preview_error(error_message, manual=manual_request)
+            else:
+                self._apply_room_preview(rooms or [], manual=manual_request)
+
+        if self._room_preview_in_progress and not received_current_result:
+            self._room_preview_poll_after_id = self.after(
+                ROOM_PREVIEW_POLL_MS,
+                self._drain_room_preview_results,
+            )
+            return
+
+        self._room_preview_poll_after_id = None
+
+    def _apply_room_preview(self, rooms: list[dict], *, manual: bool) -> None:
+        normalized_rooms = [room for room in rooms if isinstance(room, dict)]
+        self._known_rooms_by_id = {
+            str(room.get("room_id") or "").strip(): room
+            for room in normalized_rooms
+            if str(room.get("room_id") or "").strip()
+        }
+        self.last_refresh_text = self._current_time_label()
+        self._refresh_current_room_from_directory()
+        self._set_rooms_meta(
+            f"{len(normalized_rooms)} session(s) visible(s) • aperçu {self.last_refresh_text}"
+        )
+        self._render_rooms(normalized_rooms)
+        self._manual_refresh_feedback = False
+        self._pending_rooms = None
+        self._cancel_manual_refresh_timer()
+        self._sync_controls_state()
+
+        if manual:
+            self._set_status(
+                f"{len(normalized_rooms)} session(s) visible(s) à {self.last_refresh_text}.",
+                tone="info",
+                badge_text="Sessions",
+            )
+
+    def _apply_room_preview_error(self, error_message: str, *, manual: bool) -> None:
+        self._manual_refresh_feedback = False
+        self._pending_rooms = None
+        self._cancel_manual_refresh_timer()
+        self._sync_controls_state()
+
+        if self._known_rooms_by_id:
+            self._set_rooms_meta(
+                "Aperçu temporairement indisponible. Dernière liste conservée."
+            )
+            self._render_rooms(self._ordered_rooms())
+        else:
+            self._set_rooms_meta("Aperçu des sessions indisponible pour le moment.")
+            self._render_rooms([])
+
+        if manual:
+            self._set_status(
+                error_message,
+                tone="warning",
+                badge_text="Sessions",
+            )
+
     def _handle_message(self, message: dict) -> None:
         message_type = str(message.get("type") or "").strip().upper()
 
@@ -2025,6 +2224,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 if max_players is None:
                     max_players = self._selected_max_players_or_none()
 
+                match_duration_seconds = self._room_match_duration_seconds(room_info)
+                if match_duration_seconds is None and self.mode == MODE_CREATE:
+                    match_duration_seconds = self._selected_match_duration_or_none()
+
                 capacity = self._format_room_capacity(room_info)
                 if capacity is None:
                     capacity = self._fallback_capacity_for_join()
@@ -2037,6 +2240,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                     players=players,
                     ready_players=[],
                     max_players=max_players,
+                    match_duration_seconds=match_duration_seconds,
                     capacity=capacity,
                     host_pseudo=host_pseudo,
                     is_active=True,
@@ -2080,6 +2284,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                     room_info["name"] = room_name
                 if room_payload.get("max_players") is not None:
                     room_info["max_players"] = room_payload.get("max_players")
+                if room_payload.get("match_duration_seconds") is not None:
+                    room_info["match_duration_seconds"] = room_payload.get(
+                        "match_duration_seconds"
+                    )
                 host_pseudo = (
                     str(
                         room_payload.get("host_pseudo")
@@ -2106,6 +2314,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                     players=players,
                     ready_players=ready_players,
                     max_players=self._room_max_players(room_info),
+                    match_duration_seconds=self._room_match_duration_seconds(room_info),
                     capacity=(
                         self._format_room_capacity(room_info)
                         or self._fallback_capacity_for_join()
@@ -2277,6 +2486,17 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         except (TypeError, ValueError):
             return None
 
+    def _room_match_duration_seconds(self, room_info: dict) -> int | None:
+        raw_duration = room_info.get("match_duration_seconds")
+        try:
+            match_duration_seconds = int(raw_duration)
+        except (TypeError, ValueError):
+            return None
+
+        if match_duration_seconds <= 0:
+            return None
+        return match_duration_seconds
+
     def _room_has_available_slot(self, room_info: dict) -> bool:
         max_players = self._room_max_players(room_info)
         if max_players is None:
@@ -2315,6 +2535,12 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         player_count = self._room_player_count(room_info)
         return f"Places : {player_count}/{max_players}"
 
+    def _format_room_duration(self, room_info: dict) -> str | None:
+        match_duration_seconds = self._room_match_duration_seconds(room_info)
+        if match_duration_seconds is None:
+            return None
+        return f"Durée : {match_duration_seconds} s"
+
     def _room_host_pseudo(self, room_info: dict) -> str | None:
         host_pseudo = str(room_info.get("host_pseudo") or "").strip()
         return host_pseudo or None
@@ -2323,6 +2549,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         room_id = str(room_info.get("room_id") or "").strip()
         if room_id and room_id == self.current_room_id:
             return ("Ta session", "success")
+        if self._normalize_room_state_code(room_info.get("state")) == "in_game":
+            return ("En cours", "gold")
         if self._normalize_room_state_code(room_info.get("state")) != "lobby":
             return (self._format_room_state(room_info.get("state")), "gold")
         if not self._room_has_available_slot(room_info):
@@ -2398,6 +2626,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         room_name = str(room_info.get("name") or room_id or "Sans nom").strip()
         state_text = self._format_room_state(room_info.get("state"))
         capacity_text = self._format_room_capacity(room_info) or "Places : ?"
+        duration_text = self._format_room_duration(room_info)
         host_pseudo = self._room_host_pseudo(room_info)
         badge_text, badge_tone = self._room_badge(room_info)
         is_current = room_id == (self.current_room_id or "")
@@ -2451,12 +2680,17 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             justify="left",
         ).grid(row=2, column=0, padx=16, pady=(6, 0), sticky="w")
 
+        detail_parts = [state_text, capacity_text]
+        if duration_text:
+            detail_parts.append(duration_text)
+
         ctk.CTkLabel(
             card,
-            text=f"{state_text} • {capacity_text}",
+            text=" • ".join(detail_parts),
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_muted"],
             justify="left",
+            wraplength=620,
         ).grid(row=3, column=0, padx=16, pady=(4, 16), sticky="w")
 
         button_rowspan = 4
@@ -2471,7 +2705,14 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             ).grid(row=4, column=0, padx=16, pady=(0, 16), sticky="w")
 
         button_text = "Déjà dedans" if is_current else "Rejoindre"
-        if (
+        if not self.connected and not is_current and self._room_is_joinable(room_info):
+            button_text = "Entre ton pseudo"
+        elif (
+            self._normalize_room_state_code(room_info.get("state")) == "in_game"
+            and not is_current
+        ):
+            button_text = "En cours"
+        elif (
             self._normalize_room_state_code(room_info.get("state")) != "lobby"
             and not is_current
         ):
@@ -2577,6 +2818,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         room_meta_parts = [f"ID : {self.current_room_id}"]
         if self.current_room_capacity:
             room_meta_parts.append(self.current_room_capacity)
+        if self.current_room_match_duration_seconds is not None:
+            room_meta_parts.append(
+                f"Durée : {self.current_room_match_duration_seconds} s"
+            )
         if self.current_room_host_pseudo:
             room_meta_parts.append(f"Hôte : {self.current_room_host_pseudo}")
 
@@ -2738,7 +2983,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
     def _apply_rooms_update(self, rooms: list[dict]) -> None:
         self.last_refresh_text = self._current_time_label()
         self._set_rooms_meta(
-            (f"{len(rooms)} session(s) ouverte(s) • synchro {self.last_refresh_text}")
+            (f"{len(rooms)} session(s) visible(s) • synchro {self.last_refresh_text}")
         )
         self._render_rooms(rooms)
         self._manual_refresh_feedback = False
@@ -2746,7 +2991,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._cancel_manual_refresh_timer()
         self._sync_controls_state()
         self._set_status(
-            f"{len(rooms)} session(s) chargée(s) à {self.last_refresh_text}.",
+            f"{len(rooms)} session(s) visible(s) à {self.last_refresh_text}.",
             tone="info",
             badge_text="Sessions",
         )
@@ -2771,6 +3016,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         players: list[str],
         ready_players: list[str] | set[str] | None,
         max_players: int | None,
+        match_duration_seconds: int | None = None,
         capacity: str | None,
         host_pseudo: str | None,
         is_active: bool,
@@ -2802,6 +3048,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self.current_room_player_count = len(self.current_room_players)
         self.current_room_capacity = capacity if is_active else None
         self.current_room_max_players = max_players if is_active else None
+        if not is_active:
+            self.current_room_match_duration_seconds = None
+        elif match_duration_seconds is not None:
+            self.current_room_match_duration_seconds = match_duration_seconds
         self.current_room_host_pseudo = host_pseudo if is_active else None
 
         if is_active and room_id and room_id == self._pending_created_room_id:
@@ -2913,6 +3163,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             ready_players=None,
             max_players=(
                 self._room_max_players(room_info) or self.current_room_max_players
+            ),
+            match_duration_seconds=(
+                self._room_match_duration_seconds(room_info)
+                or self.current_room_match_duration_seconds
             ),
             capacity=(
                 self._format_room_capacity(room_info) or self.current_room_capacity
@@ -3061,6 +3315,13 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
     def _selected_max_players_or_none(self) -> int | None:
         raw_value = self.max_players_var.get().strip()
+        try:
+            return int(raw_value)
+        except ValueError:
+            return None
+
+    def _selected_match_duration_or_none(self) -> int | None:
+        raw_value = self.match_duration_var.get().strip()
         try:
             return int(raw_value)
         except ValueError:
@@ -3525,9 +3786,10 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             )
             refresh_state = (
                 "normal"
-                if self.connected
-                and not self.connecting
+                if not self.connecting
+                and not self.match_running
                 and not self._manual_refresh_feedback
+                and not self._room_preview_in_progress
                 and self.current_room_id is None
                 else "disabled"
             )
@@ -3550,6 +3812,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             self.room_name_entry.configure(state=room_action_state)
         if self.max_players_entry is not None:
             self.max_players_entry.configure(state=room_action_state)
+        if self.match_duration_entry is not None:
+            self.match_duration_entry.configure(state=room_action_state)
         if self.btn_create is not None:
             self.btn_create.configure(state=room_action_state)
 
@@ -3573,23 +3837,30 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._pending_rooms = None
         self._pending_created_room_id = None
         self._pending_join_room_id = None
-        self._known_rooms_by_id = {}
+        if self.mode != MODE_JOIN:
+            self._known_rooms_by_id = {}
         self.server_capabilities = {}
         self.local_slot = None
         self.local_team = None
         self.local_sprite_id = None
         self._match_start_prompt_signature = None
+        self._room_preview_in_progress = False
+        self._room_preview_manual_request_token = None
         self._clear_post_match_feedback()
+        self._cancel_room_preview_poll()
         self._cancel_manual_refresh_timer()
         self._cancel_room_created_join_timer()
         self._cancel_match_launch_timer()
         self._close_room_id_prompt()
         self._clear_current_room(message)
         if self.mode == MODE_JOIN:
-            self._set_rooms_meta("Connecte-toi pour charger les sessions.")
-            self._render_rooms([])
+            if self._known_rooms_by_id:
+                self._render_rooms(self._ordered_rooms())
+            self._set_rooms_meta("Recherche des sessions visibles...")
         self._sync_controls_state()
         self._set_status(message, tone=tone, badge_text="Déconnecté")
+        if self.mode == MODE_JOIN:
+            self._request_room_preview()
 
     def _parse_port(self) -> int:
         raw_port = self.port_var.get().strip()
@@ -3614,6 +3885,22 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         if not (MIN_ONLINE_ROOM_PLAYERS <= max_players <= MAX_ONLINE_ROOM_PLAYERS):
             raise ValueError("Le nombre de joueurs doit rester entre 2 et 6.")
         return max_players
+
+    def _parse_match_duration(self) -> int:
+        raw_value = self.match_duration_var.get().strip()
+        try:
+            match_duration_seconds = int(raw_value)
+        except ValueError as error:
+            raise ValueError(
+                "La durée de la partie doit être un entier valide."
+            ) from error
+
+        if match_duration_seconds not in ONLINE_MATCH_DURATION_OPTIONS_SECONDS:
+            raise ValueError(
+                "La durée de la partie doit correspondre à une durée proposée."
+            )
+
+        return match_duration_seconds
 
     def _send_message(self, payload: dict, *, action_label: str) -> bool:
         _ = action_label
@@ -3688,7 +3975,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._cancel_manual_refresh_timer()
         self._render_rooms(self._ordered_rooms())
         self._sync_controls_state()
-        self._set_rooms_meta("Synchronisation des sessions en cours...")
+        self._set_rooms_meta("Synchronisation des sessions visibles en cours...")
         self._set_status(
             "Actualisation des sessions demandée au serveur online.",
             tone="info",
@@ -3696,12 +3983,19 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         )
 
     def on_list_rooms(self) -> None:
-        if not self.connected:
-            play_error()
-            self._show_connection_required()
+        if self.connecting:
+            self._set_status(
+                "Patiente pendant la connexion avant d'actualiser les sessions.",
+                tone="warning",
+                badge_text="Sessions",
+            )
             return
 
         play_click()
+        if not self.connected:
+            self._request_room_preview(manual=True)
+            return
+
         self._request_rooms_refresh(manual=True)
 
     def on_join_room_id(self) -> bool:
@@ -3843,6 +4137,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
         try:
             max_players = self._parse_max_players()
+            match_duration_seconds = self._parse_match_duration()
         except ValueError as error:
             play_error()
             messagebox.showerror("Paramètres invalides", str(error))
@@ -3853,6 +4148,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 "type": "CREATE_ROOM",
                 "name": room_name,
                 "max_players": max_players,
+                "match_duration_seconds": match_duration_seconds,
             },
             action_label="créer la session",
         ):
@@ -3860,10 +4156,21 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
         play_transition()
         self._set_status(
-            f"Création de la session {room_name} en cours.",
+            f"Création de la session {room_name} en cours ({match_duration_seconds} s).",
             tone="info",
             badge_text="Création",
         )
+
+    def _cancel_room_preview_poll(self) -> None:
+        if self._room_preview_poll_after_id is None:
+            return
+
+        try:
+            self.after_cancel(self._room_preview_poll_after_id)
+        except TclError:
+            pass
+
+        self._room_preview_poll_after_id = None
 
     def on_toggle_ready(self) -> None:
         if not self.connected:
@@ -3953,6 +4260,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 pass
             self._poll_after_id = None
 
+        self._cancel_room_preview_poll()
         self._cancel_manual_refresh_timer()
         self._cancel_room_created_join_timer()
         self._cancel_match_launch_timer()

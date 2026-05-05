@@ -55,8 +55,16 @@ PG_K_A = getattr(pygame, "K_a")
 PG_K_LEFT = getattr(pygame, "K_LEFT")
 PG_K_D = getattr(pygame, "K_d")
 PG_K_RIGHT = getattr(pygame, "K_RIGHT")
+PG_K_RETURN = getattr(pygame, "K_RETURN")
+PG_K_SPACE = getattr(pygame, "K_SPACE")
+PG_K_ESCAPE = getattr(pygame, "K_ESCAPE")
+PG_KEYDOWN = getattr(pygame, "KEYDOWN")
 PG_SRCALPHA = getattr(pygame, "SRCALPHA")
 pg_init = getattr(pygame, "init")
+
+
+END_OVERLAY_DURATION_SECONDS = 4.5
+END_OVERLAY_SKIP_KEYS = {PG_K_RETURN, PG_K_SPACE, PG_K_ESCAPE}
 
 
 def _tick_frame(clock, target_fps):
@@ -168,6 +176,12 @@ def run_network_match(client, my_slot, my_name, my_team):
                 disconnect_message = "Match fermé par le joueur."
                 stop_music(fade_ms=120)
                 client.close()
+                running = False
+            elif (
+                end_message is not None
+                and event.type == PG_KEYDOWN
+                and getattr(event, "key", None) in END_OVERLAY_SKIP_KEYS
+            ):
                 running = False
 
         keys = pygame.key.get_pressed()
@@ -286,7 +300,7 @@ def run_network_match(client, my_slot, my_name, my_team):
 
             elif msg_type == END:
                 end_message = msg
-                end_timer = 1.2
+                end_timer = END_OVERLAY_DURATION_SECONDS
                 stop_music(fade_ms=280)
 
             elif msg_type == ERROR:
@@ -701,7 +715,7 @@ def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
 
     status_text = small_font.render(history_text, True, history_color)
     return_text = small_font.render(
-        "Retour au hall dans un instant...",
+        "Entrée, Espace ou Échap pour revenir.",
         True,
         (220, 220, 220),
     )
