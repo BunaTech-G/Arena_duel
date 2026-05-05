@@ -58,6 +58,7 @@ BONE_SHADE = (194, 183, 164)
 BONE_OUTLINE = (79, 72, 64)
 NAME_PANEL = (16, 19, 28, 210)
 NAME_TEXT = (247, 241, 226)
+PLAYER_FOCUS_LABEL = "TOI"
 WINDOW_BACKGROUND_ASSET = "arena_darkstone"
 ARENA_FLOOR_ASSET = "forgotten_sanctum_floor"
 
@@ -1240,6 +1241,68 @@ def _draw_combo_badge(
     surface.blit(badge_surface, badge_rect.topleft)
 
 
+def _draw_control_marker(
+    surface: pygame.Surface,
+    *,
+    center_x: int,
+    center_y: int,
+    radius: int,
+    accent_bright: tuple[int, int, int],
+    elapsed_ms: float,
+) -> None:
+    marker_font = _get_orb_effect_font(max(13, min(18, int(radius * 0.52))))
+    label_surface = marker_font.render(PLAYER_FOCUS_LABEL, True, NAME_TEXT)
+    label_rect = label_surface.get_rect()
+    bob_offset = int(math.sin((elapsed_ms / 220.0) + center_x * 0.016) * 2.0)
+    panel_rect = label_rect.inflate(max(24, radius), max(12, radius // 2))
+    panel_rect.center = (center_x, center_y - int(radius * 2.75) + bob_offset)
+    if panel_rect.top < 6:
+        panel_rect.top = 6
+
+    pointer_height = max(8, radius // 3)
+    pointer_half_width = max(8, radius // 3)
+    shadow_offset = 3
+    panel_fill = (18, 21, 31)
+    panel_shadow = (24, 16, 14)
+    panel_border = (244, 241, 223)
+
+    shadow_rect = panel_rect.move(0, shadow_offset)
+    shadow_pointer = [
+        (center_x - pointer_half_width, shadow_rect.bottom - 1),
+        (center_x + pointer_half_width, shadow_rect.bottom - 1),
+        (center_x, shadow_rect.bottom + pointer_height),
+    ]
+    pygame.draw.rect(surface, panel_shadow, shadow_rect, border_radius=12)
+    pygame.draw.polygon(surface, panel_shadow, shadow_pointer)
+
+    pointer_points = [
+        (center_x - pointer_half_width, panel_rect.bottom - 1),
+        (center_x + pointer_half_width, panel_rect.bottom - 1),
+        (center_x, panel_rect.bottom + pointer_height),
+    ]
+    pygame.draw.rect(surface, panel_fill, panel_rect, border_radius=12)
+    pygame.draw.polygon(surface, panel_fill, pointer_points)
+    pygame.draw.rect(surface, panel_border, panel_rect, width=2, border_radius=12)
+    pygame.draw.polygon(surface, panel_border, pointer_points, width=2)
+
+    accent_y = panel_rect.bottom - 7
+    accent_width = max(14, panel_rect.width // 3)
+    accent_rect = pygame.Rect(
+        panel_rect.centerx - accent_width // 2,
+        accent_y,
+        accent_width,
+        2,
+    )
+    pygame.draw.rect(surface, accent_bright, accent_rect, border_radius=2)
+
+    left_mark = (panel_rect.left + 12, panel_rect.centery)
+    right_mark = (panel_rect.right - 12, panel_rect.centery)
+    pygame.draw.circle(surface, accent_bright, left_mark, 2)
+    pygame.draw.circle(surface, accent_bright, right_mark, 2)
+
+    surface.blit(label_surface, label_surface.get_rect(center=panel_rect.center))
+
+
 def _draw_nameplate(
     surface: pygame.Surface,
     *,
@@ -1404,12 +1467,13 @@ def _draw_procedural_player_avatar(
     )
 
     if highlight:
-        pygame.draw.circle(
+        _draw_control_marker(
             surface,
-            (244, 241, 223),
-            (center_x, center_y - int(radius * 0.1)),
-            int(radius * 1.55),
-            width=2,
+            center_x=center_x,
+            center_y=center_y,
+            radius=radius,
+            accent_bright=accent_bright,
+            elapsed_ms=elapsed_ms,
         )
 
     _draw_nameplate(
@@ -1500,11 +1564,11 @@ def draw_player_avatar(
         )
 
     if sprite is not None:
-        aura_radius = int(display_radius * (1.85 if highlight else 1.45))
+        aura_radius = int(display_radius * 1.45)
         aura_surface = pygame.Surface((aura_radius * 2, aura_radius * 2), PG_SRCALPHA)
         pygame.draw.circle(
             aura_surface,
-            (*accent_bright, 38 if highlight else 24),
+            (*accent_bright, 24),
             (aura_radius, aura_radius),
             aura_radius,
         )
@@ -1544,6 +1608,16 @@ def draw_player_avatar(
             accent_bright=accent_bright,
             font=name_font,
         )
+
+        if highlight:
+            _draw_control_marker(
+                surface,
+                center_x=center_x,
+                center_y=center_y,
+                radius=display_radius,
+                accent_bright=accent_bright,
+                elapsed_ms=elapsed_ms,
+            )
 
         focus_offsets = {
             "left": (-int(display_radius * 0.8), int(display_radius * 0.18)),

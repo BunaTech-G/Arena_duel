@@ -8,6 +8,7 @@ from unittest import mock
 import customtkinter as ctk
 import customtkinter.windows.ctk_tk as ctk_tk
 import customtkinter.windows.ctk_toplevel as ctk_toplevel
+import pygame
 from customtkinter.windows.widgets.appearance_mode import (
     appearance_mode_tracker,
 )
@@ -69,6 +70,10 @@ def _register_appearance_callback_without_loop(cls, callback, widget=None):
     app = cls.get_tk_root_of_widget(widget)
     if app not in cls.app_list:
         cls.app_list.append(app)
+
+
+def _noop_tk_callback(*_args, **_kwargs):
+    return None
 
 
 def _walk_widgets(widget):
@@ -138,6 +143,51 @@ def _cancel_pending_after_callbacks(widget):
             continue
 
 
+def _window_is_destroyed(widget) -> bool:
+    try:
+        return not bool(widget.winfo_exists())
+    except TclError:
+        return True
+
+
+class _FakeAfterWindow:
+    def __init__(self):
+        self.tk = object()
+        self.delay_ms = None
+        self.callback = None
+
+    def after(self, delay_ms, callback):
+        self.delay_ms = delay_ms
+        self.callback = callback
+        return "after#1"
+
+    def winfo_exists(self):
+        return True
+
+
+class MenuAudioBootstrapTests(unittest.TestCase):
+    def test_schedule_menu_audio_boot_initializes_audio_and_starts_music(self):
+        fake_window = _FakeAfterWindow()
+
+        with (
+            mock.patch.object(pygame.mixer, "pre_init") as pre_init,
+            mock.patch.object(launcher_module, "init_audio") as init_audio,
+            mock.patch.object(
+                launcher_module,
+                "start_menu_music",
+            ) as start_menu_music,
+        ):
+            launcher_module._schedule_menu_audio_boot(fake_window)
+
+            self.assertEqual(fake_window.delay_ms, 100)
+            self.assertIsNotNone(fake_window.callback)
+            fake_window.callback()
+
+        pre_init.assert_called_once_with(44100, -16, 2, 512)
+        init_audio.assert_called_once_with()
+        start_menu_music.assert_called_once_with()
+
+
 class _CompactMenuTestCase(unittest.TestCase):
     menu_class = None
 
@@ -151,11 +201,25 @@ class _CompactMenuTestCase(unittest.TestCase):
         tracker.update_loop_running = False
 
         self.patchers = [
+            mock.patch.object(launcher_module, "init_audio"),
+            mock.patch.object(launcher_module, "start_menu_music"),
+            mock.patch.object(launcher_module, "play_transition"),
+            mock.patch.object(launcher_module, "play_click"),
+            mock.patch.object(launcher_module, "play_alert"),
+            mock.patch.object(launcher_module, "play_error"),
             mock.patch.object(launcher_module, "apply_window_icon"),
             mock.patch.object(launcher_module, "bind_auto_update_window"),
             mock.patch.object(launcher_module, "present_window"),
-            mock.patch.object(ctk_tk.CTk, "_windows_set_titlebar_color"),
-            mock.patch.object(ctk_tk.CTk, "_windows_set_titlebar_icon"),
+            mock.patch.object(
+                ctk_tk.CTk,
+                "_windows_set_titlebar_color",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                ctk_tk.CTk,
+                "_windows_set_titlebar_icon",
+                new=_noop_tk_callback,
+            ),
             mock.patch.object(
                 scaling_tracker.ScalingTracker,
                 "add_widget",
@@ -174,6 +238,12 @@ class _CompactMenuTestCase(unittest.TestCase):
         self.assertIsNotNone(menu_class)
         self.app = menu_class()
         self._update_ui()
+        launcher_module.init_audio.reset_mock()
+        launcher_module.start_menu_music.reset_mock()
+        launcher_module.play_transition.reset_mock()
+        launcher_module.play_click.reset_mock()
+        launcher_module.play_alert.reset_mock()
+        launcher_module.play_error.reset_mock()
 
     def tearDown(self):
         try:
@@ -209,6 +279,12 @@ class StartupModeAppTests(unittest.TestCase):
         tracker.update_loop_running = False
 
         self.patchers = [
+            mock.patch.object(launcher_module, "init_audio"),
+            mock.patch.object(launcher_module, "start_menu_music"),
+            mock.patch.object(launcher_module, "play_transition"),
+            mock.patch.object(launcher_module, "play_click"),
+            mock.patch.object(launcher_module, "play_alert"),
+            mock.patch.object(launcher_module, "play_error"),
             mock.patch.object(launcher_module, "apply_window_icon"),
             mock.patch.object(launcher_module, "bind_auto_update_window"),
             mock.patch.object(launcher_module, "present_window"),
@@ -218,8 +294,16 @@ class StartupModeAppTests(unittest.TestCase):
                 "load_app_icon_image",
                 return_value=None,
             ),
-            mock.patch.object(ctk_tk.CTk, "_windows_set_titlebar_color"),
-            mock.patch.object(ctk_tk.CTk, "_windows_set_titlebar_icon"),
+            mock.patch.object(
+                ctk_tk.CTk,
+                "_windows_set_titlebar_color",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                ctk_tk.CTk,
+                "_windows_set_titlebar_icon",
+                new=_noop_tk_callback,
+            ),
             mock.patch.object(
                 scaling_tracker.ScalingTracker,
                 "add_widget",
@@ -237,6 +321,12 @@ class StartupModeAppTests(unittest.TestCase):
         self.app = launcher_module.StartupModeApp()
         self.app.update_idletasks()
         self.app.update()
+        launcher_module.init_audio.reset_mock()
+        launcher_module.start_menu_music.reset_mock()
+        launcher_module.play_transition.reset_mock()
+        launcher_module.play_click.reset_mock()
+        launcher_module.play_alert.reset_mock()
+        launcher_module.play_error.reset_mock()
 
     def tearDown(self):
         try:
@@ -308,6 +398,13 @@ class ModeSelectionMenuTests(_CompactMenuTestCase):
         self.assertEqual(self.app.selection, "local")
         destroy.assert_called_once_with()
 
+    def test_local_selection_plays_transition_sound(self):
+        with mock.patch.object(self.app, "destroy"):
+            getattr(self.app, "_handle_local")()
+
+        launcher_module.play_transition.assert_called_once_with()
+        launcher_module.play_click.assert_not_called()
+
     def test_online_selection_closes_menu(self):
         with mock.patch.object(self.app, "destroy") as destroy:
             getattr(self.app, "_handle_online")()
@@ -321,6 +418,13 @@ class ModeSelectionMenuTests(_CompactMenuTestCase):
 
         self.assertEqual(self.app.selection, "quit")
         destroy.assert_called_once_with()
+
+    def test_quit_selection_plays_click_sound(self):
+        with mock.patch.object(self.app, "destroy"):
+            getattr(self.app, "_handle_quit")()
+
+        launcher_module.play_click.assert_called_once_with()
+        launcher_module.play_transition.assert_not_called()
 
 
 class LocalModeMenuTests(_CompactMenuTestCase):
@@ -557,7 +661,7 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             mock.patch.object(
                 launcher_module,
                 "_run_menu",
-                side_effect=["online", "host"],
+                side_effect=["online", "host", "back", None],
             ) as run_menu,
             mock.patch.object(
                 launcher_module,
@@ -581,6 +685,8 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
                 mock.call(launcher_module.OnlineModeMenuApp),
+                mock.call(launcher_module.OnlineModeMenuApp),
+                mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
         probe_online.assert_called_once_with()
@@ -593,7 +699,7 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             mock.patch.object(
                 launcher_module,
                 "_run_menu",
-                side_effect=["online", "join"],
+                side_effect=["online", "join", "back", None],
             ) as run_menu,
             mock.patch.object(
                 launcher_module,
@@ -617,12 +723,49 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
                 mock.call(launcher_module.OnlineModeMenuApp),
+                mock.call(launcher_module.OnlineModeMenuApp),
+                mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
         probe_online.assert_called_once_with()
         run_online_join.assert_called_once_with()
         run_online_host.assert_not_called()
         run_local.assert_not_called()
+
+    def test_run_main_mode_menu_reopens_online_menu_after_session_close(self):
+        with (
+            mock.patch.object(
+                launcher_module,
+                "_run_menu",
+                side_effect=["online", "host", "back", None],
+            ) as run_menu,
+            mock.patch.object(
+                launcher_module,
+                "probe_online_service",
+                return_value=True,
+            ),
+            mock.patch.object(
+                launcher_module,
+                "run_online_host_session",
+            ) as run_online_host,
+            mock.patch.object(
+                launcher_module,
+                "run_online_join_session",
+            ) as run_online_join,
+        ):
+            launcher_module.run_main_mode_menu()
+
+        self.assertEqual(
+            run_menu.call_args_list,
+            [
+                mock.call(launcher_module.ModeSelectionMenuApp),
+                mock.call(launcher_module.OnlineModeMenuApp),
+                mock.call(launcher_module.OnlineModeMenuApp),
+                mock.call(launcher_module.ModeSelectionMenuApp),
+            ],
+        )
+        run_online_host.assert_called_once_with()
+        run_online_join.assert_not_called()
 
     def test_run_main_mode_menu_reopens_main_menu_after_online_back(self):
         with (
@@ -749,6 +892,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         tracker.update_loop_running = False
 
         self.patchers = [
+            mock.patch.object(launcher_module, "init_audio"),
             mock.patch.object(launcher_module, "play_transition"),
             mock.patch.object(launcher_module, "play_click"),
             mock.patch.object(launcher_module, "play_alert"),
@@ -764,6 +908,11 @@ class LauncherOnlineFlowTests(unittest.TestCase):
                 "probe_online_service",
                 return_value=True,
             ),
+            mock.patch.object(online_lobby_module, "init_audio"),
+            mock.patch.object(online_lobby_module, "play_transition"),
+            mock.patch.object(online_lobby_module, "play_click"),
+            mock.patch.object(online_lobby_module, "play_alert"),
+            mock.patch.object(online_lobby_module, "play_error"),
             mock.patch.object(online_lobby_module, "apply_window_icon"),
             mock.patch.object(online_lobby_module, "present_window"),
             mock.patch.object(online_lobby_module, "enable_large_window"),
@@ -772,20 +921,30 @@ class LauncherOnlineFlowTests(unittest.TestCase):
                 "get_online_network_status",
                 return_value=_make_network_status(),
             ),
-            mock.patch.object(ctk_tk.CTk, "_windows_set_titlebar_color"),
+            mock.patch.object(
+                ctk_tk.CTk,
+                "_windows_set_titlebar_color",
+                new=_noop_tk_callback,
+            ),
             mock.patch.object(
                 ctk_toplevel.CTkToplevel,
                 "_windows_set_titlebar_color",
+                new=_noop_tk_callback,
             ),
             mock.patch.object(
                 scaling_tracker.ScalingTracker,
                 "add_widget",
                 new=classmethod(_register_widget_without_dpi_loop),
             ),
-            mock.patch.object(ctk_tk.CTk, "_windows_set_titlebar_icon"),
+            mock.patch.object(
+                ctk_tk.CTk,
+                "_windows_set_titlebar_icon",
+                new=_noop_tk_callback,
+            ),
             mock.patch.object(
                 ctk_toplevel.CTkToplevel,
                 "_windows_set_titlebar_icon",
+                new=_noop_tk_callback,
             ),
             mock.patch.object(
                 appearance_mode_tracker.AppearanceModeTracker,
@@ -795,6 +954,17 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             mock.patch.object(
                 launcher_module.LauncherApp,
                 "_hydrate_visual_assets",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                launcher_module.LauncherSettingsWindow,
+                "_hydrate_visual_assets",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                launcher_module.LauncherSettingsWindow,
+                "_refresh_serial_ports",
+                new=_noop_tk_callback,
             ),
             mock.patch.object(
                 online_lobby_module.messagebox,
@@ -815,6 +985,16 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             probe_db_on_start=False,
         )
         self._update_ui()
+        launcher_module.init_audio.reset_mock()
+        launcher_module.play_transition.reset_mock()
+        launcher_module.play_click.reset_mock()
+        launcher_module.play_alert.reset_mock()
+        launcher_module.play_error.reset_mock()
+        online_lobby_module.init_audio.reset_mock()
+        online_lobby_module.play_transition.reset_mock()
+        online_lobby_module.play_click.reset_mock()
+        online_lobby_module.play_alert.reset_mock()
+        online_lobby_module.play_error.reset_mock()
 
     def tearDown(self):
         try:
@@ -949,6 +1129,16 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             create_window.btn_connect.cget("text"),
             "Se connecter",
         )
+        self.assertIsNotNone(create_window.host_entry)
+        self.assertIsNotNone(create_window.port_entry)
+        self.assertEqual(
+            create_window.host_var.get(),
+            online_client_module.DEFAULT_ONLINE_HOST,
+        )
+        self.assertEqual(
+            create_window.port_var.get(),
+            str(online_client_module.DEFAULT_ONLINE_PORT),
+        )
         self.assertEqual(create_window.btn_disconnect.cget("text"), "Retour")
         self.assertEqual(create_window.btn_disconnect.cget("state"), "normal")
         self.assertEqual(
@@ -979,6 +1169,16 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         self.assertEqual(
             join_window.btn_connect.cget("text"),
             "Se connecter",
+        )
+        self.assertIsNotNone(join_window.host_entry)
+        self.assertIsNotNone(join_window.port_entry)
+        self.assertEqual(
+            join_window.host_var.get(),
+            online_client_module.DEFAULT_ONLINE_HOST,
+        )
+        self.assertEqual(
+            join_window.port_var.get(),
+            str(online_client_module.DEFAULT_ONLINE_PORT),
         )
         self.assertIsNotNone(join_window.network_indicator)
         self.assertTrue(join_window.network_indicator.available)
@@ -1012,6 +1212,8 @@ class LauncherOnlineFlowTests(unittest.TestCase):
 
         online_window = self.app.online_lobby_window
         self.assertIsNotNone(online_window)
+
+        online_window.network_indicator.shutdown()
 
         online_window.network_indicator.apply_network_status(
             _make_network_status(
@@ -1099,18 +1301,21 @@ class LauncherOnlineFlowTests(unittest.TestCase):
 
         self.assertEqual(join_window.btn_join_room_id.cget("state"), "normal")
 
+        online_lobby_module.play_click.reset_mock()
         join_window.btn_join_room_id.invoke()
         self._update_ui()
 
         prompt_window = join_window._room_id_prompt_window
         self.assertIsNotNone(prompt_window)
         self.assertIsNotNone(join_window.room_id_entry)
+        online_lobby_module.play_click.assert_called_once_with()
 
         join_window.connected = True
         join_window.connecting = False
         join_window._sync_controls_state()
 
         join_window.room_id_var.set("  room-manual  ")
+        online_lobby_module.play_transition.reset_mock()
 
         with mock.patch.object(
             join_window,
@@ -1121,6 +1326,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             self._update_ui()
 
         join_room_id.assert_called_once_with("room-manual")
+        online_lobby_module.play_transition.assert_called_once_with()
         self.assertEqual(join_window.room_id_var.get(), "room-manual")
         self.assertIsNone(join_window._room_id_prompt_window)
         self.assertIsNone(join_window.room_id_entry)
@@ -1189,12 +1395,14 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         prompt_window = join_window._room_id_prompt_window
         self.assertIsNotNone(prompt_window)
         join_window.room_id_var.set("room-manual")
+        online_lobby_module.play_error.reset_mock()
 
         with mock.patch.object(join_window, "on_connect") as on_connect:
             prompt_window.submit()
             self._update_ui()
 
         on_connect.assert_not_called()
+        online_lobby_module.play_error.assert_called_once_with()
         self.assertEqual(
             prompt_window.feedback_label.cget("text"),
             "Renseigne d'abord ton pseudo dans le panneau Profil.",
@@ -1265,6 +1473,36 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         self.assertFalse(create_window.winfo_exists())
         self.assertIsNone(online_window.create_window)
         self.assertNotEqual(online_window.state(), "withdrawn")
+
+    def test_standalone_session_return_does_not_show_hidden_root(self):
+        standalone_app = ctk.CTk()
+        standalone_app.withdraw()
+        session_window = None
+
+        try:
+            session_window = online_lobby_module.OnlineSessionWindow(
+                standalone_app,
+                mode=online_lobby_module.MODE_JOIN,
+                network_available=True,
+                restore_parent_on_close=False,
+                destroy_parent_on_close=True,
+            )
+            standalone_app.update_idletasks()
+            standalone_app.update()
+
+            online_lobby_module.present_window.reset_mock()
+            session_window.btn_disconnect.invoke()
+
+            self.assertTrue(_window_is_destroyed(session_window))
+            self.assertTrue(_window_is_destroyed(standalone_app))
+            online_lobby_module.present_window.assert_not_called()
+        finally:
+            if session_window is not None and not _window_is_destroyed(session_window):
+                _cancel_pending_after_callbacks(session_window)
+                session_window.destroy()
+            if not _window_is_destroyed(standalone_app):
+                _cancel_pending_after_callbacks(standalone_app)
+                standalone_app.destroy()
 
     def test_online_connect_starts_poll_loop(self):
         self.app.open_online_lobby()

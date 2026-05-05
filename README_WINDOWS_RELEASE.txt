@@ -22,6 +22,27 @@ Livraison publiee
   une archive zip et, si Inno Setup est installe, un vrai setup Windows.
 - Le script sait aussi signer l exe et le setup si un certificat Windows est
   configure dans l environnement.
+- Quand le setup est genere, le script met aussi a jour automatiquement
+  windows_installer_sha256 dans version.json a partir du setup final.
+
+Publication GitHub et auto-update
+---------------------------------
+
+- Le manifest version.json est lu par le jeu au demarrage pour verifier si une
+  nouvelle version est disponible.
+- Avant une publication, incremente la valeur version dans version.json.
+- Conserve le nom Setup_ArenaDuel.exe pour l installateur publie afin que
+  windows_installer_url reste valide sans changement de code.
+- Lance build_windows_release.bat, puis recupere l installateur dans
+  dist_windows\ArenaDuel_Windows\Installer\Setup_ArenaDuel.exe.
+- Publie une release GitHub et ajoute Setup_ArenaDuel.exe comme asset.
+- Le lien windows_installer_url pointe deja vers releases/latest/download,
+  donc la derniere release publiee devient automatiquement la source de mise a
+  jour.
+- build_windows_release.bat met a jour automatiquement
+  windows_installer_sha256 dans version.json si le setup a bien ete genere.
+- Si tu veux changer la cadence de rappel, ajuste remind_later_hours dans
+  version.json avant la publication.
 
 Variables d environnement de signature
 --------------------------------------

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import queue
 import threading
+from functools import lru_cache
 from tkinter import TclError, messagebox
 
 import customtkinter as ctk
@@ -24,7 +25,7 @@ from runtime_utils import (
     set_runtime_override,
     save_runtime_user_overrides,
 )
-from ui.auto_update import bind_auto_update_window
+from ui.auto_update import bind_auto_update_window, run_startup_update_gate
 from ui.online_client import probe_online_service
 from ui.online_lobby import (
     ONLINE_ENTRY_REQUIRED_MESSAGE,
@@ -57,16 +58,11 @@ from ui.theme import (
 apply_theme_settings()
 
 
-_AUDIO_MODULE = None
-
-
+@lru_cache(maxsize=1)
 def _audio_module():
-    global _AUDIO_MODULE
-    if _AUDIO_MODULE is None:
-        from game import audio as audio_module
+    from game import audio as audio_module
 
-        _AUDIO_MODULE = audio_module
-    return _AUDIO_MODULE
+    return audio_module
 
 
 def init_audio():
@@ -95,6 +91,63 @@ def start_menu_music(restart: bool = False):
 
 def stop_music(fade_ms: int = 250):
     return _audio_module().stop_music(fade_ms=fade_ms)
+
+
+def _schedule_window_sound(
+    window,
+    *,
+    tone: str = "transition",
+    delay_ms: int = 70,
+) -> None:
+    if getattr(window, "tk", None) is None:
+        return
+
+    def _play_sound() -> None:
+        try:
+            if not window.winfo_exists():
+                return
+        except TclError:
+            return
+
+        init_audio()
+        if tone == "click":
+            play_click()
+            return
+        if tone == "alert":
+            play_alert()
+            return
+        if tone == "error":
+            play_error()
+            return
+        play_transition()
+
+    try:
+        window.after(delay_ms, _play_sound)
+    except TclError:
+        pass
+
+
+def _schedule_menu_audio_boot(window, *, delay_ms: int = 100) -> None:
+    if getattr(window, "tk", None) is None:
+        return
+
+    def _start_menu_audio() -> None:
+        try:
+            if not window.winfo_exists():
+                return
+        except TclError:
+            return
+
+        import pygame
+
+        pygame.mixer.pre_init(44100, -16, 2, 512)
+        init_audio()
+        start_menu_music()
+
+    try:
+        window.after(delay_ms, _start_menu_audio)
+    except TclError:
+        pass
 
 
 def test_connection():
@@ -228,6 +281,8 @@ class ModeSelectionMenuApp(ctk.CTk):
         self._build_ui()
         present_window(self)
         bind_auto_update_window(self)
+        _schedule_window_sound(self)
+        _schedule_menu_audio_boot(self)
 
     def _menu_title(self) -> str:
         return "Arena Duel - Menu"
@@ -311,6 +366,10 @@ class ModeSelectionMenuApp(ctk.CTk):
             )
 
     def _set_selection(self, value: str) -> None:
+        if value in {"back", "quit"}:
+            play_click()
+        else:
+            play_transition()
         self.selection = value
         self.destroy()
 
@@ -352,6 +411,7 @@ class ModeSelectionMenuApp(ctk.CTk):
         self._set_selection("quit")
 
     def _handle_close(self) -> None:
+        play_click()
         self.selection = None
         self.destroy()
 
@@ -486,6 +546,8 @@ class StartupModeApp(ctk.CTk):
         self._build_ui()
         present_window(self)
         bind_auto_update_window(self)
+        _schedule_window_sound(self)
+        _schedule_menu_audio_boot(self)
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
@@ -608,6 +670,7 @@ class StartupModeApp(ctk.CTk):
         )
 
     def _handle_launch_without_db(self):
+        play_transition()
         set_runtime_override("demo_local_storage_enabled", True)
         set_runtime_override("demo_local_storage_force", True)
         self._queue_launcher_open(
@@ -656,6 +719,8 @@ class StartupModeApp(ctk.CTk):
     def _handle_launch_with_db(self):
         if self._db_probe_in_progress:
             return
+
+        play_transition()
 
         clear_runtime_override("demo_local_storage_enabled")
         clear_runtime_override("demo_local_storage_force")
@@ -714,6 +779,7 @@ class StartupModeApp(ctk.CTk):
                     tone="success",
                 )
             else:
+                play_alert()
                 self._set_controls_enabled(True)
                 self._set_status(
                     "Base introuvable",
@@ -755,6 +821,7 @@ class StartupModeApp(ctk.CTk):
         self._spinner_after_id = None
 
     def _handle_close(self):
+        play_click()
         self.selection = None
         self._pending_selection = None
         self.destroy()
@@ -840,10 +907,10 @@ class LauncherSettingsWindow(ctk.CTkToplevel):
         screen_width = max(1180, self.winfo_screenwidth())
         screen_height = max(760, self.winfo_screenheight())
         self._background_asset_size = (screen_width, screen_height)
-        self.background_image = None
         self.configure(fg_color=PALETTE["launcher_blend"])
 
         self.runtime_snapshot = load_persisted_runtime_config()
+        self.background_image = None
         self.serial_ports = []
         self.vars = self._build_vars(self.runtime_snapshot)
         self.serial_ports_label: ctk.CTkLabel
@@ -1876,7 +1943,6 @@ class LauncherApp(ctk.CTk):
             tone="panel",
             border_color=PALETTE["gold_dim"],
         )
-        logo_shell.grid_propagate(False)
         logo_shell.grid(
             row=2,
             column=0,
@@ -2602,6 +2668,8 @@ def _run_online_session_mode(mode: str) -> None:
         app,
         mode=mode,
         network_available=True,
+        restore_parent_on_close=False,
+        destroy_parent_on_close=True,
     )
 
     def close_all() -> None:
@@ -2746,19 +2814,27 @@ def run_main_mode_menu() -> None:
             if not _guard_online_entry():
                 continue
 
-            online_selection = run_online_mode_menu()
+            while True:
+                online_selection = run_online_mode_menu()
+                if online_selection == "back":
+                    break
+                if online_selection == "host":
+                    run_online_host_session()
+                    continue
+                if online_selection == "join":
+                    run_online_join_session()
+                    continue
+                break
+
             if online_selection == "back":
                 continue
-            if online_selection == "host":
-                run_online_host_session()
-            elif online_selection == "join":
-                run_online_join_session()
             return
 
         return
 
 
 def run_launcher():
+    run_startup_update_gate()
     startup = StartupModeApp()
     startup.mainloop()
 

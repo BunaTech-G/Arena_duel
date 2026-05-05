@@ -14,6 +14,7 @@ set "INSTALLER_DIR=%RELEASE_DIR%\Installer"
 set "ZIP_PATH=dist_windows\ArenaDuel_Windows.zip"
 set "EXE_PATH=%DIST_DIR%\ArenaDuel\ArenaDuel.exe"
 set "SETUP_PATH=installer\Setup_ArenaDuel.exe"
+set "MANIFEST_PATH=version.json"
 set "SIGN_TIMESTAMP_URL=https://timestamp.digicert.com"
 set "SETUP_READY="
 
@@ -58,6 +59,11 @@ if defined ISCC_EXE (
     if errorlevel 1 (
         exit /b 1
     )
+
+    call :sync_manifest_installer_hash "%SETUP_PATH%"
+    if errorlevel 1 (
+        exit /b 1
+    )
 ) else (
     echo [INFO] Inno Setup n est pas detecte sur ce poste.
     echo [INFO] La livraison sera preparee en mode portable seulement.
@@ -99,6 +105,22 @@ if defined SETUP_READY if exist "%INSTALLER_DIR%\Setup_ArenaDuel.exe" (
 echo Archive zip : %ZIP_PATH%
 echo.
 call :maybe_pause
+exit /b 0
+
+:sync_manifest_installer_hash
+set "TARGET_SETUP=%~1"
+if not exist "%TARGET_SETUP%" (
+    echo [ERREUR] Installateur introuvable pour la mise a jour du manifest : %TARGET_SETUP%
+    exit /b 1
+)
+
+echo [INFO] Mise a jour du SHA-256 dans %MANIFEST_PATH%...
+"%PYTHON_EXE%" tools\update_windows_manifest.py "%MANIFEST_PATH%" "%TARGET_SETUP%"
+if errorlevel 1 (
+    echo [ERREUR] Impossible de synchroniser le hash de l installateur dans %MANIFEST_PATH%.
+    exit /b 1
+)
+
 exit /b 0
 
 :find_iscc

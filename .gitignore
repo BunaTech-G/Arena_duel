@@ -37,6 +37,8 @@ Thumbs.db
 *.tmp
 *.bak
 tmp_*
+version.test.json
+version.installer.test.json
 *.vsix
 *.pyz
 

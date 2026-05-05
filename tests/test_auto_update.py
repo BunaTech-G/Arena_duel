@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from tkinter import TclError
 from unittest import mock
 
@@ -42,6 +43,10 @@ def _register_appearance_callback_without_loop(cls, callback, widget=None):
         cls.app_list.append(app)
 
 
+def _noop_tk_callback(*_args, **_kwargs):
+    return None
+
+
 def _walk_widgets(widget):
     yield widget
     for child in widget.winfo_children():
@@ -70,11 +75,34 @@ def _collect_label_texts(widget) -> list[str]:
     return [text for text in texts if text]
 
 
+def _find_button(widget, text: str):
+    for child in _walk_widgets(widget):
+        try:
+            if isinstance(child, ctk.CTkButton) and child.cget("text") == text:
+                return child
+        except TclError:
+            continue
+    return None
+
+
+def _is_destroyed(widget) -> bool:
+    try:
+        return not bool(widget.winfo_exists())
+    except TclError:
+        return True
+
+
+def _cancel_pending_after_callbacks(widget) -> None:
+    auto_update_module.cancel_pending_after_callbacks(widget)
+
+
 class _FakeWindow:
     def __init__(self):
         self._exists = True
         self._after_callback = None
         self._after_id = None
+        self._width = 420
+        self._req_width = 420
 
     def bind(self, *_args, **_kwargs):
         return None
@@ -91,6 +119,15 @@ class _FakeWindow:
     def winfo_exists(self):
         return self._exists
 
+    def update_idletasks(self):
+        return None
+
+    def winfo_width(self):
+        return self._width
+
+    def winfo_reqwidth(self):
+        return self._req_width
+
     def trigger_after(self):
         if self._after_callback is not None:
             self._after_callback()
@@ -99,12 +136,33 @@ class _FakeWindow:
         self._exists = False
 
 
+class _FakeAfterWidget:
+    class _FakeTk:
+        def __init__(self, callback_ids):
+            self._callback_ids = callback_ids
+
+        def call(self, command_name, sub_command):
+            if (command_name, sub_command) != ("after", "info"):
+                raise TclError()
+            return self._callback_ids
+
+    def __init__(self, callback_ids):
+        self.tk = self._FakeTk(callback_ids)
+        self.cancelled_ids = []
+
+    def after_cancel(self, callback_id):
+        self.cancelled_ids.append(callback_id)
+
+
 class _FakeNotice:
     def __init__(self, master=None, **_kwargs):
         self.master = master
         self._exists = True
+        self.init_kwargs = dict(_kwargs)
+        self.place_kwargs = None
 
     def place(self, **_kwargs):
+        self.place_kwargs = dict(_kwargs)
         return None
 
     def lift(self):
@@ -117,7 +175,44 @@ class _FakeNotice:
         return self._exists
 
 
+class _ImmediateThread:
+    def __init__(
+        self, group=None, target=None, name=None, args=(), kwargs=None, daemon=None
+    ):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        if self._target is not None:
+            self._target(*self._args, **self._kwargs)
+
+
 class AutoUpdateLogicTests(unittest.TestCase):
+    def test_cancel_pending_after_callbacks_cancels_all_known_ids(self):
+        widget = _FakeAfterWidget(("after#1", "after#2"))
+
+        auto_update_module.cancel_pending_after_callbacks(widget)
+
+        self.assertEqual(widget.cancelled_ids, ["after#1", "after#2"])
+
+    def test_configured_manifest_url_uses_environment_override(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                auto_update_module.AUTO_UPDATE_MANIFEST_URL_ENV: (
+                    "https://example.com/test-version.json"
+                )
+            },
+            clear=False,
+        ):
+            manifest_url = auto_update_module.configured_update_manifest_url()
+
+        self.assertEqual(
+            manifest_url,
+            "https://example.com/test-version.json",
+        )
+
     def test_check_for_available_update_detects_newer_manifest(self):
         payload = json.dumps(
             {
@@ -137,6 +232,28 @@ class AutoUpdateLogicTests(unittest.TestCase):
             update = auto_update_module.check_for_available_update(
                 current_version="1.0.0",
                 manifest_url="https://example.com/version.json",
+            )
+
+        self.assertIsNotNone(update)
+        self.assertEqual(update.version, "1.2.0")
+        self.assertEqual(update.update_url, "https://example.com/update")
+
+    def test_check_for_available_update_accepts_local_manifest_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = os.path.join(temp_dir, "version.test.json")
+            with open(manifest_path, "w", encoding="utf-8") as file_handle:
+                json.dump(
+                    {
+                        "version": "1.2.0",
+                        "update_url": "https://example.com/update",
+                    },
+                    file_handle,
+                    ensure_ascii=False,
+                )
+
+            update = auto_update_module.check_for_available_update(
+                current_version="1.0.0",
+                manifest_url=manifest_path,
             )
 
         self.assertIsNotNone(update)
@@ -203,6 +320,31 @@ class AutoUpdateLogicTests(unittest.TestCase):
         self.assertIsNotNone(update)
         self.assertEqual(update.remind_later_seconds, 6 * 60 * 60)
 
+    def test_check_for_available_update_reads_installer_sha256(self):
+        payload = json.dumps(
+            {
+                "version": "1.2.0",
+                "windows_installer_url": ("https://example.com/Setup_ArenaDuel.exe"),
+                "windows_installer_sha256": ("A" * 64),
+            }
+        ).encode("utf-8")
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = payload
+
+        with mock.patch.object(
+            auto_update_module.urllib.request,
+            "urlopen",
+            return_value=response,
+        ):
+            update = auto_update_module.check_for_available_update(
+                current_version="1.0.0",
+                manifest_url="https://example.com/version.json",
+            )
+
+        self.assertIsNotNone(update)
+        self.assertEqual(update.installer_sha256, "a" * 64)
+
     def test_check_for_available_update_stays_silent_when_up_to_date(self):
         payload = json.dumps(
             {
@@ -248,6 +390,166 @@ class AutoUpdateLogicTests(unittest.TestCase):
             result = auto_update_module.open_update_page("https://example.com/update")
 
         self.assertFalse(result)
+
+    def test_open_update_page_starts_local_windows_installer(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer_path = os.path.join(temp_dir, "Setup_ArenaDuel.exe")
+            with open(installer_path, "wb") as file_handle:
+                file_handle.write(b"test")
+
+            with (
+                mock.patch.object(
+                    auto_update_module.sys,
+                    "platform",
+                    "win32",
+                ),
+                mock.patch.object(
+                    auto_update_module.os,
+                    "startfile",
+                    create=True,
+                ) as startfile,
+            ):
+                result = auto_update_module.open_update_page(installer_path)
+
+        self.assertTrue(result)
+        startfile.assert_called_once_with(installer_path)
+
+    def test_open_update_page_downloads_remote_windows_installer(self):
+        payload_chunks = [b"chunk-a", b"chunk-b", b""]
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.side_effect = payload_chunks
+        response.headers.get.return_value = str(len(b"chunk-achunk-b"))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                mock.patch.object(
+                    auto_update_module.sys,
+                    "platform",
+                    "win32",
+                ),
+                mock.patch.object(
+                    auto_update_module,
+                    "runtime_user_file_path",
+                    return_value=os.path.join(temp_dir, "updates"),
+                ),
+                mock.patch.object(
+                    auto_update_module.urllib.request,
+                    "urlopen",
+                    return_value=response,
+                ) as urlopen,
+                mock.patch.object(
+                    auto_update_module.os,
+                    "startfile",
+                    create=True,
+                ) as startfile,
+            ):
+                result = auto_update_module.open_update_page(
+                    "https://example.com/Setup_ArenaDuel.exe"
+                )
+
+            target_path = os.path.join(temp_dir, "updates", "Setup_ArenaDuel.exe")
+            with open(target_path, "rb") as file_handle:
+                self.assertEqual(file_handle.read(), b"chunk-achunk-b")
+
+        self.assertTrue(result)
+        urlopen.assert_called_once()
+        startfile.assert_called_once_with(target_path)
+
+    def test_download_remote_installer_reports_progress(self):
+        payload_chunks = [b"abc", b"defg", b""]
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.side_effect = payload_chunks
+        response.headers.get.return_value = "7"
+        progress_events = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                mock.patch.object(
+                    auto_update_module,
+                    "runtime_user_file_path",
+                    return_value=os.path.join(temp_dir, "updates"),
+                ),
+                mock.patch.object(
+                    auto_update_module.urllib.request,
+                    "urlopen",
+                    return_value=response,
+                ),
+            ):
+                installer_path = auto_update_module._download_remote_installer(
+                    "https://example.com/Setup_ArenaDuel.exe",
+                    progress_callback=lambda current, total: progress_events.append(
+                        (current, total)
+                    ),
+                )
+
+        self.assertEqual(
+            progress_events,
+            [(0, 7), (3, 7), (7, 7)],
+        )
+        self.assertIsNotNone(installer_path)
+
+    def test_download_remote_installer_rejects_hash_mismatch(self):
+        payload_chunks = [b"abc", b""]
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.side_effect = payload_chunks
+        response.headers.get.return_value = "3"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                mock.patch.object(
+                    auto_update_module,
+                    "runtime_user_file_path",
+                    return_value=os.path.join(temp_dir, "updates"),
+                ),
+                mock.patch.object(
+                    auto_update_module.urllib.request,
+                    "urlopen",
+                    return_value=response,
+                ),
+            ):
+                installer_path = auto_update_module._download_remote_installer(
+                    "https://example.com/Setup_ArenaDuel.exe",
+                    installer_sha256="f" * 64,
+                )
+
+            target_path = os.path.join(temp_dir, "updates", "Setup_ArenaDuel.exe")
+
+        self.assertIsNone(installer_path)
+        self.assertFalse(os.path.exists(target_path))
+
+    def test_open_update_page_falls_back_to_browser_when_remote_download_fails(self):
+        with (
+            mock.patch.object(
+                auto_update_module.sys,
+                "platform",
+                "win32",
+            ),
+            mock.patch.object(
+                auto_update_module.urllib.request,
+                "urlopen",
+                side_effect=auto_update_module.urllib.error.URLError("offline"),
+            ),
+            mock.patch.object(
+                auto_update_module.os,
+                "startfile",
+                create=True,
+            ) as startfile,
+            mock.patch.object(
+                auto_update_module.webbrowser,
+                "open_new_tab",
+                return_value=True,
+            ) as open_new_tab,
+        ):
+            result = auto_update_module.open_update_page(
+                "https://example.com/Setup_ArenaDuel.exe"
+            )
+
+        self.assertTrue(result)
+        startfile.assert_not_called()
+        open_new_tab.assert_called_once_with("https://example.com/Setup_ArenaDuel.exe")
 
     def test_later_choice_persists_snooze_state(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -391,6 +693,95 @@ class AutoUpdateLogicTests(unittest.TestCase):
         self.assertEqual(notice_cls.call_count, 2)
         self.assertIs(getattr(service, "_notice_window"), second_window)
 
+    def test_service_places_a_wider_notice_on_compact_window(self):
+        service = auto_update_module.AutoUpdateService()
+        window = _FakeWindow()
+
+        with mock.patch.object(
+            auto_update_module,
+            "AutoUpdateNotice",
+            side_effect=_FakeNotice,
+        ):
+            setattr(service, "_check_started", True)
+            getattr(service, "_result_queue").put(
+                auto_update_module.AvailableUpdate(
+                    version="1.2.0",
+                    update_url="https://example.com/update",
+                )
+            )
+            service.attach_window(window)
+            window.trigger_after()
+
+        notice = getattr(window, auto_update_module.WINDOW_NOTICE_ATTR)
+        self.assertIsNotNone(notice)
+        self.assertEqual(notice.init_kwargs["width"], 384)
+
+    def test_run_startup_update_gate_stays_silent_without_update(self):
+        service = mock.Mock()
+        service.startup_available_update.return_value = None
+
+        with (
+            mock.patch.object(
+                auto_update_module,
+                "get_auto_update_service",
+                return_value=service,
+            ),
+            mock.patch.object(
+                auto_update_module,
+                "AutoUpdatePromptApp",
+            ) as prompt_cls,
+        ):
+            auto_update_module.run_startup_update_gate()
+
+        prompt_cls.assert_not_called()
+
+    def test_run_startup_update_gate_opens_reserved_window(self):
+        service = mock.Mock()
+        update = auto_update_module.AvailableUpdate(
+            version="1.2.0",
+            update_url="https://example.com/update",
+        )
+        service.startup_available_update.return_value = update
+
+        with (
+            mock.patch.object(
+                auto_update_module,
+                "get_auto_update_service",
+                return_value=service,
+            ),
+            mock.patch.object(
+                auto_update_module,
+                "AutoUpdatePromptApp",
+            ) as prompt_cls,
+        ):
+            auto_update_module.run_startup_update_gate()
+
+        prompt_cls.assert_called_once_with(service, update)
+        prompt_cls.return_value.mainloop.assert_called_once_with()
+
+    def test_service_launch_update_passes_installer_sha256(self):
+        update = auto_update_module.AvailableUpdate(
+            version="1.2.0",
+            update_url="https://example.com/Setup_ArenaDuel.exe",
+            installer_sha256="c" * 64,
+        )
+        service = auto_update_module.AutoUpdateService()
+        worker = mock.Mock()
+
+        with mock.patch.object(
+            auto_update_module.threading,
+            "Thread",
+            return_value=worker,
+        ) as thread_ctor:
+            service.launch_update(update)
+
+        thread_ctor.assert_called_once()
+        self.assertEqual(
+            thread_ctor.call_args.kwargs["kwargs"],
+            {"installer_sha256": "c" * 64},
+        )
+        worker.start.assert_called_once_with()
+
 
 class AutoUpdateNoticeTests(unittest.TestCase):
     def setUp(self):
@@ -403,8 +794,16 @@ class AutoUpdateNoticeTests(unittest.TestCase):
         tracker.update_loop_running = False
 
         self.patchers = [
-            mock.patch.object(ctk_tk.CTk, "_windows_set_titlebar_color"),
-            mock.patch.object(ctk_tk.CTk, "_windows_set_titlebar_icon"),
+            mock.patch.object(
+                ctk_tk.CTk,
+                "_windows_set_titlebar_color",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                ctk_tk.CTk,
+                "_windows_set_titlebar_icon",
+                new=_noop_tk_callback,
+            ),
             mock.patch.object(
                 scaling_tracker.ScalingTracker,
                 "add_widget",
@@ -432,6 +831,7 @@ class AutoUpdateNoticeTests(unittest.TestCase):
     def tearDown(self):
         try:
             if self.app.winfo_exists():
+                _cancel_pending_after_callbacks(self.app)
                 self.app.destroy()
         except TclError:
             pass
@@ -451,5 +851,260 @@ class AutoUpdateNoticeTests(unittest.TestCase):
             "Une mise à jour est disponible",
             _collect_label_texts(self.notice),
         )
+        self.assertIn(
+            "Tu peux lancer l'installation maintenant ou la reporter.",
+            _collect_label_texts(self.notice),
+        )
         self.assertIn("Mettre à jour", _collect_button_texts(self.notice))
         self.assertIn("Plus tard", _collect_button_texts(self.notice))
+
+
+class AutoUpdatePromptTests(unittest.TestCase):
+    def setUp(self):
+        tracker = appearance_mode_tracker.AppearanceModeTracker
+        scaling_tracker.ScalingTracker.window_widgets_dict.clear()
+        scaling_tracker.ScalingTracker.window_dpi_scaling_dict.clear()
+        scaling_tracker.ScalingTracker.update_loop_running = False
+        tracker.callback_list.clear()
+        tracker.app_list.clear()
+        tracker.update_loop_running = False
+
+        self.patchers = [
+            mock.patch.object(auto_update_module, "init_audio"),
+            mock.patch.object(auto_update_module, "play_alert"),
+            mock.patch.object(auto_update_module, "play_click"),
+            mock.patch.object(auto_update_module, "play_transition"),
+            mock.patch.object(auto_update_module, "apply_window_icon"),
+            mock.patch.object(auto_update_module, "present_window"),
+            mock.patch.object(
+                ctk_tk.CTk,
+                "_windows_set_titlebar_color",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                ctk_tk.CTk,
+                "_windows_set_titlebar_icon",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                scaling_tracker.ScalingTracker,
+                "add_widget",
+                new=classmethod(_register_widget_without_dpi_loop),
+            ),
+            mock.patch.object(
+                appearance_mode_tracker.AppearanceModeTracker,
+                "add",
+                new=classmethod(_register_appearance_callback_without_loop),
+            ),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+
+        self.service = mock.Mock()
+        self.app = auto_update_module.AutoUpdatePromptApp(
+            self.service,
+            auto_update_module.AvailableUpdate(
+                version="1.2.0",
+                update_url="https://example.com/update",
+            ),
+        )
+        self.app.update_idletasks()
+        self.app.update()
+        auto_update_module.init_audio.reset_mock()
+        auto_update_module.play_alert.reset_mock()
+        auto_update_module.play_click.reset_mock()
+        auto_update_module.play_transition.reset_mock()
+
+    def tearDown(self):
+        try:
+            if self.app.winfo_exists():
+                _cancel_pending_after_callbacks(self.app)
+                self.app.destroy()
+        except TclError:
+            pass
+        finally:
+            tracker = appearance_mode_tracker.AppearanceModeTracker
+            scaling_tracker.ScalingTracker.window_widgets_dict.clear()
+            scaling_tracker.ScalingTracker.window_dpi_scaling_dict.clear()
+            scaling_tracker.ScalingTracker.update_loop_running = False
+            tracker.callback_list.clear()
+            tracker.app_list.clear()
+            tracker.update_loop_running = False
+            for patcher in reversed(self.patchers):
+                patcher.stop()
+
+    def test_prompt_uses_reserved_window_text_and_actions(self):
+        self.assertEqual(self.app.title(), "Arena Duel - Mise à jour")
+        self.assertIn(
+            "Une mise à jour est disponible",
+            _collect_label_texts(self.app),
+        )
+        self.assertIn(
+            "Version 1.2.0 prête à être installée.",
+            _collect_label_texts(self.app),
+        )
+        self.assertIn(
+            (
+                "Choisis Mettre à jour pour ouvrir l'installation, ou Plus "
+                "tard pour continuer vers le menu."
+            ),
+            _collect_label_texts(self.app),
+        )
+        self.assertIn("Mettre à jour", _collect_button_texts(self.app))
+        self.assertIn("Plus tard", _collect_button_texts(self.app))
+
+    def test_prompt_later_button_disables_actions_and_schedules_close(self):
+        later_button = _find_button(self.app, "Plus tard")
+        self.assertIsNotNone(later_button)
+
+        later_button.invoke()
+
+        self.assertEqual(self.app.selection, "later")
+        auto_update_module.play_click.assert_called_once_with()
+        self.service.defer_update.assert_called_once()
+        self.assertEqual(self.app.update_button.cget("state"), "disabled")
+        self.assertEqual(self.app.later_button.cget("state"), "disabled")
+        self.assertIsNotNone(self.app._close_after_id)
+        self.assertFalse(_is_destroyed(self.app))
+
+    def test_prompt_update_button_disables_actions_and_schedules_close(self):
+        update_button = _find_button(self.app, "Mettre à jour")
+        self.assertIsNotNone(update_button)
+
+        update_button.invoke()
+
+        self.assertEqual(self.app.selection, "update")
+        auto_update_module.play_transition.assert_called_once_with()
+        self.service.launch_update.assert_called_once()
+        self.assertEqual(self.app.update_button.cget("state"), "disabled")
+        self.assertEqual(self.app.later_button.cget("state"), "disabled")
+        self.assertIsNotNone(self.app._close_after_id)
+        self.assertFalse(_is_destroyed(self.app))
+
+    def test_prompt_later_mouse_click_path_closes_under_mainloop(self):
+        later_button = _find_button(self.app, "Plus tard")
+        self.assertIsNotNone(later_button)
+        forced_close = {"called": False}
+
+        def _force_close_if_needed():
+            if _is_destroyed(self.app):
+                return
+            forced_close["called"] = True
+            self.app.destroy()
+
+        self.app.after(10, getattr(later_button, "_clicked"))
+        self.app.after(500, _force_close_if_needed)
+        self.app.mainloop()
+
+        self.assertFalse(forced_close["called"])
+        self.assertEqual(self.app.selection, "later")
+        self.service.defer_update.assert_called_once()
+
+    def test_prompt_update_mouse_click_path_closes_under_mainloop(self):
+        update_button = _find_button(self.app, "Mettre à jour")
+        self.assertIsNotNone(update_button)
+        forced_close = {"called": False}
+
+        def _force_close_if_needed():
+            if _is_destroyed(self.app):
+                return
+            forced_close["called"] = True
+            self.app.destroy()
+
+        self.app.after(10, getattr(update_button, "_clicked"))
+        self.app.after(500, _force_close_if_needed)
+        self.app.mainloop()
+
+        self.assertFalse(forced_close["called"])
+        self.assertEqual(self.app.selection, "update")
+        self.service.launch_update.assert_called_once()
+
+    def test_prompt_remote_installer_switches_to_progress_flow(self):
+        update_button = _find_button(self.app, "Mettre à jour")
+        self.assertIsNotNone(update_button)
+
+        self.app._update = auto_update_module.AvailableUpdate(
+            version="1.2.0",
+            update_url="https://example.com/Setup_ArenaDuel.exe",
+        )
+
+        with (
+            mock.patch.object(
+                auto_update_module.sys,
+                "platform",
+                "win32",
+            ),
+            mock.patch.object(
+                auto_update_module.threading,
+                "Thread",
+                side_effect=_ImmediateThread,
+            ),
+            mock.patch.object(
+                auto_update_module,
+                "_download_remote_installer",
+                return_value=Path("C:/Temp/Setup_ArenaDuel.exe"),
+            ) as download_installer,
+            mock.patch.object(
+                auto_update_module.os,
+                "startfile",
+                create=True,
+            ) as startfile,
+        ):
+            update_button.invoke()
+            self.app.update_idletasks()
+            self.app.update()
+
+        self.service.launch_update.assert_not_called()
+        download_installer.assert_called_once_with(
+            "https://example.com/Setup_ArenaDuel.exe",
+            progress_callback=mock.ANY,
+            installer_sha256=None,
+        )
+        startfile.assert_called_once_with(
+            os.path.normpath("C:/Temp/Setup_ArenaDuel.exe")
+        )
+        self.assertIsNotNone(self.app.progress_bar)
+        self.assertEqual(self.app.selection, "update")
+        self.assertIsNotNone(self.app._close_after_id)
+
+    def test_prompt_remote_installer_passes_hash_to_download_flow(self):
+        update_button = _find_button(self.app, "Mettre à jour")
+        self.assertIsNotNone(update_button)
+
+        self.app._update = auto_update_module.AvailableUpdate(
+            version="1.2.0",
+            update_url="https://example.com/Setup_ArenaDuel.exe",
+            installer_sha256="b" * 64,
+        )
+
+        with (
+            mock.patch.object(
+                auto_update_module.sys,
+                "platform",
+                "win32",
+            ),
+            mock.patch.object(
+                auto_update_module.threading,
+                "Thread",
+                side_effect=_ImmediateThread,
+            ),
+            mock.patch.object(
+                auto_update_module,
+                "_download_remote_installer",
+                return_value=Path("C:/Temp/Setup_ArenaDuel.exe"),
+            ) as download_installer,
+            mock.patch.object(
+                auto_update_module.os,
+                "startfile",
+                create=True,
+            ),
+        ):
+            update_button.invoke()
+            self.app.update_idletasks()
+            self.app.update()
+
+        download_installer.assert_called_once_with(
+            "https://example.com/Setup_ArenaDuel.exe",
+            progress_callback=mock.ANY,
+            installer_sha256="b" * 64,
+        )

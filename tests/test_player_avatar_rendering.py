@@ -91,6 +91,47 @@ class PlayerAvatarRenderingTests(unittest.TestCase):
 
         self.assertGreater(self.surface.get_bounding_rect(min_alpha=1).width, 0)
 
+    def test_highlight_draws_marker_above_nameplate(self):
+        normal_surface = pygame.Surface((320, 240), pg_srcalpha)
+
+        with patch(
+            "game.arena.load_sprite_animation_frame",
+            return_value=self.sprite,
+        ):
+            draw_player_avatar(
+                normal_surface,
+                name="Test",
+                x=120,
+                y=120,
+                radius=24,
+                accent_color=(255, 255, 255),
+                name_font=self.font,
+                sprite_id="skeleton_fighter_ember",
+                facing=1,
+                elapsed_ms=240.0,
+                moving=False,
+                highlight=False,
+            )
+            draw_player_avatar(
+                self.surface,
+                name="Test",
+                x=120,
+                y=120,
+                radius=24,
+                accent_color=(255, 255, 255),
+                name_font=self.font,
+                sprite_id="skeleton_fighter_ember",
+                facing=1,
+                elapsed_ms=240.0,
+                moving=False,
+                highlight=True,
+            )
+
+        normal_bounds = normal_surface.get_bounding_rect(min_alpha=1)
+        highlight_bounds = self.surface.get_bounding_rect(min_alpha=1)
+
+        self.assertLess(highlight_bounds.top, normal_bounds.top)
+
 
 if __name__ == "__main__":
     unittest.main()
