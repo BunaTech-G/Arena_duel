@@ -32,6 +32,12 @@ from ui.online_lobby import (
     ONLINE_ENTRY_REQUIRED_TITLE,
     OnlineLobbyWindow,
 )
+from ui.shutdown import (
+    build_graceful_shutdown,
+    close_window_gracefully,
+    install_signal_shutdown,
+    open_window_gracefully,
+)
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
@@ -1819,6 +1825,14 @@ class LauncherApp(ctk.CTk):
         self.configure(fg_color=PALETTE["launcher_blend"])
 
         self._menu_audio_started = False
+        self._shutdown_handler = build_graceful_shutdown(
+            self,
+            steps=(
+                self._shutdown_child_windows,
+                self._shutdown_embedded_server,
+                lambda: stop_music(fade_ms=150),
+            ),
+        )
 
         self.protocol("WM_DELETE_WINDOW", self._handle_close_app)
         self.bind("<FocusIn>", self._handle_focus_in)
@@ -2468,14 +2482,11 @@ class LauncherApp(ctk.CTk):
         else:
             window = existing_window
 
-        if hide_launcher:
-            try:
-                self.withdraw()
-                self.update_idletasks()
-            except TclError:
-                pass
-
-        present_window(window)
+        open_window_gracefully(
+            window,
+            parent=self,
+            hide_parent=hide_launcher,
+        )
         return window
 
     def _set_db_mode_local(self):
@@ -2607,17 +2618,67 @@ class LauncherApp(ctk.CTk):
 
         return f"127.0.0.1:{self.tcp_port}"
 
+    def request_shutdown(self) -> None:
+        self._shutdown_handler()
+
     def _handle_close_app(self):
-        if self.embedded_server is not None:
+        self.request_shutdown()
+
+    def _shutdown_embedded_server(self) -> None:
+        server = self.embedded_server
+        server_thread = self.embedded_server_thread
+
+        self.embedded_server = None
+        self.embedded_server_thread = None
+        self.embedded_server_address_info = None
+        self.active_server_port = None
+
+        if server is None:
+            return
+
+        try:
+            server.shutdown()
+        except (OSError, RuntimeError):
+            pass
+
+        try:
+            server.server_close()
+        except (OSError, RuntimeError):
+            pass
+
+        if (
+            server_thread is not None
+            and server_thread is not threading.current_thread()
+            and server_thread.is_alive()
+        ):
             try:
-                self.embedded_server.shutdown()
-                self.embedded_server.server_close()
-            except (OSError, RuntimeError):
+                server_thread.join(timeout=0.4)
+            except RuntimeError:
                 pass
 
-        self.active_server_port = None
-        stop_music(fade_ms=150)
-        self.destroy()
+    def _close_child_window(self, attr_name: str) -> None:
+        child_window = self._get_live_window(getattr(self, attr_name))
+        if child_window is None:
+            setattr(self, attr_name, None)
+            return True
+
+        closed = close_window_gracefully(child_window, user_initiated=True)
+        if closed and getattr(self, attr_name) is child_window:
+            setattr(self, attr_name, None)
+        return closed
+
+    def _shutdown_child_windows(self) -> bool:
+        for attr_name in (
+            "settings_window",
+            "player_select_window",
+            "history_window",
+            "host_lobby_window",
+            "join_lobby_window",
+            "online_lobby_window",
+        ):
+            if not self._close_child_window(attr_name):
+                return False
+        return True
 
 
 def run_local_forge() -> None:
@@ -2626,21 +2687,17 @@ def run_local_forge() -> None:
 
     window = _build_player_select_view(app)
 
-    def close_all() -> None:
-        try:
-            if window.winfo_exists():
-                window.destroy()
-        except TclError:
-            pass
-
-        try:
-            if app.winfo_exists():
-                app.destroy()
-        except TclError:
-            pass
+    close_all = build_graceful_shutdown(
+        app,
+        steps=(lambda: close_window_gracefully(window, user_initiated=True),),
+    )
+    restore_signal_handlers = install_signal_shutdown(app, close_all)
 
     window.protocol("WM_DELETE_WINDOW", close_all)
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        restore_signal_handlers()
 
 
 def _run_menu(menu_factory) -> str | None:
@@ -2672,21 +2729,24 @@ def _run_online_session_mode(mode: str) -> None:
         destroy_parent_on_close=True,
     )
 
-    def close_all() -> None:
-        try:
-            if window.winfo_exists():
-                window.shutdown(restore_parent=False)
-        except TclError:
-            pass
-
-        try:
-            if app.winfo_exists():
-                app.destroy()
-        except TclError:
-            pass
+    close_all = build_graceful_shutdown(
+        app,
+        steps=(
+            lambda: close_window_gracefully(
+                window,
+                user_initiated=True,
+                shutdown_kwargs={"restore_parent": False},
+                request_close_kwargs={"restore_parent": False},
+            ),
+        ),
+    )
+    restore_signal_handlers = install_signal_shutdown(app, close_all)
 
     window.protocol("WM_DELETE_WINDOW", close_all)
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        restore_signal_handlers()
 
 
 def run_online_host_session() -> None:
@@ -2721,13 +2781,16 @@ def _run_lan_lobby(*, host_mode: bool) -> None:
     network_config = load_lan_runtime_config()
     tcp_port = int(network_config.port)
     embedded_server = None
+    embedded_server_thread = None
     default_server_invitation = None
 
     if host_mode:
         try:
-            embedded_server, _thread, address_info = start_server_in_background(
-                network_config.bind_host,
-                tcp_port,
+            embedded_server, embedded_server_thread, address_info = (
+                start_server_in_background(
+                    network_config.bind_host,
+                    tcp_port,
+                )
             )
         except (OSError, RuntimeError) as error:
             messagebox.showerror(
@@ -2751,7 +2814,7 @@ def _run_lan_lobby(*, host_mode: bool) -> None:
     window_ref: dict[str, object] = {"window": None}
 
     def shutdown_server() -> None:
-        nonlocal embedded_server
+        nonlocal embedded_server, embedded_server_thread
         if embedded_server is None:
             return
         try:
@@ -2759,31 +2822,36 @@ def _run_lan_lobby(*, host_mode: bool) -> None:
             embedded_server.server_close()
         except (OSError, RuntimeError):
             pass
+        if (
+            embedded_server_thread is not None
+            and embedded_server_thread is not threading.current_thread()
+            and embedded_server_thread.is_alive()
+        ):
+            try:
+                embedded_server_thread.join(timeout=0.4)
+            except RuntimeError:
+                pass
         embedded_server = None
+        embedded_server_thread = None
 
-    def close_all() -> None:
-        current_window = window_ref.get("window")
-
-        try:
-            if current_window is not None and current_window.winfo_exists():
-                current_window.running = False
-                if current_window.client is not None:
-                    current_window.client.close()
-                current_window.destroy()
-        except TclError:
-            pass
-
-        shutdown_server()
-
-        try:
-            if app.winfo_exists():
-                app.destroy()
-        except TclError:
-            pass
+    close_all = build_graceful_shutdown(
+        app,
+        steps=(
+            lambda: close_window_gracefully(
+                window_ref.get("window"),
+                user_initiated=True,
+            ),
+            shutdown_server,
+        ),
+    )
+    restore_signal_handlers = install_signal_shutdown(app, close_all)
 
     window = _build_network_lobby_view(app, **lobby_kwargs)
     _bind_lan_lobby_close(window, close_all, window_ref)
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        restore_signal_handlers()
 
 
 def run_lan_host_lobby() -> None:
@@ -2799,16 +2867,21 @@ def run_main_mode_menu() -> None:
         main_selection = _run_menu(ModeSelectionMenuApp)
 
         if main_selection == "local":
-            local_selection = run_local_mode_menu()
-            if local_selection == "back":
-                continue
-            if local_selection == "lan_host":
-                run_lan_host_lobby()
-            elif local_selection == "lan_join":
-                run_lan_join_lobby()
-            elif local_selection == "local":
-                run_local_forge()
-            return
+            while True:
+                local_selection = run_local_mode_menu()
+                if local_selection == "back":
+                    break
+                if local_selection == "lan_host":
+                    run_lan_host_lobby()
+                    continue
+                if local_selection == "lan_join":
+                    run_lan_join_lobby()
+                    continue
+                if local_selection == "local":
+                    run_local_forge()
+                return
+
+            continue
 
         if main_selection == "online":
             if not _guard_online_entry():
@@ -2836,7 +2909,14 @@ def run_main_mode_menu() -> None:
 def run_launcher():
     run_startup_update_gate()
     startup = StartupModeApp()
-    startup.mainloop()
+    restore_startup_signal_handlers = install_signal_shutdown(
+        startup,
+        build_graceful_shutdown(startup, steps=()),
+    )
+    try:
+        startup.mainloop()
+    finally:
+        restore_startup_signal_handlers()
 
     if not startup.selection:
         return
@@ -2846,4 +2926,8 @@ def run_launcher():
         startup_db_status=startup.selection["db_status"],
         probe_db_on_start=startup.selection["probe_db_on_start"],
     )
-    app.mainloop()
+    restore_app_signal_handlers = install_signal_shutdown(app, app.request_shutdown)
+    try:
+        app.mainloop()
+    finally:
+        restore_app_signal_handlers()

@@ -12,6 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from game.settings import MATCH_DURATION_OPTIONS, MATCH_DURATION_SECONDS
+
 if TYPE_CHECKING:
     from ui.online_client import OnlineClient
 
@@ -261,6 +263,40 @@ def find_room_by_id(rooms: list[dict], room_id: str) -> dict | None:
     return None
 
 
+def room_match_duration(room_payload: dict) -> int | None:
+    try:
+        return int(room_payload.get("match_duration_seconds"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def validate_match_duration(
+    *,
+    source: str,
+    room_payload: dict,
+    expected_duration: int,
+) -> bool:
+    observed_duration = room_match_duration(room_payload)
+    if observed_duration == expected_duration:
+        return True
+
+    print(
+        f"Durée inattendue depuis {source}: "
+        f"{observed_duration!r} au lieu de {expected_duration}.",
+        room_payload,
+    )
+    return False
+
+
+def build_create_room_payload(args, room_name: str) -> dict:
+    return {
+        "type": "CREATE_ROOM",
+        "name": room_name,
+        "max_players": args.max_players,
+        "match_duration_seconds": args.match_duration,
+    }
+
+
 def run_create_join_scenario(
     args,
     *,
@@ -298,13 +334,7 @@ def run_create_join_scenario(
         creator_login_pseudo = login_pseudo(creator_auth, creator_name)
 
         print(f">>> CREATE_ROOM {room_name}")
-        creator.send(
-            {
-                "type": "CREATE_ROOM",
-                "name": room_name,
-                "max_players": args.max_players,
-            }
-        )
+        creator.send(build_create_room_payload(args, room_name))
         created_messages = wait_for_messages(
             creator,
             timeout_seconds=args.timeout,
@@ -323,6 +353,13 @@ def run_create_join_scenario(
         room_id = str(created_message.get("room_id") or "").strip()
         if not room_id:
             print("ROOM_CREATED a été reçu sans room_id exploitable.")
+            return 1
+
+        if not validate_match_duration(
+            source="ROOM_CREATED",
+            room_payload=created_message,
+            expected_duration=args.match_duration,
+        ):
             return 1
 
         creator_join = wait_for_messages(
@@ -350,6 +387,13 @@ def run_create_join_scenario(
 
         if "JOINED" not in creator_join or "ROOM_UPDATE" not in creator_join:
             print("Le créateur n'a pas reçu JOINED et ROOM_UPDATE complets.")
+            return 1
+
+        if not validate_match_duration(
+            source="ROOM_UPDATE créateur",
+            room_payload=room_payload_from_messages(creator_join),
+            expected_duration=args.match_duration,
+        ):
             return 1
 
         joiner.connect(args.host, args.port, joiner_name)
@@ -434,6 +478,13 @@ def run_create_join_scenario(
                 )
             return 1
 
+        if not validate_match_duration(
+            source="LIST_ROOMS",
+            room_payload=listed_room,
+            expected_duration=args.match_duration,
+        ):
+            return 1
+
         print(f">>> JOIN_ROOM rejoignant {room_id}")
         joiner.send({"type": "JOIN_ROOM", "room_id": room_id})
         joiner_join = wait_for_messages(
@@ -458,6 +509,13 @@ def run_create_join_scenario(
                 )
             else:
                 print("Le rejoignant n'a pas reçu JOINED et ROOM_UPDATE complets.")
+            return 1
+
+        if not validate_match_duration(
+            source="ROOM_UPDATE rejoignant",
+            room_payload=room_payload_from_messages(joiner_join),
+            expected_duration=args.match_duration,
+        ):
             return 1
 
         creator_followup_map = wait_for_messages(
@@ -549,13 +607,7 @@ def run_host_migration_scenario(
         creator_login_pseudo = login_pseudo(creator_auth, creator_name)
 
         print(f">>> CREATE_ROOM {room_name}")
-        creator.send(
-            {
-                "type": "CREATE_ROOM",
-                "name": room_name,
-                "max_players": args.max_players,
-            }
-        )
+        creator.send(build_create_room_payload(args, room_name))
         created_messages = wait_for_messages(
             creator,
             timeout_seconds=args.timeout,
@@ -574,6 +626,13 @@ def run_host_migration_scenario(
         room_id = str(created_message.get("room_id") or "").strip()
         if not room_id:
             print("ROOM_CREATED a été reçu sans room_id exploitable.")
+            return 1
+
+        if not validate_match_duration(
+            source="ROOM_CREATED",
+            room_payload=created_message,
+            expected_duration=args.match_duration,
+        ):
             return 1
 
         creator_join = wait_for_messages(
@@ -640,6 +699,13 @@ def run_host_migration_scenario(
 
         if listed_room is None:
             print("Room absente de LIST_ROOMS pendant le test hôte.")
+            return 1
+
+        if not validate_match_duration(
+            source="LIST_ROOMS",
+            room_payload=listed_room,
+            expected_duration=args.match_duration,
+        ):
             return 1
 
         print(f">>> JOIN_ROOM rejoignant {room_id}")
@@ -783,13 +849,7 @@ def run_match_flow_scenario(
         creator_login_pseudo = login_pseudo(creator_auth, creator_name)
 
         print(f">>> CREATE_ROOM {room_name}")
-        creator.send(
-            {
-                "type": "CREATE_ROOM",
-                "name": room_name,
-                "max_players": args.max_players,
-            }
-        )
+        creator.send(build_create_room_payload(args, room_name))
         created_messages = wait_for_messages(
             creator,
             timeout_seconds=args.timeout,
@@ -808,6 +868,13 @@ def run_match_flow_scenario(
         room_id = str(created_message.get("room_id") or "").strip()
         if not room_id:
             print("ROOM_CREATED a été reçu sans room_id exploitable.")
+            return 1
+
+        if not validate_match_duration(
+            source="ROOM_CREATED",
+            room_payload=created_message,
+            expected_duration=args.match_duration,
+        ):
             return 1
 
         creator_join = wait_for_messages(
@@ -866,6 +933,13 @@ def run_match_flow_scenario(
 
         if listed_room is None:
             print("Room absente de LIST_ROOMS pendant le test de lancement.")
+            return 1
+
+        if not validate_match_duration(
+            source="LIST_ROOMS",
+            room_payload=listed_room,
+            expected_duration=args.match_duration,
+        ):
             return 1
 
         print(f">>> JOIN_ROOM rejoignant {room_id}")
@@ -987,8 +1061,39 @@ def run_match_flow_scenario(
             )
             return 1
 
+        if not validate_match_duration(
+            source="ROOM_UPDATE après START_MATCH côté créateur",
+            room_payload=room_payload_from_messages(creator_started),
+            expected_duration=args.match_duration,
+        ):
+            return 1
+
+        if not validate_match_duration(
+            source="ROOM_UPDATE après START_MATCH côté rejoignant",
+            room_payload=room_payload_from_messages(joiner_started),
+            expected_duration=args.match_duration,
+        ):
+            return 1
+
         if not creator_started.get("STATE") or not joiner_started.get("STATE"):
             print("Le serveur n'a pas produit de STATE après START_MATCH.")
+            return 1
+
+        creator_state_payload = creator_started.get("STATE") or {}
+        joiner_state_payload = joiner_started.get("STATE") or {}
+        creator_state_duration = creator_state_payload.get("duration_seconds")
+        joiner_state_duration = joiner_state_payload.get("duration_seconds")
+        if creator_state_duration != args.match_duration:
+            print(
+                "STATE créateur ne reflète pas la durée demandée:",
+                creator_state_payload,
+            )
+            return 1
+        if joiner_state_duration != args.match_duration:
+            print(
+                "STATE rejoignant ne reflète pas la durée demandée:",
+                joiner_state_payload,
+            )
             return 1
 
         if room_host_pseudo(creator_started) != creator_login_pseudo:
@@ -1109,6 +1214,20 @@ def run_match_flow_scenario(
                     return 1
 
                 remaining_end = remaining_reset["messages"].get("END") or {}
+                if remaining_end.get("duration_seconds") != args.match_duration:
+                    print(
+                        "END restant ne reflète pas la durée demandée:",
+                        remaining_end,
+                    )
+                    return 1
+                if not validate_match_duration(
+                    source="ROOM_UPDATE final après départ en match",
+                    room_payload=room_payload_from_messages(
+                        remaining_reset["messages"]
+                    ),
+                    expected_duration=args.match_duration,
+                ):
+                    return 1
                 final_room_state = room_state_from_messages(remaining_reset["messages"])
                 print("MID_MATCH_LEAVE_SMOKE_OK")
                 print(
@@ -1201,6 +1320,24 @@ def run_match_flow_scenario(
                 return 1
 
             creator_end = creator_reset["messages"].get("END") or {}
+            if creator_end.get("duration_seconds") != args.match_duration:
+                print(
+                    "END créateur ne reflète pas la durée demandée:",
+                    creator_end,
+                )
+                return 1
+            if not validate_match_duration(
+                source="ROOM_UPDATE final créateur",
+                room_payload=room_payload_from_messages(creator_reset["messages"]),
+                expected_duration=args.match_duration,
+            ):
+                return 1
+            if not validate_match_duration(
+                source="ROOM_UPDATE final rejoignant",
+                room_payload=room_payload_from_messages(joiner_reset["messages"]),
+                expected_duration=args.match_duration,
+            ):
+                return 1
             final_room_state = room_state_from_messages(creator_reset["messages"])
             print("END_MATCH_SMOKE_OK")
             print(
@@ -1270,6 +1407,16 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=8.0)
     parser.add_argument("--match-timeout", type=float, default=12.0)
     parser.add_argument("--max-players", type=int, default=2)
+    parser.add_argument(
+        "--match-duration",
+        type=int,
+        choices=MATCH_DURATION_OPTIONS,
+        default=MATCH_DURATION_SECONDS,
+        help=(
+            "Durée demandée au CREATE_ROOM pour les scénarios de smoke. "
+            "Doit rester dans les durées supportées par l'online."
+        ),
+    )
     parser.add_argument("--list-retries", type=int, default=5)
     parser.add_argument("--list-retry-delay", type=float, default=1.0)
     parser.add_argument(
@@ -1287,6 +1434,7 @@ def main() -> int:
         timeout=args.timeout,
         match_timeout=max(args.timeout, args.match_timeout),
         max_players=args.max_players,
+        match_duration=args.match_duration,
         list_retries=max(1, args.list_retries),
         list_retry_delay=max(0.0, args.list_retry_delay),
         leave_role=args.leave_role,

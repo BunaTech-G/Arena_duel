@@ -10,7 +10,7 @@ from tkinter import TclError, messagebox
 import customtkinter as ctk
 
 from game.net_match_window import run_network_match
-from game.settings import MATCH_DURATION_SECONDS
+from game.settings import MATCH_DURATION_OPTIONS, MATCH_DURATION_SECONDS
 from ui.online_client import (
     DEFAULT_ONLINE_HOST,
     DEFAULT_ONLINE_PORT,
@@ -21,6 +21,11 @@ from ui.online_client import (
     fetch_public_room_directory,
     get_online_network_status,
     probe_online_service,
+)
+from ui.shutdown import (
+    build_graceful_shutdown,
+    close_window_gracefully,
+    install_signal_shutdown,
 )
 from ui.theme import (
     PALETTE,
@@ -51,7 +56,7 @@ MODE_JOIN = "join"
 MODE_CREATE = "create"
 MIN_ONLINE_ROOM_PLAYERS = 2
 MAX_ONLINE_ROOM_PLAYERS = 6
-ONLINE_MATCH_DURATION_OPTIONS_SECONDS = (30, 45, 60, 90, 120, 180)
+ONLINE_MATCH_DURATION_OPTIONS_SECONDS = MATCH_DURATION_OPTIONS
 DEFAULT_ONLINE_MATCH_DURATION_SECONDS = (
     MATCH_DURATION_SECONDS
     if MATCH_DURATION_SECONDS in ONLINE_MATCH_DURATION_OPTIONS_SECONDS
@@ -367,7 +372,7 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
         apply_window_icon(self, default=True, retry_after_ms=220)
         self.geometry("920x620")
         enable_large_window(self, 820, 560, start_zoomed=True)
-        self.protocol("WM_DELETE_WINDOW", self.shutdown)
+        self.protocol("WM_DELETE_WINDOW", self.request_close)
 
         self.join_window = None
         self.create_window = None
@@ -671,6 +676,33 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
         except TclError:
             pass
 
+    def request_close(self) -> bool:
+        for attr_name in ("join_window", "create_window"):
+            child_window = getattr(self, attr_name)
+            if child_window is None:
+                continue
+
+            closed = close_window_gracefully(
+                child_window,
+                user_initiated=True,
+                request_close_kwargs={
+                    "restore_parent": False,
+                    "play_sound": False,
+                },
+            )
+            if not closed:
+                return False
+
+            if getattr(self, attr_name) is child_window:
+                try:
+                    if not child_window.winfo_exists():
+                        setattr(self, attr_name, None)
+                except TclError:
+                    setattr(self, attr_name, None)
+
+        self.shutdown()
+        return True
+
 
 class RoomIdPromptWindow(ctk.CTkToplevel):
     def __init__(self, master: OnlineSessionWindow):
@@ -901,7 +933,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         apply_window_icon(self, default=True, retry_after_ms=220)
         self.geometry("1160x760")
         enable_large_window(self, 960, 640, start_zoomed=True)
-        self.protocol("WM_DELETE_WINDOW", self.shutdown)
+        self.protocol("WM_DELETE_WINDOW", self.request_close)
 
         self.client = OnlineClient()
         self.connected = False
@@ -915,6 +947,9 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._room_created_join_after_id = None
         self._pending_created_room_id: str | None = None
         self._pending_join_room_id: str | None = None
+        self._pending_join_room_source: str | None = None
+        self._last_join_attempt_room_id: str | None = None
+        self._last_join_attempt_source: str | None = None
         self._match_launch_after_id = None
         self._room_id_prompt_window = None
 
@@ -2143,9 +2178,14 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 badge_text="Connecté",
             )
             pending_room_id = self._pending_join_room_id
+            pending_join_source = self._pending_join_room_source
             self._pending_join_room_id = None
+            self._pending_join_room_source = None
             if pending_room_id:
-                self._join_room_id(pending_room_id)
+                self._join_room_id(
+                    pending_room_id,
+                    source=(pending_join_source or "pending"),
+                )
             self._request_rooms_refresh()
             return
 
@@ -2207,6 +2247,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         if message_type == "JOINED":
             room_id = str(message.get("room_id") or "").strip()
             if room_id:
+                self._clear_join_attempt_context(room_id)
                 if room_id == self._pending_created_room_id:
                     self._pending_created_room_id = None
                     self._cancel_room_created_join_timer()
@@ -2422,6 +2463,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             is_ready_compatibility_error = (
                 raw_code == "UNKNOWN_TYPE" and raw_got == "SET_READY"
             )
+            if raw_code in {"ROOM_NOT_FOUND", "ROOM_FULL", "MATCH_ALREADY_STARTED"}:
+                self._clear_join_attempt_context()
             if is_ready_compatibility_error:
                 play_alert()
                 self.server_capabilities["ready_state"] = False
@@ -2507,6 +2550,122 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         return self._normalize_room_state_code(
             room_info.get("state")
         ) == "lobby" and self._room_has_available_slot(room_info)
+
+    def _focus_pseudo_entry(self) -> None:
+        if self.pseudo_entry is None:
+            return
+
+        try:
+            self.pseudo_entry.focus_force()
+        except TclError:
+            pass
+
+    def _handle_room_card_action(self, room_info: dict) -> None:
+        room_id = str(room_info.get("room_id") or "").strip()
+        room_name = str(room_info.get("name") or room_id or "la session").strip()
+        state_code = self._normalize_room_state_code(room_info.get("state"))
+
+        if not room_id:
+            play_error()
+            self._set_status(
+                "Cette session n'a pas d'ID exploitable pour une jointure.",
+                tone="warning",
+                badge_text="Sessions",
+            )
+            return
+
+        if self.connecting:
+            play_click()
+            self._set_status(
+                "Patiente pendant la connexion avant de choisir une session.",
+                tone="warning",
+                badge_text="Sessions",
+            )
+            return
+
+        if self._manual_refresh_feedback or self._room_preview_in_progress:
+            play_click()
+            self._set_status(
+                "Actualisation en cours. Réessaie dès que la liste est stabilisée.",
+                tone="info",
+                badge_text="Sessions",
+            )
+            return
+
+        if room_id == (self.current_room_id or ""):
+            play_click()
+            self._set_status(
+                f"Tu es déjà dans {room_name}.",
+                tone="info",
+                badge_text="Sessions",
+            )
+            return
+
+        if state_code == "in_game":
+            play_error()
+            self._set_status(
+                f"{room_name} a déjà lancé sa partie. Attends la prochaine manche.",
+                tone="warning",
+                badge_text="En cours",
+            )
+            return
+
+        if state_code != "lobby":
+            play_error()
+            self._set_status(
+                f"{room_name} n'est pas disponible pour le moment.",
+                tone="warning",
+                badge_text="Sessions",
+            )
+            return
+
+        if not self._room_has_available_slot(room_info):
+            play_error()
+            self._set_status(
+                f"{room_name} est complet pour le moment.",
+                tone="warning",
+                badge_text="Complet",
+            )
+            return
+
+        if self.current_room_id is not None:
+            play_error()
+            self._set_status(
+                "Déconnecte-toi du salon actuel avant d'en rejoindre un autre.",
+                tone="warning",
+                badge_text="Sessions",
+            )
+            return
+
+        if self.connected:
+            if self._join_room_id(room_id, source="room_card"):
+                play_transition()
+            return
+
+        pseudo = self.pseudo_var.get().strip()
+        if not pseudo:
+            play_error()
+            self._set_status(
+                "Entre d'abord ton pseudo dans le panneau Profil, puis reclique sur la session.",
+                tone="warning",
+                badge_text="Pseudo",
+            )
+            self._focus_pseudo_entry()
+            return
+
+        self._pending_join_room_id = room_id
+        self._pending_join_room_source = "room_card"
+        self.on_connect()
+        if not self.connected and not self.connecting:
+            self._pending_join_room_id = None
+            self._pending_join_room_source = None
+            return
+
+        self._set_status(
+            f"Connexion lancée. La demande pour {room_name} partira ensuite.",
+            tone="info",
+            badge_text="Join",
+        )
 
     def _normalize_room_state_code(self, raw_state: object) -> str:
         state = str(raw_state or "").strip().lower()
@@ -2630,15 +2789,6 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         host_pseudo = self._room_host_pseudo(room_info)
         badge_text, badge_tone = self._room_badge(room_info)
         is_current = room_id == (self.current_room_id or "")
-        can_join = (
-            self.connected
-            and not self.connecting
-            and not self._manual_refresh_feedback
-            and self.current_room_id is None
-            and self._room_is_joinable(room_info)
-            and bool(room_id)
-        )
-
         card = ctk.CTkFrame(self.rooms_scroll, corner_radius=18)
         style_frame(
             card,
@@ -2705,8 +2855,17 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             ).grid(row=4, column=0, padx=16, pady=(0, 16), sticky="w")
 
         button_text = "Déjà dedans" if is_current else "Rejoindre"
-        if not self.connected and not is_current and self._room_is_joinable(room_info):
+        if (
+            not self.connected
+            and not is_current
+            and self._room_is_joinable(room_info)
+            and not self.pseudo_var.get().strip()
+        ):
             button_text = "Entre ton pseudo"
+        elif (
+            not self.connected and not is_current and self._room_is_joinable(room_info)
+        ):
+            button_text = "Se connecter"
         elif (
             self._normalize_room_state_code(room_info.get("state")) == "in_game"
             and not is_current
@@ -2723,8 +2882,12 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         join_button = create_button(
             card,
             button_text,
-            lambda rid=room_id: self._join_room_id(rid),
-            variant="primary" if not is_current else "secondary",
+            lambda info=dict(room_info): self._handle_room_card_action(info),
+            variant=(
+                "primary"
+                if self._room_is_joinable(room_info) and not is_current
+                else "secondary"
+            ),
             width=150,
             height=40,
         )
@@ -2736,7 +2899,6 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             pady=16,
             sticky="e",
         )
-        join_button.configure(state="normal" if can_join else "disabled")
 
     def _render_waiting_room_panel(self) -> None:
         if (
@@ -3644,46 +3806,42 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
         if self.current_room_id is None:
             ready_text = READY_UP_BUTTON_LABEL
-            ready_state = "disabled"
+            ready_state = "normal"
             button_text = START_MATCH_BUTTON_LABEL
-            button_state = "disabled"
+            button_state = "normal"
         elif self.current_room_state_code != "lobby":
             ready_text = "Prêt verrouillé"
-            ready_state = "disabled"
+            ready_state = "normal"
             button_text = "Jeu lancé"
-            button_state = "disabled"
+            button_state = "normal"
         elif not self._supports_ready_state():
             ready_text = "Prêt indisponible"
-            ready_state = "disabled"
+            ready_state = "normal"
             if self._is_local_host():
                 button_text = START_MATCH_BUTTON_LABEL
-                button_state = (
-                    "normal" if self._can_start_current_match() else "disabled"
-                )
+                button_state = "normal"
             else:
                 button_text = "Lancement réservé à l'hôte"
-                button_state = "disabled"
+                button_state = "normal"
         elif self._is_local_ready():
             ready_text = READY_CANCEL_BUTTON_LABEL
             ready_state = "normal"
             if self._is_local_host():
                 button_text = START_MATCH_BUTTON_LABEL
-                button_state = (
-                    "normal" if self._can_start_current_match() else "disabled"
-                )
+                button_state = "normal"
             else:
                 button_text = "Lancement réservé à l'hôte"
-                button_state = "disabled"
+                button_state = "normal"
         elif self._is_local_host():
             ready_text = READY_UP_BUTTON_LABEL
             ready_state = "normal"
             button_text = START_MATCH_BUTTON_LABEL
-            button_state = "disabled"
+            button_state = "normal"
         else:
             ready_text = READY_UP_BUTTON_LABEL
             ready_state = "normal"
             button_text = "Lancement réservé à l'hôte"
-            button_state = "disabled"
+            button_state = "normal"
 
         self.btn_ready.configure(
             text=ready_text,
@@ -3736,6 +3894,23 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                 "Il faut lancer un serveur mis à jour avec cette branche."
             )
 
+        if raw_code == "ROOM_NOT_FOUND":
+            if self._last_join_attempt_source == "manual_id":
+                return (
+                    "Cette session n'est plus active. La partie est sans doute "
+                    "terminée ou fermée. Demande un nouvel ID."
+                )
+            return "Session introuvable ou déjà fermée."
+
+        if (
+            raw_code == "MATCH_ALREADY_STARTED"
+            and self._last_join_attempt_source == "manual_id"
+        ):
+            return (
+                "Cette session a déjà lancé sa partie. Attends la prochaine "
+                "manche ou demande un nouvel ID."
+            )
+
         translations = {
             "BAD_HANDSHAKE": "Le serveur online a rejeté la poignée de main.",
             "HOST_ONLY": "Seul l'hôte peut lancer le jeu.",
@@ -3746,7 +3921,6 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             "PLAYERS_NOT_READY": ("Attends que tous les joueurs passent en prêt."),
             "PROTO_MISMATCH": ("Le serveur online utilise un protocole incompatible."),
             "ROOM_FULL": "Cette session est déjà complète.",
-            "ROOM_NOT_FOUND": "Session introuvable.",
             "ROOM_NOT_FULL": (
                 "Attends que tous les joueurs prévus soient dans la session."
             ),
@@ -3766,7 +3940,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         profile_state = "disabled" if self.connected or self.connecting else "normal"
         connect_state = "disabled" if self.connected or self.connecting else "normal"
         disconnect_state = "normal" if self.connected or self.connecting else "disabled"
-        copy_state = "normal" if self.current_room_id is not None else "disabled"
+        copy_state = "normal"
 
         self.pseudo_entry.configure(state=profile_state)
         self.btn_connect.configure(
@@ -3804,9 +3978,9 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             return
 
         room_action_state = (
-            "normal"
-            if (self.connected and not self.connecting and self.current_room_id is None)
-            else "disabled"
+            "disabled"
+            if (self.connecting or self.current_room_id is not None)
+            else "normal"
         )
         if self.room_name_entry is not None:
             self.room_name_entry.configure(state=room_action_state)
@@ -3815,7 +3989,13 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         if self.match_duration_entry is not None:
             self.match_duration_entry.configure(state=room_action_state)
         if self.btn_create is not None:
-            self.btn_create.configure(state=room_action_state)
+            self.btn_create.configure(
+                state=(
+                    "disabled"
+                    if self.connecting or self.current_room_id is not None
+                    else "normal"
+                )
+            )
 
     def _apply_disconnected_state(
         self,
@@ -3837,6 +4017,8 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._pending_rooms = None
         self._pending_created_room_id = None
         self._pending_join_room_id = None
+        self._pending_join_room_source = None
+        self._clear_join_attempt_context()
         if self.mode != MODE_JOIN:
             self._known_rooms_by_id = {}
         self.server_capabilities = {}
@@ -4090,16 +4272,55 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._close_room_id_prompt()
         return True
 
-    def _join_room_id(self, room_id: str, *, show_status: bool = True) -> bool:
+    def _join_room_id(
+        self,
+        room_id: str,
+        *,
+        show_status: bool = True,
+        source: str = "manual_id",
+    ) -> bool:
         normalized_room_id = str(room_id or "").strip()
         if not normalized_room_id:
             return False
+
+        known_room = self._known_rooms_by_id.get(normalized_room_id)
+        if isinstance(known_room, dict):
+            state_code = self._normalize_room_state_code(known_room.get("state"))
+            room_name = str(
+                known_room.get("name") or normalized_room_id or "la session"
+            ).strip()
+            if state_code == "in_game":
+                play_error()
+                self._set_status(
+                    f"{room_name} a déjà lancé sa partie. Attends la prochaine manche.",
+                    tone="warning",
+                    badge_text="En cours",
+                )
+                return False
+            if state_code != "lobby":
+                play_error()
+                self._set_status(
+                    f"{room_name} n'est pas disponible pour le moment.",
+                    tone="warning",
+                    badge_text="Sessions",
+                )
+                return False
+            if not self._room_has_available_slot(known_room):
+                play_error()
+                self._set_status(
+                    f"{room_name} est complet pour le moment.",
+                    tone="warning",
+                    badge_text="Complet",
+                )
+                return False
 
         if not self._send_message(
             {"type": "JOIN_ROOM", "room_id": normalized_room_id},
             action_label="rejoindre la session",
         ):
             return False
+
+        self._remember_join_attempt(normalized_room_id, source)
 
         if show_status:
             self._set_status(
@@ -4109,8 +4330,29 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             )
         return True
 
+    def _remember_join_attempt(self, room_id: str, source: str) -> None:
+        self._last_join_attempt_room_id = str(room_id or "").strip() or None
+        self._last_join_attempt_source = str(source or "").strip() or None
+
+    def _clear_join_attempt_context(self, room_id: str | None = None) -> None:
+        if room_id is not None:
+            normalized_room_id = str(room_id or "").strip()
+            if (
+                normalized_room_id
+                and normalized_room_id != self._last_join_attempt_room_id
+            ):
+                return
+        self._last_join_attempt_room_id = None
+        self._last_join_attempt_source = None
+
     def on_copy_room_id(self) -> None:
         if self.current_room_id is None:
+            play_error()
+            self._set_status(
+                "Rejoins d'abord une session avant d'en copier l'ID.",
+                tone="warning",
+                badge_text="Copié",
+            )
             return
 
         play_click()
@@ -4178,7 +4420,22 @@ class OnlineSessionWindow(ctk.CTkToplevel):
             self._show_connection_required()
             return
 
-        if self.current_room_id is None or self.current_room_state_code != "lobby":
+        if self.current_room_id is None:
+            play_error()
+            self._set_status(
+                "Rejoins d'abord une session avant d'utiliser le bouton prêt.",
+                tone="warning",
+                badge_text="Prêt",
+            )
+            return
+
+        if self.current_room_state_code != "lobby":
+            play_error()
+            self._set_status(
+                "Le bouton prêt est verrouillé une fois la partie lancée.",
+                tone="warning",
+                badge_text="Prêt",
+            )
             return
 
         if not self._supports_ready_state():
@@ -4213,6 +4470,75 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         if not self.connected:
             play_error()
             self._show_connection_required()
+            return
+
+        if self.current_room_id is None:
+            play_error()
+            self._set_status(
+                "Rejoins d'abord une session avant de lancer le jeu.",
+                tone="warning",
+                badge_text="Départ",
+            )
+            return
+
+        if not self._is_local_host():
+            play_error()
+            self._set_status(
+                "Seul l'hôte de la session peut lancer le jeu.",
+                tone="warning",
+                badge_text="Départ",
+            )
+            return
+
+        if self.current_room_state_code != "lobby":
+            play_error()
+            self._set_status(
+                "Cette session a déjà lancé sa partie.",
+                tone="warning",
+                badge_text="Départ",
+            )
+            return
+
+        if self.current_room_max_players is None:
+            play_error()
+            self._set_status(
+                "Le serveur n'a pas encore communiqué la capacité de la session.",
+                tone="warning",
+                badge_text="Départ",
+            )
+            return
+
+        if self.current_room_player_count < MIN_ONLINE_ROOM_PLAYERS:
+            play_error()
+            self._set_status(
+                "Il faut au moins deux joueurs pour lancer le jeu.",
+                tone="warning",
+                badge_text="Départ",
+            )
+            return
+
+        if self.current_room_player_count < self.current_room_max_players:
+            play_error()
+            self._set_status(
+                (
+                    f"Attends encore des joueurs : {self.current_room_player_count}/"
+                    f"{self.current_room_max_players}."
+                ),
+                tone="warning",
+                badge_text="Départ",
+            )
+            return
+
+        if self._supports_ready_state() and not self._all_current_players_ready():
+            play_error()
+            self._set_status(
+                (
+                    f"Attends que tout le monde passe prêt : {self._current_ready_count()}/"
+                    f"{self.current_room_player_count}."
+                ),
+                tone="warning",
+                badge_text="Départ",
+            )
             return
 
         if not self._can_start_current_match():
@@ -4285,6 +4611,64 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         except TclError:
             pass
 
+    def _close_confirmation(self) -> tuple[str, str] | None:
+        if self._shutdown_requested:
+            return None
+
+        if self.current_room_id is not None:
+            if self._is_local_host():
+                return (
+                    "Quitter la session en ligne ?",
+                    (
+                        "Fermer cette fenêtre va te déconnecter de la session en ligne. "
+                        "Si tu es l'hôte, les autres joueurs perdront aussi cette session.\n\n"
+                        "Continuer ?"
+                    ),
+                )
+            return (
+                "Quitter la session en ligne ?",
+                "Fermer cette fenêtre va te déconnecter de la session en ligne.\n\nContinuer ?",
+            )
+
+        if self.connecting:
+            return (
+                "Annuler la connexion online ?",
+                "Une connexion au service online est en cours. Fermer cette fenêtre va annuler la tentative.\n\nContinuer ?",
+            )
+
+        if self.connected:
+            return (
+                "Couper la connexion online ?",
+                "Fermer cette fenêtre va couper ta connexion au service online.\n\nContinuer ?",
+            )
+
+        return None
+
+    def request_close(
+        self,
+        *,
+        restore_parent: bool | None = None,
+        destroy_parent: bool | None = None,
+        play_sound: bool = True,
+    ) -> bool:
+        confirmation = self._close_confirmation()
+        if confirmation is not None:
+            title, message = confirmation
+            if not messagebox.askyesno(title, message, parent=self):
+                self._set_status(
+                    "Fermeture annulée. Déconnecte-toi d'abord si tu veux quitter proprement.",
+                    tone="info",
+                    badge_text="Session",
+                )
+                return False
+
+        self.shutdown(
+            restore_parent=restore_parent,
+            destroy_parent=destroy_parent,
+            play_sound=play_sound,
+        )
+        return True
+
 
 def run_online_lobby() -> None:
     apply_theme_settings()
@@ -4308,13 +4692,14 @@ def run_online_lobby() -> None:
 
     window = OnlineLobbyWindow(app, network_available=network_available)
 
-    def close_all() -> None:
-        window.shutdown()
-        try:
-            if app.winfo_exists():
-                app.destroy()
-        except TclError:
-            pass
+    close_all = build_graceful_shutdown(
+        app,
+        steps=(lambda: close_window_gracefully(window, user_initiated=True),),
+    )
+    restore_signal_handlers = install_signal_shutdown(app, close_all)
 
     window.protocol("WM_DELETE_WINDOW", close_all)
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        restore_signal_handlers()

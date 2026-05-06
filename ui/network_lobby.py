@@ -1,7 +1,7 @@
 import json
 import threading
 import time
-from tkinter import TclError
+from tkinter import TclError, messagebox
 
 import customtkinter as ctk
 
@@ -48,6 +48,7 @@ from ui.player_select import (
     FIGHTER_SPRITE_ID_BY_DISPLAY,
     get_default_fighter_id,
 )
+from ui.shutdown import close_window_gracefully
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
@@ -274,7 +275,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self.lift()
         self.focus_force()
-        self.protocol("WM_DELETE_WINDOW", self.shutdown)
+        self.protocol("WM_DELETE_WINDOW", self.request_close)
 
         self.client = None
         self.running = False
@@ -301,6 +302,8 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.match_running = False
         self.history_window = None
         self.guide_window = None
+        self._shutdown_requested = False
+        self._launch_match_after_id = None
 
         self.mode_badge = None
         self.mode_label = None
@@ -1499,6 +1502,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
             time.sleep(0.02)  # 20 ms -> boucle plus légère
 
     def _handle_message(self, msg: dict):
+        if self._shutdown_requested:
+            return
+
         msg_type = msg.get("type")
 
         if msg_type == ASSIGN_SLOT:
@@ -1533,7 +1539,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
             )
             self.ready_btn.configure(state="disabled")
             self.history_btn.configure(state="disabled")
-            self.after(50, self._launch_match)
+            self._launch_match_after_id = self.after(50, self._launch_match)
 
         elif msg_type == HISTORY_DATA:
             self.history_request_pending = False
@@ -1901,6 +1907,10 @@ class NetworkLobbyView(ctk.CTkToplevel):
         return f"{base_text} · archivage du hall échoué : {history_error}"
 
     def _launch_match(self):
+        self._launch_match_after_id = None
+        if self._shutdown_requested:
+            return
+
         if not self.client or self.my_slot is None or not self.my_name:
             return
 
@@ -1953,10 +1963,73 @@ class NetworkLobbyView(ctk.CTkToplevel):
         start_menu_music()
         resumed_lobby.resume_after_match(match_summary)
 
+    def _close_confirmation(self) -> tuple[str, str] | None:
+        if self._shutdown_requested:
+            return None
+
+        if self.host_mode:
+            invitation_text = self.get_shareable_invitation_text()
+            return (
+                "Quitter le hall LAN ?",
+                (
+                    "Fermer cette fenêtre va arrêter le hall LAN local et couper "
+                    "les connexions en cours.\n\n"
+                    f"Invitation : {invitation_text}\n\n"
+                    "Continuer ?"
+                ),
+            )
+
+        if self.client is None and not self.running and not self._connect_in_progress:
+            return None
+
+        return (
+            "Quitter le hall LAN ?",
+            (
+                "Fermer cette fenêtre va couper la connexion au hall LAN en cours.\n\n"
+                "Continuer ?"
+            ),
+        )
+
+    def request_close(self) -> bool:
+        confirmation = self._close_confirmation()
+        if confirmation is not None:
+            title, message = confirmation
+            if not messagebox.askyesno(title, message, parent=self):
+                if self.info_label is not None:
+                    self.info_label.configure(
+                        text=(
+                            "Fermeture annulée. Le hall LAN reste actif."
+                            if self.host_mode
+                            else "Fermeture annulée. Tu restes connecté au hall LAN."
+                        )
+                    )
+                return False
+
+        self.shutdown()
+        return True
+
     def shutdown(self):
+        if self._shutdown_requested:
+            return
+
+        self._shutdown_requested = True
         self.running = False
+        if self._launch_match_after_id is not None:
+            try:
+                self.after_cancel(self._launch_match_after_id)
+            except TclError:
+                pass
+            self._launch_match_after_id = None
         if self.client:
             self.client.close()
+        self.client = None
+
+        for attr_name in ("history_window", "guide_window"):
+            child_window = self._get_live_window(getattr(self, attr_name))
+            close_window_gracefully(child_window)
+            if getattr(self, attr_name) is child_window:
+                setattr(self, attr_name, None)
+
         parent = self.master
         self.destroy()
         try:

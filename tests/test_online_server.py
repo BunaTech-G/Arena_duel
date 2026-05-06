@@ -137,7 +137,7 @@ class OnlineServerReadyTests(unittest.IsolatedAsyncioTestCase):
     async def test_prelogin_room_listing_returns_rooms_before_login(self):
         writer = _DummyWriter()
         await self._register_client("host", "HostPlayer")
-        await online_server.create_room("host", "Preview Room", 2, 75)
+        await online_server.create_room("host", "Preview Room", 2, 45)
 
         reader = mock.AsyncMock()
         with mock.patch.object(
@@ -154,7 +154,33 @@ class OnlineServerReadyTests(unittest.IsolatedAsyncioTestCase):
         rooms_message = self._last_message_of_type(writer, "ROOMS")
         self.assertEqual(len(rooms_message["rooms"]), 1)
         self.assertEqual(rooms_message["rooms"][0]["name"], "Preview Room")
-        self.assertEqual(rooms_message["rooms"][0]["match_duration_seconds"], 75)
+        self.assertEqual(rooms_message["rooms"][0]["match_duration_seconds"], 45)
+
+    async def test_start_match_uses_selected_room_duration(self):
+        room_id, host_writer, guest_writer = await self._create_room_with_two_players()
+
+        async with online_server.registry_lock:
+            online_server.rooms[room_id].match_duration_seconds = 180
+
+        await online_server.set_ready_state("host", True)
+        await online_server.set_ready_state("guest", True)
+        self._clear_messages(host_writer, guest_writer)
+
+        async def _run_room_match_stub(_room_id: str) -> None:
+            return None
+
+        with mock.patch.object(
+            online_server,
+            "run_room_match",
+            new=_run_room_match_stub,
+        ):
+            await online_server.start_match("host")
+            await asyncio.sleep(0)
+
+        self.assertEqual(
+            online_server.rooms[room_id].game_state.match_duration_seconds,
+            180,
+        )
 
     async def test_start_match_requires_all_players_ready(self):
         room_id, host_writer, guest_writer = await self._create_room_with_two_players()

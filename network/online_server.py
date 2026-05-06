@@ -10,7 +10,7 @@ import struct
 import time
 from dataclasses import dataclass, field
 
-from game.settings import MATCH_DURATION_SECONDS
+from game.settings import MATCH_DURATION_SECONDS, coerce_match_duration
 from network.messages import ASSIGN_SLOT, START
 from network.server import GameState, TICK_RATE
 
@@ -45,12 +45,7 @@ def _default_input_state() -> dict[str, bool]:
 
 
 def normalize_match_duration(value: object) -> int:
-    try:
-        duration_seconds = int(value)
-    except (TypeError, ValueError):
-        return MATCH_DURATION_SECONDS
-
-    return max(1, duration_seconds)
+    return coerce_match_duration(value, default=MATCH_DURATION_SECONDS)
 
 
 def apply_match_duration_override(

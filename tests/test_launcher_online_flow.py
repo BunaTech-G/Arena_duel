@@ -565,12 +565,12 @@ class MainModeMenuDispatchTests(unittest.TestCase):
         run_online_host.assert_not_called()
         run_online_join.assert_not_called()
 
-    def test_run_main_mode_menu_dispatches_lan_host(self):
+    def test_run_main_mode_menu_dispatches_lan_host_then_reopens_local_menu(self):
         with (
             mock.patch.object(
                 launcher_module,
                 "_run_menu",
-                side_effect=["local", "lan_host"],
+                side_effect=["local", "lan_host", "back", None],
             ) as run_menu,
             mock.patch.object(launcher_module, "run_local_forge") as run_local,
             mock.patch.object(
@@ -589,18 +589,20 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
                 mock.call(launcher_module.LocalModeMenuApp),
+                mock.call(launcher_module.LocalModeMenuApp),
+                mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
         run_lan_host.assert_called_once_with()
         run_local.assert_not_called()
         run_lan_join.assert_not_called()
 
-    def test_run_main_mode_menu_dispatches_lan_join(self):
+    def test_run_main_mode_menu_dispatches_lan_join_then_reopens_local_menu(self):
         with (
             mock.patch.object(
                 launcher_module,
                 "_run_menu",
-                side_effect=["local", "lan_join"],
+                side_effect=["local", "lan_join", "back", None],
             ) as run_menu,
             mock.patch.object(launcher_module, "run_local_forge") as run_local,
             mock.patch.object(
@@ -619,6 +621,8 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
                 mock.call(launcher_module.LocalModeMenuApp),
+                mock.call(launcher_module.LocalModeMenuApp),
+                mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
         run_lan_join.assert_called_once_with()
@@ -1116,7 +1120,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         self.assertTrue(create_window.network_indicator.available)
         self.assertEqual(
             create_window.btn_start_match.cget("state"),
-            "disabled",
+            "normal",
         )
         self.assertEqual(
             create_window.btn_ready.cget("text"),
@@ -1124,7 +1128,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         )
         self.assertEqual(
             create_window.btn_ready.cget("state"),
-            "disabled",
+            "normal",
         )
         self.assertEqual(
             create_window.active_room_title_label.cget("text"),
@@ -1410,6 +1414,49 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             join_window.rooms_meta_label.cget("text"),
         )
 
+    def test_join_window_room_card_buttons_show_feedback_instead_of_being_dead(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_join_window()
+        self._update_ui()
+
+        join_window = online_window.join_window
+        self.assertIsNotNone(join_window)
+
+        getattr(join_window, "_apply_room_preview")(
+            [
+                {
+                    "room_id": "room-live",
+                    "name": "Partie déjà lancée",
+                    "players": 2,
+                    "max_players": 2,
+                    "match_duration_seconds": 60,
+                    "state": "in_game",
+                    "host_pseudo": "OtherHost",
+                },
+            ],
+            manual=False,
+        )
+        self._update_ui()
+
+        action_button = next(
+            child
+            for child in join_window.rooms_scroll.winfo_children()[0].winfo_children()
+            if isinstance(child, ctk.CTkButton) and child.cget("text") == "En cours"
+        )
+
+        online_lobby_module.play_error.reset_mock()
+        action_button.invoke()
+        self._update_ui()
+
+        online_lobby_module.play_error.assert_called_once_with()
+        self.assertIn(
+            "a déjà lancé sa partie",
+            join_window.status_label.cget("text"),
+        )
+
     def test_join_window_room_id_submit_starts_connection_when_needed(self):
         self.app.open_online_lobby()
         self._update_ui()
@@ -1488,6 +1535,37 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         )
         self.assertTrue(prompt_window.winfo_exists())
 
+    def test_join_window_manual_room_id_error_mentions_completed_or_closed_session(
+        self,
+    ):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_join_window()
+        self._update_ui()
+
+        join_window = online_window.join_window
+        self.assertIsNotNone(join_window)
+
+        join_window.connected = True
+        join_window.connecting = False
+        join_window._remember_join_attempt("room-old", "manual_id")
+
+        online_lobby_module.play_error.reset_mock()
+        join_window._handle_message({"type": "ERROR", "code": "ROOM_NOT_FOUND"})
+        self._update_ui()
+
+        online_lobby_module.play_error.assert_called_once_with()
+        self.assertIn(
+            "n'est plus active",
+            join_window.status_label.cget("text"),
+        )
+        self.assertIn(
+            "Demande un nouvel ID",
+            join_window.status_label.cget("text"),
+        )
+
     def test_online_lobby_hides_launcher_and_restores_it_on_close(self):
         present_parent = online_lobby_module.present_window
         present_parent.side_effect = _deiconify_window_without_ctk_callbacks
@@ -1505,6 +1583,74 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         present_parent.assert_called_once_with(self.app)
         self.assertFalse(online_window.winfo_exists())
         self.assertNotEqual(self.app.state(), "withdrawn")
+
+    def test_launcher_close_app_shuts_down_online_lobby_before_destroy(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+
+        with mock.patch.object(
+            online_window,
+            "shutdown",
+            wraps=online_window.shutdown,
+        ) as shutdown:
+            self.app.request_shutdown()
+
+        shutdown.assert_called_once_with()
+        launcher_module.stop_music.assert_called_once_with(fade_ms=150)
+        self.assertTrue(_window_is_destroyed(self.app))
+
+    def test_launcher_close_app_stops_embedded_server_cleanly(self):
+        fake_server = mock.Mock()
+        fake_thread = mock.Mock()
+        fake_thread.is_alive.return_value = True
+        self.app.embedded_server = fake_server
+        self.app.embedded_server_thread = fake_thread
+        self.app.active_server_port = 5000
+
+        self.app.request_shutdown()
+
+        fake_server.shutdown.assert_called_once_with()
+        fake_server.server_close.assert_called_once_with()
+        fake_thread.join.assert_called_once_with(timeout=0.4)
+        self.assertIsNone(self.app.embedded_server)
+        self.assertIsNone(self.app.embedded_server_thread)
+        self.assertIsNone(self.app.active_server_port)
+
+    def test_launcher_close_app_aborts_when_online_session_close_is_cancelled(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_create_window()
+        self._update_ui()
+
+        create_window = online_window.create_window
+        self.assertIsNotNone(create_window)
+        create_window.connected = True
+        create_window.connecting = False
+
+        self.app.request_shutdown()
+        self._update_ui()
+
+        online_lobby_module.messagebox.askyesno.assert_called_once()
+        launcher_module.stop_music.assert_not_called()
+        self.assertFalse(_window_is_destroyed(self.app))
+        self.assertTrue(online_window.winfo_exists())
+        self.assertTrue(create_window.winfo_exists())
+
+    def test_launcher_close_app_aborts_when_lan_lobby_refuses_close(self):
+        fake_lobby = mock.Mock()
+        fake_lobby.winfo_exists.return_value = True
+        fake_lobby.request_close.return_value = False
+        self.app.host_lobby_window = fake_lobby
+
+        self.app.request_shutdown()
+
+        fake_lobby.request_close.assert_called_once_with()
+        launcher_module.stop_music.assert_not_called()
+        self.assertFalse(_window_is_destroyed(self.app))
 
     def test_online_switch_closes_previous_session_window(self):
         self.app.open_online_lobby()
@@ -1645,6 +1791,37 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             action_label="créer la session",
         )
 
+    def test_create_room_accepts_extended_match_duration_choices(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_create_window()
+        self._update_ui()
+
+        create_window = online_window.create_window
+        create_window.connected = True
+        create_window.room_name_var.set("Session marathon")
+        create_window.max_players_var.set("4")
+        create_window.match_duration_var.set("180")
+
+        with mock.patch.object(
+            create_window,
+            "_send_message",
+            return_value=True,
+        ) as send_message:
+            create_window.on_create_room()
+
+        send_message.assert_called_once_with(
+            {
+                "type": "CREATE_ROOM",
+                "name": "Session marathon",
+                "max_players": 4,
+                "match_duration_seconds": 180,
+            },
+            action_label="créer la session",
+        )
+
     def test_online_connect_shows_detailed_network_error(self):
         self.app.open_online_lobby()
         self._update_ui()
@@ -1755,7 +1932,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         )
         self.assertEqual(
             create_window.btn_start_match.cget("state"),
-            "disabled",
+            "normal",
         )
         self.assertEqual(
             create_window.waiting_room_action_label.cget("text"),
@@ -1788,7 +1965,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         )
         self.assertEqual(
             create_window.btn_start_match.cget("state"),
-            "disabled",
+            "normal",
         )
         self.assertEqual(
             create_window.waiting_room_action_label.cget("text"),
@@ -1857,7 +2034,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             create_window.btn_ready.cget("text"),
             "Prêt indisponible",
         )
-        self.assertEqual(create_window.btn_ready.cget("state"), "disabled")
+        self.assertEqual(create_window.btn_ready.cget("state"), "normal")
         self.assertEqual(create_window.btn_start_match.cget("state"), "normal")
         self.assertIn(
             "Ce serveur ne gère pas le prêt.",
@@ -1921,7 +2098,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         )
         self.assertEqual(
             create_window.btn_start_match.cget("state"),
-            "disabled",
+            "normal",
         )
 
     def test_host_change_notice_survives_following_room_update(self):
@@ -2189,10 +2366,10 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             create_window.status_label.cget("text"),
             "Connexion interrompue pendant la joute.",
         )
-        self.assertEqual(create_window.btn_ready.cget("state"), "disabled")
+        self.assertEqual(create_window.btn_ready.cget("state"), "normal")
         self.assertEqual(
             create_window.btn_start_match.cget("state"),
-            "disabled",
+            "normal",
         )
 
     def test_resume_after_match_completed_requests_refresh(self):
@@ -2259,7 +2436,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         self.assertEqual(create_window.btn_ready.cget("state"), "normal")
         self.assertEqual(
             create_window.btn_start_match.cget("state"),
-            "disabled",
+            "normal",
         )
         self.assertIn(
             "Le salon est de nouveau ouvert.",
