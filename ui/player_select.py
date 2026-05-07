@@ -557,7 +557,13 @@ class ForgeGuideWindow(ctk.CTkToplevel):
 
 
 class PlayerSelectView(ctk.CTkToplevel):
-    def __init__(self, parent):
+    def __init__(
+        self,
+        parent,
+        *,
+        restore_parent_on_close: bool = True,
+        destroy_parent_on_close: bool = False,
+    ):
         super().__init__(parent)
         style_window(self)
 
@@ -571,6 +577,8 @@ class PlayerSelectView(ctk.CTkToplevel):
         self._registry_request_token = 0
         self._registry_result_queue = queue.SimpleQueue()
         self.parent = parent
+        self.restore_parent_on_close = restore_parent_on_close
+        self.destroy_parent_on_close = destroy_parent_on_close
         self.history_window = None
         self.guide_window = None
         self.player_options = []
@@ -2438,9 +2446,16 @@ class PlayerSelectView(ctk.CTkToplevel):
     def _handle_close(self):
         play_click()
         parent = self.parent
+        restore_parent_on_close = self.restore_parent_on_close
+        destroy_parent_on_close = self.destroy_parent_on_close
         self.destroy()
         try:
-            if parent.winfo_exists():
+            if not parent.winfo_exists():
+                return
+            if destroy_parent_on_close:
+                parent.destroy()
+                return
+            if restore_parent_on_close:
                 present_window(parent)
         except TclError:
             return

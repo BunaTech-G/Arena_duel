@@ -18,6 +18,11 @@ DRAW_LABEL = "Joute à égalité"
 END_SCREEN_SUMMARY_LABEL = "Points d'équipe"
 END_SCREEN_PLAYER_VALUE_LABEL = "Points"
 END_SCREEN_PLAYER_NAME_LABEL = "Combattant"
+TRAP_KIND_LABELS = {
+    "spike_trap": "pointes",
+    "ember_trap": "brasier",
+    "rune_trap": "rune",
+}
 
 
 def get_team_label(team_code: str | None, style: str = "bastion") -> str:
@@ -143,3 +148,42 @@ def format_roster_entry(
 ) -> str:
     readiness = "prêt" if ready else "en attente"
     return f"Emplacement {slot} · {name} · {get_team_label(team_code)} · {readiness}"
+
+
+def format_pickup_event(
+    name: str,
+    team_code: str | None,
+    value: int,
+    *,
+    combo_count: int = 0,
+    combo_bonus: int = 0,
+    variant: str | None = None,
+) -> str:
+    team_label = get_team_label(team_code, "short")
+    player_name = str(name or "Combattant").strip() or "Combattant"
+    orb_label = "orbe rare" if str(variant or "").strip().lower() == "rare" else "orbe"
+    message = f"{team_label} · {player_name} capte {orb_label} +{int(value)}"
+
+    if int(combo_count or 0) <= 1:
+        return message
+    if int(combo_bonus or 0) > 0:
+        return f"{message} · combo x{int(combo_count)} (+{int(combo_bonus)})"
+    return f"{message} · combo x{int(combo_count)}"
+
+
+def format_trap_event(
+    name: str,
+    team_code: str | None,
+    *,
+    trap_kind: str | None = None,
+) -> str:
+    team_label = get_team_label(team_code, "short")
+    player_name = str(name or "Combattant").strip() or "Combattant"
+    trap_label = TRAP_KIND_LABELS.get(
+        str(trap_kind or "").strip().lower(),
+        "piège",
+    )
+
+    if trap_label == "piège":
+        return f"{team_label} · {player_name} subit un piège"
+    return f"{team_label} · {player_name} heurte les {trap_label}"

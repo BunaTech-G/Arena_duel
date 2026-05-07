@@ -5,7 +5,9 @@ import pygame
 from game.asset_pipeline import load_font
 from game.hud_panels import (
     choose_text_candidate,
+    compute_end_overlay_layout,
     draw_end_team_card,
+    draw_match_event_banner,
     draw_match_hud,
     get_shared_player_score_slot_width,
 )
@@ -25,6 +27,8 @@ from game.match_text import (
     END_SCREEN_PLAYER_VALUE_LABEL,
     END_SCREEN_SUMMARY_LABEL,
     build_scoreline_candidates,
+    format_pickup_event,
+    format_trap_event,
     format_winner_text,
     get_team_label,
     get_winner_team,
@@ -65,6 +69,7 @@ pg_init = getattr(pygame, "init")
 
 END_OVERLAY_DURATION_SECONDS = 4.5
 END_OVERLAY_SKIP_KEYS = {PG_K_RETURN, PG_K_SPACE, PG_K_ESCAPE}
+MATCH_EVENT_BANNER_DURATION_MS = 1650
 
 
 def _tick_frame(clock, target_fps):
@@ -105,6 +110,89 @@ def _normalize_direction_name(player_state: dict) -> str | None:
     if direction_name in {"up", "down", "left", "right"}:
         return direction_name
     return None
+
+
+def _build_network_player_row(
+    player_state: dict,
+    *,
+    my_slot: int | None = None,
+) -> dict:
+    slot = int(player_state.get("slot", 0) or 0)
+    return {
+        "name": player_state.get("name", "Combattant"),
+        "player_score": int(player_state.get("score", 0)),
+        "accent_color": get_team_color(
+            player_state.get("team", "A"),
+            max(0, slot - 1),
+        ),
+        "sprite_id": _resolve_sprite_id(player_state),
+        "is_focus": my_slot is not None and slot == my_slot,
+    }
+
+
+def _build_network_team_rows(
+    player_states,
+    *,
+    my_slot: int | None = None,
+) -> tuple[list[dict], list[dict]]:
+    team_a_rows = []
+    team_b_rows = []
+
+    for player_state in sorted(
+        player_states,
+        key=lambda item: item.get("slot", 0),
+    ):
+        row = _build_network_player_row(player_state, my_slot=my_slot)
+        if player_state.get("team") == "A":
+            team_a_rows.append(row)
+        else:
+            team_b_rows.append(row)
+
+    return team_a_rows, team_b_rows
+
+
+def _build_network_hud_payload(state: dict, my_slot: int) -> dict:
+    team_a_rows, team_b_rows = _build_network_team_rows(
+        state.get("players", []),
+        my_slot=my_slot,
+    )
+    return {
+        "team_a_score": state.get("team_a_score", 0),
+        "team_b_score": state.get("team_b_score", 0),
+        "remaining_time": state.get("remaining_time", 0),
+        "team_a_rows": team_a_rows,
+        "team_b_rows": team_b_rows,
+    }
+
+
+def _build_network_end_overlay_payload(
+    end_message: dict,
+    my_slot: int | None = None,
+) -> dict:
+    winner_team = end_message.get("winner_team")
+    if winner_team is None:
+        winner_team = get_winner_team(
+            end_message.get("team_a_score", 0),
+            end_message.get("team_b_score", 0),
+        )
+
+    team_a_rows, team_b_rows = _build_network_team_rows(
+        end_message.get("players", []),
+        my_slot=my_slot,
+    )
+    return {
+        "winner_text": end_message.get("winner_text")
+        or format_winner_text(winner_team),
+        "summary_metric_label": end_message.get("summary_metric_label")
+        or END_SCREEN_SUMMARY_LABEL,
+        "team_panel_value_label": end_message.get("team_panel_value_label")
+        or END_SCREEN_PLAYER_VALUE_LABEL,
+        "team_a_score": end_message.get("team_a_score", 0),
+        "team_b_score": end_message.get("team_b_score", 0),
+        "team_a_rows": team_a_rows,
+        "team_b_rows": team_b_rows,
+        "max_team_size": max(1, len(team_a_rows), len(team_b_rows)),
+    }
 
 
 def run_network_match(client, my_slot, my_name, my_team):
@@ -154,12 +242,12 @@ def run_network_match(client, my_slot, my_name, my_team):
     last_error_message = None
 
     previous_positions = {}
-    previous_scores = {}
     previous_pickup_serials = {}
     previous_trap_serials = {}
     previous_orbs = {}
     orb_effects = []
     orb_spawn_times = {}
+    event_banner = None
     latest_movement = {}
     latest_facing = {}
     end_sound_played = False
@@ -197,15 +285,12 @@ def run_network_match(client, my_slot, my_name, my_team):
 
             if msg_type == STATE:
                 latest_movement = {}
-                score_changed = False
-                current_scores = {}
                 next_pickup_serials = {}
                 next_trap_serials = {}
                 bonus_spawned = False
                 current_ticks = pygame.time.get_ticks()
                 for player_state in msg.get("players", []):
                     slot = player_state["slot"]
-                    score = int(player_state.get("score", 0))
                     pickup_serial = int(player_state.get("last_pickup_serial", 0))
                     trap_serial = int(player_state.get("last_trap_serial", 0))
                     previous_pos = previous_positions.get(player_state["slot"])
@@ -229,15 +314,24 @@ def run_network_match(client, my_slot, my_name, my_team):
                     elif direction_name == "right":
                         latest_facing[slot] = 1
 
-                    current_scores[slot] = score
                     next_pickup_serials[slot] = pickup_serial
                     next_trap_serials[slot] = trap_serial
-                    if score > previous_scores.get(slot, score):
-                        score_changed = True
                     if slot == my_slot and trap_serial > previous_trap_serials.get(
                         slot, 0
                     ):
-                        play_trap()
+                        play_trap(trap_kind=player_state.get("last_trap_kind"))
+                        event_banner = {
+                            "message": format_trap_event(
+                                player_state.get("name", "Combattant"),
+                                player_state.get("team"),
+                                trap_kind=player_state.get("last_trap_kind"),
+                            ),
+                            "accent_color": get_team_color(
+                                player_state.get("team", "A"),
+                                max(0, slot - 1),
+                            ),
+                            "until_ms": current_ticks + MATCH_EVENT_BANNER_DURATION_MS,
+                        }
                     if pickup_serial > previous_pickup_serials.get(slot, 0):
                         pickup = player_state.get("last_pickup") or {}
                         if int(pickup.get("value", 0)) > 0:
@@ -246,11 +340,33 @@ def run_network_match(client, my_slot, my_name, my_team):
                                     "x": float(pickup.get("x", player_state["x"])),
                                     "y": float(pickup.get("y", player_state["y"])),
                                     "value": int(pickup.get("value", 0)),
+                                    "variant": pickup.get("variant"),
                                     "combo_count": int(pickup.get("combo_count", 0)),
                                     "combo_bonus": int(pickup.get("combo_bonus", 0)),
                                     "started_at_ms": current_ticks,
                                 }
                             )
+                        if int(pickup.get("value", 0)) > 0 and slot == my_slot:
+                            play_pickup(
+                                combo_bonus=int(pickup.get("combo_bonus", 0)),
+                                variant=pickup.get("variant"),
+                            )
+                            event_banner = {
+                                "message": format_pickup_event(
+                                    player_state.get("name", "Combattant"),
+                                    player_state.get("team"),
+                                    int(pickup.get("value", 0)),
+                                    combo_count=int(pickup.get("combo_count", 0)),
+                                    combo_bonus=int(pickup.get("combo_bonus", 0)),
+                                    variant=pickup.get("variant"),
+                                ),
+                                "accent_color": get_team_color(
+                                    player_state.get("team", "A"),
+                                    max(0, slot - 1),
+                                ),
+                                "until_ms": current_ticks
+                                + MATCH_EVENT_BANNER_DURATION_MS,
+                            }
                 previous_positions = {
                     player_state["slot"]: (
                         player_state["x"],
@@ -258,11 +374,8 @@ def run_network_match(client, my_slot, my_name, my_team):
                     )
                     for player_state in msg.get("players", [])
                 }
-                previous_scores = current_scores
                 previous_pickup_serials = next_pickup_serials
                 previous_trap_serials = next_trap_serials
-                if score_changed:
-                    play_pickup()
 
                 next_spawn_times = {}
                 next_previous_orbs = {}
@@ -323,6 +436,8 @@ def run_network_match(client, my_slot, my_name, my_team):
         draw_background(frame_surface, active_layout)
 
         if latest_state:
+            if event_banner and pygame.time.get_ticks() > event_banner["until_ms"]:
+                event_banner = None
             draw_state(
                 frame_surface,
                 latest_state,
@@ -335,6 +450,7 @@ def run_network_match(client, my_slot, my_name, my_team):
                 latest_movement,
                 latest_facing,
                 orb_effects,
+                event_banner,
             )
 
         if end_message:
@@ -367,6 +483,7 @@ def run_network_match(client, my_slot, my_name, my_team):
                 big_font,
                 medium_font,
                 small_font,
+                my_slot=my_slot,
             )
             end_timer -= dt
             if end_timer <= 0:
@@ -427,6 +544,7 @@ def draw_state(
     movement_flags=None,
     facing_by_slot=None,
     orb_effects=None,
+    event_banner=None,
 ):
     movement_flags = movement_flags or {}
     facing_by_slot = facing_by_slot or {}
@@ -443,27 +561,7 @@ def draw_state(
         elapsed_ms=elapsed_ms,
     )
 
-    team_a = state.get("team_a_score", 0)
-    team_b = state.get("team_b_score", 0)
-    remaining = state.get("remaining_time", 0)
-
-    team_a_rows = []
-    team_b_rows = []
-    for p in sorted(
-        state.get("players", []),
-        key=lambda item: item.get("slot", 0),
-    ):
-        sprite_id = _resolve_sprite_id(p)
-        row = {
-            "name": p["name"],
-            "player_score": p["score"],
-            "accent_color": get_team_color(p["team"], max(0, p["slot"] - 1)),
-            "sprite_id": sprite_id,
-        }
-        if p["team"] == "A":
-            team_a_rows.append(row)
-        else:
-            team_b_rows.append(row)
+    hud_payload = _build_network_hud_payload(state, my_slot)
 
     draw_match_hud(
         screen,
@@ -472,11 +570,11 @@ def draw_state(
         layout,
         team_a_title=get_team_label("A"),
         team_b_title=get_team_label("B"),
-        team_a_score=team_a,
-        team_b_score=team_b,
-        remaining_time=remaining,
-        team_a_rows=team_a_rows,
-        team_b_rows=team_b_rows,
+        team_a_score=hud_payload["team_a_score"],
+        team_b_score=hud_payload["team_b_score"],
+        remaining_time=hud_payload["remaining_time"],
+        team_a_rows=hud_payload["team_a_rows"],
+        team_b_rows=hud_payload["team_b_rows"],
     )
 
     for orb in state.get("orbs", []):
@@ -524,6 +622,7 @@ def draw_state(
             x=effect["x"],
             y=effect["y"],
             value=effect["value"],
+            variant=effect.get("variant"),
             elapsed_ms=elapsed_ms,
             started_at_ms=effect["started_at_ms"],
             combo_count=effect.get("combo_count", 0),
@@ -532,83 +631,38 @@ def draw_state(
             active_orb_effects.append(effect)
     orb_effects[:] = active_orb_effects
 
+    if event_banner:
+        draw_match_event_banner(
+            screen,
+            small_font,
+            event_banner.get("message", ""),
+            accent_color=tuple(event_banner.get("accent_color", (242, 209, 118))),
+        )
 
-def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
+
+def draw_end_overlay(
+    screen,
+    end_message,
+    big_font,
+    medium_font,
+    small_font,
+    my_slot: int | None = None,
+):
     width, height = screen.get_size()
+    payload = _build_network_end_overlay_payload(end_message, my_slot=my_slot)
 
     overlay = pygame.Surface((width, height), PG_SRCALPHA)
     overlay.fill((0, 0, 0, 182))
     screen.blit(overlay, (0, 0))
 
-    winner_team = end_message.get("winner_team")
-    if winner_team is None:
-        winner_team = get_winner_team(
-            end_message.get("team_a_score", 0),
-            end_message.get("team_b_score", 0),
-        )
-
-    winner = end_message.get("winner_text") or format_winner_text(winner_team)
-    summary_metric_label = (
-        end_message.get("summary_metric_label") or END_SCREEN_SUMMARY_LABEL
+    overlay_layout = compute_end_overlay_layout(
+        (width, height),
+        payload["max_team_size"],
+        footer_height=88,
+        min_panel_height=380,
+        min_available_rows_height=150,
     )
-    team_panel_value_label = (
-        end_message.get("team_panel_value_label") or END_SCREEN_PLAYER_VALUE_LABEL
-    )
-    players = sorted(
-        end_message.get("players", []),
-        key=lambda item: item.get("slot", 0),
-    )
-
-    team_a_score = end_message.get("team_a_score", 0)
-    team_b_score = end_message.get("team_b_score", 0)
-    team_a_rows = []
-    team_b_rows = []
-    for player in players:
-        sprite_id = _resolve_sprite_id(player)
-        row = {
-            "name": player.get("name", "Combattant"),
-            "player_score": player.get("score", 0),
-            "accent_color": get_team_color(
-                player.get("team", "A"),
-                max(0, player.get("slot", 1) - 1),
-            ),
-            "sprite_id": sprite_id,
-        }
-        if player.get("team") == "A":
-            team_a_rows.append(row)
-        else:
-            team_b_rows.append(row)
-
-    max_team_size = max(1, len(team_a_rows), len(team_b_rows))
-    panel_width = min(920, width - 48)
-    header_height = 126
-    row_gap = 8
-    available_rows_height = max(150, height - header_height - 124)
-    row_height = max(
-        40,
-        min(
-            48,
-            int(
-                (available_rows_height - 72 - row_gap * (max_team_size - 1))
-                / max_team_size
-            ),
-        ),
-    )
-    portrait_size = max(30, min(36, row_height - 10))
-    card_height = 62 + max_team_size * row_height
-    card_height += max(0, max_team_size - 1) * row_gap
-    card_height += 16
-    panel_height = min(
-        height - 40,
-        max(380, header_height + card_height + 88),
-    )
-    panel_x = (width - panel_width) // 2
-    panel_y = (height - panel_height) // 2
-    side_padding = max(24, min(36, panel_width // 24))
-    column_gap = max(20, min(32, panel_width // 28))
-    column_width = (panel_width - side_padding * 2 - column_gap) // 2
-
-    panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+    panel_rect = overlay_layout["panel_rect"]
     pygame.draw.rect(screen, (34, 38, 46), panel_rect, border_radius=18)
     pygame.draw.rect(
         screen,
@@ -618,49 +672,42 @@ def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
         border_radius=18,
     )
 
-    txt1 = big_font.render(winner, True, (255, 255, 255))
+    txt1 = big_font.render(payload["winner_text"], True, (255, 255, 255))
     score_text = choose_text_candidate(
         medium_font,
-        build_scoreline_candidates(team_a_score, team_b_score),
-        panel_width - 80,
+        build_scoreline_candidates(
+            payload["team_a_score"],
+            payload["team_b_score"],
+        ),
+        panel_rect.width - 80,
     )
     summary_surface = small_font.render(
-        summary_metric_label,
+        payload["summary_metric_label"],
         True,
         (175, 192, 220),
     )
     txt2 = medium_font.render(score_text, True, (190, 210, 255))
 
-    screen.blit(txt1, (width // 2 - txt1.get_width() // 2, panel_y + 30))
+    screen.blit(txt1, (width // 2 - txt1.get_width() // 2, panel_rect.y + 30))
     screen.blit(
         summary_surface,
         (
             width // 2 - summary_surface.get_width() // 2,
-            panel_y + 72,
+            panel_rect.y + 72,
         ),
     )
-    screen.blit(txt2, (width // 2 - txt2.get_width() // 2, panel_y + 96))
+    screen.blit(txt2, (width // 2 - txt2.get_width() // 2, panel_rect.y + 96))
 
-    team_a_rect = pygame.Rect(
-        panel_x + side_padding,
-        panel_y + header_height,
-        column_width,
-        card_height,
-    )
-    team_b_rect = pygame.Rect(
-        team_a_rect.right + column_gap,
-        panel_y + header_height,
-        column_width,
-        card_height,
-    )
+    team_a_rect = overlay_layout["team_a_rect"]
+    team_b_rect = overlay_layout["team_b_rect"]
 
     shared_score_slot_width = get_shared_player_score_slot_width(
         small_font,
         team_a_rect.width - 20,
-        team_a_rows,
-        team_b_rows,
-        team_a_score,
-        team_b_score,
+        payload["team_a_rows"],
+        payload["team_b_rows"],
+        payload["team_a_score"],
+        payload["team_b_score"],
     )
 
     draw_end_team_card(
@@ -669,14 +716,14 @@ def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
         small_font,
         team_a_rect,
         title=get_team_label("A"),
-        rows=team_a_rows,
+        rows=payload["team_a_rows"],
         align="left",
         border_color=(243, 201, 107),
-        team_score=team_a_score,
-        row_height=row_height,
-        row_gap=row_gap,
-        portrait_size=portrait_size,
-        row_value_label=team_panel_value_label,
+        team_score=payload["team_a_score"],
+        row_height=overlay_layout["row_height"],
+        row_gap=overlay_layout["row_gap"],
+        portrait_size=overlay_layout["portrait_size"],
+        row_value_label=payload["team_panel_value_label"],
         score_format_mode="grouped",
         score_slot_width=shared_score_slot_width,
     )
@@ -686,14 +733,14 @@ def draw_end_overlay(screen, end_message, big_font, medium_font, small_font):
         small_font,
         team_b_rect,
         title=get_team_label("B"),
-        rows=team_b_rows,
+        rows=payload["team_b_rows"],
         align="right",
         border_color=(100, 215, 255),
-        team_score=team_b_score,
-        row_height=row_height,
-        row_gap=row_gap,
-        portrait_size=portrait_size,
-        row_value_label=team_panel_value_label,
+        team_score=payload["team_b_score"],
+        row_height=overlay_layout["row_height"],
+        row_gap=overlay_layout["row_gap"],
+        portrait_size=overlay_layout["portrait_size"],
+        row_value_label=payload["team_panel_value_label"],
         score_format_mode="grouped",
         score_slot_width=shared_score_slot_width,
     )

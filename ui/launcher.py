@@ -196,10 +196,10 @@ def start_server_in_background(host: str, port: int):
     return start_server(host, port)
 
 
-def _build_player_select_view(parent):
+def _build_player_select_view(parent, **kwargs):
     from ui.player_select import PlayerSelectView
 
-    return PlayerSelectView(parent)
+    return PlayerSelectView(parent, **kwargs)
 
 
 def _build_history_view(parent, **kwargs):
@@ -2685,7 +2685,11 @@ def run_local_forge() -> None:
     app = ctk.CTk()
     app.withdraw()
 
-    window = _build_player_select_view(app)
+    window = _build_player_select_view(
+        app,
+        restore_parent_on_close=False,
+        destroy_parent_on_close=True,
+    )
 
     close_all = build_graceful_shutdown(
         app,
@@ -2807,7 +2811,12 @@ def _run_lan_lobby(*, host_mode: bool) -> None:
         active_host = address_info.primary_ip or "127.0.0.1"
         default_server_invitation = format_endpoint(active_host, tcp_port)
 
-    lobby_kwargs = {"server_port": tcp_port, "host_mode": host_mode}
+    lobby_kwargs = {
+        "server_port": tcp_port,
+        "host_mode": host_mode,
+        "restore_parent_on_close": False,
+        "destroy_parent_on_close": True,
+    }
     if default_server_invitation is not None:
         lobby_kwargs["default_server_invitation"] = default_server_invitation
 

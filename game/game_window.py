@@ -10,7 +10,9 @@ from game.computer_opponent import BotController
 from game.control_models import AI_CONTROL_MODE, HUMAN_CONTROL_MODE
 from game.hud_panels import (
     choose_text_candidate,
+    compute_end_overlay_layout,
     draw_end_team_card,
+    draw_match_event_banner,
     draw_match_hud,
     get_shared_player_score_slot_width,
 )
@@ -18,6 +20,8 @@ from game.match_text import (
     END_SCREEN_PLAYER_VALUE_LABEL,
     END_SCREEN_SUMMARY_LABEL,
     build_scoreline_candidates,
+    format_pickup_event,
+    format_trap_event,
     format_winner_text,
     get_team_label,
     get_winner_team,
@@ -61,6 +65,9 @@ PG_RESIZABLE = getattr(pygame, "RESIZABLE")
 PG_SRCALPHA = getattr(pygame, "SRCALPHA")
 pg_init = getattr(pygame, "init")
 pg_quit = getattr(pygame, "quit")
+
+
+MATCH_EVENT_BANNER_DURATION_MS = 1650
 
 
 def _tick_frame(clock, target_fps):
@@ -251,6 +258,228 @@ def get_team_scores(players):
     return team_a_score, team_b_score
 
 
+def _build_local_player_row(player) -> dict:
+    return {
+        "name": player.name,
+        "player_score": player.score,
+        "accent_color": player.color,
+        "sprite_id": player.sprite_id,
+        "is_focus": player.control_mode == HUMAN_CONTROL_MODE,
+    }
+
+
+def _build_local_team_rows(players) -> tuple[list[dict], list[dict]]:
+    team_a_rows = []
+    team_b_rows = []
+
+    for player in players:
+        row = _build_local_player_row(player)
+        if player.team_code == "A":
+            team_a_rows.append(row)
+        else:
+            team_b_rows.append(row)
+
+    return team_a_rows, team_b_rows
+
+
+def _build_local_hud_payload(players) -> dict:
+    team_a_score, team_b_score = get_team_scores(players)
+    team_a_rows, team_b_rows = _build_local_team_rows(players)
+    return {
+        "team_a_score": team_a_score,
+        "team_b_score": team_b_score,
+        "team_a_rows": team_a_rows,
+        "team_b_rows": team_b_rows,
+    }
+
+
+def _build_local_end_overlay_payload(players, winner_text: str) -> dict:
+    payload = _build_local_hud_payload(players)
+    payload.update(
+        {
+            "winner_text": winner_text,
+            "summary_metric_label": END_SCREEN_SUMMARY_LABEL,
+            "team_panel_value_label": END_SCREEN_PLAYER_VALUE_LABEL,
+            "max_team_size": max(
+                1,
+                len(payload["team_a_rows"]),
+                len(payload["team_b_rows"]),
+            ),
+        }
+    )
+    return payload
+
+
+def _should_surface_local_feedback(player) -> bool:
+    return (
+        str(
+            getattr(player, "control_mode", HUMAN_CONTROL_MODE) or HUMAN_CONTROL_MODE
+        ).lower()
+        == HUMAN_CONTROL_MODE
+    )
+
+
+def _build_local_pickup_feedback(
+    player,
+    awarded_value: int,
+    combo_bonus: int,
+    orb,
+    elapsed_ms: int,
+) -> dict | None:
+    if not _should_surface_local_feedback(player):
+        return None
+
+    variant = getattr(orb, "variant", None)
+    normalized_variant = str(variant or "").strip().lower()
+    normalized_combo_bonus = max(0, int(combo_bonus or 0))
+    priority = (
+        4 if normalized_variant == "rare" else 3 if normalized_combo_bonus > 0 else 1
+    )
+
+    return {
+        "message": format_pickup_event(
+            player.name,
+            player.team_code,
+            awarded_value,
+            combo_count=player.combo_count,
+            combo_bonus=combo_bonus,
+            variant=variant,
+        ),
+        "accent_color": tuple(player.color),
+        "until_ms": elapsed_ms + MATCH_EVENT_BANNER_DURATION_MS,
+        "priority": priority,
+        "audio": {
+            "combo_bonus": combo_bonus,
+            "variant": variant,
+        },
+    }
+
+
+def _build_local_trap_feedback(
+    player,
+    trap_state,
+    elapsed_ms: int,
+) -> dict | None:
+    if not _should_surface_local_feedback(player):
+        return None
+
+    return {
+        "message": format_trap_event(
+            player.name,
+            player.team_code,
+            trap_kind=getattr(trap_state, "kind", None),
+        ),
+        "accent_color": tuple(player.color),
+        "until_ms": elapsed_ms + MATCH_EVENT_BANNER_DURATION_MS,
+        "priority": 2,
+        "audio": {
+            "trap_kind": getattr(trap_state, "kind", None),
+        },
+    }
+
+
+def _event_banner_from_feedback(feedback: dict | None) -> dict | None:
+    if feedback is None:
+        return None
+
+    return {
+        "message": feedback["message"],
+        "accent_color": feedback["accent_color"],
+        "until_ms": feedback["until_ms"],
+        "priority": int(feedback.get("priority", 0)),
+    }
+
+
+def _select_local_event_banner(
+    current_banner: dict | None,
+    next_banner: dict | None,
+) -> dict | None:
+    if next_banner is None:
+        return current_banner
+    if current_banner is None:
+        return next_banner
+
+    current_priority = int(current_banner.get("priority", 0))
+    next_priority = int(next_banner.get("priority", 0))
+    if next_priority > current_priority:
+        return next_banner
+    if next_priority < current_priority:
+        return current_banner
+
+    current_until = int(current_banner.get("until_ms", 0))
+    next_until = int(next_banner.get("until_ms", 0))
+    if next_until > current_until:
+        return next_banner
+    if next_until < current_until:
+        return current_banner
+
+    return next_banner
+
+
+def _handle_local_orb_pickup(
+    player,
+    orb,
+    arena_rect,
+    obstacles,
+    elapsed_ms: int,
+    orb_effects: list[dict],
+) -> dict | None:
+    awarded_value, combo_bonus = player.register_orb_pickup(
+        elapsed_ms,
+        orb.value,
+    )
+    orb_effects.append(
+        {
+            "x": orb.x,
+            "y": orb.y,
+            "value": awarded_value,
+            "variant": getattr(orb, "variant", None),
+            "combo_count": player.combo_count,
+            "combo_bonus": combo_bonus,
+            "started_at_ms": elapsed_ms,
+        }
+    )
+
+    feedback = _build_local_pickup_feedback(
+        player,
+        awarded_value,
+        combo_bonus,
+        orb,
+        elapsed_ms,
+    )
+    if feedback is not None:
+        play_pickup(**feedback["audio"])
+
+    event_banner = _event_banner_from_feedback(feedback)
+    orb.respawn(arena_rect, obstacles)
+    if orb.variant == "rare":
+        play_bonus_spawn()
+    return event_banner
+
+
+def _handle_local_trap_trigger(
+    player,
+    trap_state,
+    elapsed_ms: int,
+) -> dict | None:
+    trap_triggered = player.trigger_trap(
+        elapsed_ms,
+        slow_duration_ms=(trap_state.slow_duration_ms),
+        slow_multiplier=trap_state.slow_multiplier,
+    )
+    if not trap_triggered:
+        return None
+
+    feedback = _build_local_trap_feedback(
+        player,
+        trap_state,
+        elapsed_ms,
+    )
+    if feedback is not None:
+        play_trap(trap_kind=feedback["audio"]["trap_kind"])
+    return _event_banner_from_feedback(feedback)
+
+
 def draw_hud(
     surface,
     big_font,
@@ -261,10 +490,7 @@ def draw_hud(
     layout,
     match_duration: int = 60,
 ):
-    team_a_score, team_b_score = get_team_scores(players)
-
-    team_a_players = [p for p in players if p.team_code == "A"]
-    team_b_players = [p for p in players if p.team_code == "B"]
+    payload = _build_local_hud_payload(players)
 
     draw_match_hud(
         surface,
@@ -273,27 +499,11 @@ def draw_hud(
         layout,
         team_a_title=get_team_label("A"),
         team_b_title=get_team_label("B"),
-        team_a_score=team_a_score,
-        team_b_score=team_b_score,
+        team_a_score=payload["team_a_score"],
+        team_b_score=payload["team_b_score"],
         remaining_time=remaining_time,
-        team_a_rows=[
-            {
-                "name": p.name,
-                "player_score": p.score,
-                "accent_color": p.color,
-                "sprite_id": p.sprite_id,
-            }
-            for p in team_a_players
-        ],
-        team_b_rows=[
-            {
-                "name": p.name,
-                "player_score": p.score,
-                "accent_color": p.color,
-                "sprite_id": p.sprite_id,
-            }
-            for p in team_b_players
-        ],
+        team_a_rows=payload["team_a_rows"],
+        team_b_rows=payload["team_b_rows"],
         match_duration=match_duration,
     )
 
@@ -306,64 +516,20 @@ def draw_end_overlay(
     winner_text,
     players,
 ):
-    team_a_score, team_b_score = get_team_scores(players)
-    team_a_players = [p for p in players if p.team_code == "A"]
-    team_b_players = [p for p in players if p.team_code == "B"]
-    team_a_rows = [
-        {
-            "name": p.name,
-            "player_score": p.score,
-            "accent_color": p.color,
-            "sprite_id": p.sprite_id,
-        }
-        for p in team_a_players
-    ]
-    team_b_rows = [
-        {
-            "name": p.name,
-            "player_score": p.score,
-            "accent_color": p.color,
-            "sprite_id": p.sprite_id,
-        }
-        for p in team_b_players
-    ]
-    max_team_size = max(1, len(team_a_players), len(team_b_players))
+    payload = _build_local_end_overlay_payload(players, winner_text)
 
     overlay = pygame.Surface(surface.get_size(), PG_SRCALPHA)
     overlay.fill((0, 0, 0, 185))
     surface.blit(overlay, (0, 0))
 
-    sw, sh = surface.get_size()
-    panel_width = min(920, sw - 48)
-    column_gap = max(20, min(32, panel_width // 28))
-    side_padding = max(24, min(36, panel_width // 24))
-    header_height = 126
-    footer_height = 82
-    row_gap = 8
-    available_rows_height = max(160, sh - header_height - footer_height - 96)
-    row_height = max(
-        40,
-        min(
-            48,
-            int(
-                (available_rows_height - 76 - row_gap * (max_team_size - 1))
-                / max_team_size
-            ),
-        ),
+    overlay_layout = compute_end_overlay_layout(
+        surface.get_size(),
+        payload["max_team_size"],
+        footer_height=82,
+        min_panel_height=392,
+        min_available_rows_height=160,
     )
-    portrait_size = max(30, min(36, row_height - 10))
-    roster_height = 62 + max_team_size * row_height
-    roster_height += max(0, max_team_size - 1) * row_gap
-    roster_height += 16
-    panel_height = min(
-        sh - 40,
-        max(392, header_height + roster_height + footer_height + 16),
-    )
-    panel_x = (sw - panel_width) // 2
-    panel_y = (sh - panel_height) // 2
-    column_width = (panel_width - side_padding * 2 - column_gap) // 2
-
-    panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+    panel_rect = overlay_layout["panel_rect"]
     pygame.draw.rect(surface, (36, 40, 48), panel_rect, border_radius=18)
     pygame.draw.rect(
         surface,
@@ -373,48 +539,42 @@ def draw_end_overlay(
         border_radius=18,
     )
 
-    title = big_font.render(winner_text, True, (255, 255, 255))
-    title_rect = title.get_rect(center=(sw // 2, panel_y + 42))
+    title = big_font.render(payload["winner_text"], True, (255, 255, 255))
+    title_rect = title.get_rect(center=(panel_rect.centerx, panel_rect.y + 42))
     surface.blit(title, title_rect)
 
     summary_label = small_font.render(
-        END_SCREEN_SUMMARY_LABEL,
+        payload["summary_metric_label"],
         True,
         (175, 192, 220),
     )
-    summary_label_rect = summary_label.get_rect(center=(sw // 2, panel_y + 78))
+    summary_label_rect = summary_label.get_rect(
+        center=(panel_rect.centerx, panel_rect.y + 78)
+    )
     surface.blit(summary_label, summary_label_rect)
 
     score_label = choose_text_candidate(
         medium_font,
-        build_scoreline_candidates(team_a_score, team_b_score),
-        panel_width - 80,
+        build_scoreline_candidates(
+            payload["team_a_score"],
+            payload["team_b_score"],
+        ),
+        panel_rect.width - 80,
     )
     score_text = medium_font.render(score_label, True, (190, 210, 255))
-    score_rect = score_text.get_rect(center=(sw // 2, panel_y + 102))
+    score_rect = score_text.get_rect(center=(panel_rect.centerx, panel_rect.y + 102))
     surface.blit(score_text, score_rect)
 
-    roster_top = panel_y + header_height
-    team_a_rect = pygame.Rect(
-        panel_x + side_padding,
-        roster_top,
-        column_width,
-        roster_height,
-    )
-    team_b_rect = pygame.Rect(
-        team_a_rect.right + column_gap,
-        roster_top,
-        column_width,
-        roster_height,
-    )
+    team_a_rect = overlay_layout["team_a_rect"]
+    team_b_rect = overlay_layout["team_b_rect"]
 
     shared_score_slot_width = get_shared_player_score_slot_width(
         small_font,
         team_a_rect.width - 20,
-        team_a_rows,
-        team_b_rows,
-        team_a_score,
-        team_b_score,
+        payload["team_a_rows"],
+        payload["team_b_rows"],
+        payload["team_a_score"],
+        payload["team_b_score"],
     )
 
     draw_end_team_card(
@@ -423,14 +583,14 @@ def draw_end_overlay(
         small_font,
         team_a_rect,
         title=get_team_label("A"),
-        rows=team_a_rows,
+        rows=payload["team_a_rows"],
         align="left",
         border_color=(243, 201, 107),
-        team_score=team_a_score,
-        row_height=row_height,
-        row_gap=row_gap,
-        portrait_size=portrait_size,
-        row_value_label=END_SCREEN_PLAYER_VALUE_LABEL,
+        team_score=payload["team_a_score"],
+        row_height=overlay_layout["row_height"],
+        row_gap=overlay_layout["row_gap"],
+        portrait_size=overlay_layout["portrait_size"],
+        row_value_label=payload["team_panel_value_label"],
         score_format_mode="grouped",
         score_slot_width=shared_score_slot_width,
     )
@@ -440,24 +600,19 @@ def draw_end_overlay(
         small_font,
         team_b_rect,
         title=get_team_label("B"),
-        rows=team_b_rows,
+        rows=payload["team_b_rows"],
         align="right",
         border_color=(100, 215, 255),
-        team_score=team_b_score,
-        row_height=row_height,
-        row_gap=row_gap,
-        portrait_size=portrait_size,
-        row_value_label=END_SCREEN_PLAYER_VALUE_LABEL,
+        team_score=payload["team_b_score"],
+        row_height=overlay_layout["row_height"],
+        row_gap=overlay_layout["row_gap"],
+        portrait_size=overlay_layout["portrait_size"],
+        row_value_label=payload["team_panel_value_label"],
         score_format_mode="grouped",
         score_slot_width=shared_score_slot_width,
     )
 
-    footer_rect = pygame.Rect(
-        panel_x + 24,
-        panel_rect.bottom - footer_height + 12,
-        panel_width - 48,
-        footer_height - 24,
-    )
+    footer_rect = overlay_layout["footer_rect"]
     pygame.draw.rect(surface, (24, 28, 36), footer_rect, border_radius=14)
     pygame.draw.rect(
         surface,
@@ -634,6 +789,7 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
             ]
             trap_states = build_match_traps(layout)
             orb_effects = []
+            event_banner = None
             stop_music(fade_ms=0)
             hardware_service.reset()
             hardware_service.emit_state("COMBAT")
@@ -742,36 +898,32 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                             if not trap_state.active:
                                 continue
                             if player.collides_with_trap(trap_state.rect):
-                                trap_triggered = player.trigger_trap(
+                                next_banner = _handle_local_trap_trigger(
+                                    player,
+                                    trap_state,
                                     elapsed_ms,
-                                    slow_duration_ms=(trap_state.slow_duration_ms),
-                                    slow_multiplier=trap_state.slow_multiplier,
                                 )
-                                if trap_triggered:
-                                    play_trap()
+                                event_banner = _select_local_event_banner(
+                                    event_banner,
+                                    next_banner,
+                                )
                                 break
 
                     for orb in orbs:
                         for player in players:
                             if player.collides_with_orb(orb):
-                                awarded_value, combo_bonus = player.register_orb_pickup(
+                                next_banner = _handle_local_orb_pickup(
+                                    player,
+                                    orb,
+                                    arena_rect,
+                                    obstacles,
                                     elapsed_ms,
-                                    orb.value,
+                                    orb_effects,
                                 )
-                                orb_effects.append(
-                                    {
-                                        "x": orb.x,
-                                        "y": orb.y,
-                                        "value": awarded_value,
-                                        "combo_count": player.combo_count,
-                                        "combo_bonus": combo_bonus,
-                                        "started_at_ms": elapsed_ms,
-                                    }
+                                event_banner = _select_local_event_banner(
+                                    event_banner,
+                                    next_banner,
                                 )
-                                play_pickup()
-                                orb.respawn(arena_rect, obstacles)
-                                if orb.variant == "rare":
-                                    play_bonus_spawn()
                                 break
 
                 team_a_score, team_b_score = get_team_scores(players)
@@ -832,6 +984,7 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                         x=effect["x"],
                         y=effect["y"],
                         value=effect["value"],
+                        variant=effect.get("variant"),
                         elapsed_ms=elapsed_ms,
                         started_at_ms=effect["started_at_ms"],
                         combo_count=effect.get("combo_count", 0),
@@ -850,6 +1003,20 @@ def run_game(players_config, match_duration_seconds=MATCH_DURATION_SECONDS):
                     layout,
                     match_duration=active_match_duration,
                 )
+
+                if (
+                    event_banner
+                    and elapsed_ms <= event_banner["until_ms"]
+                    and not game_over
+                ):
+                    draw_match_event_banner(
+                        game_surface,
+                        small_font,
+                        event_banner["message"],
+                        accent_color=event_banner["accent_color"],
+                    )
+                elif event_banner and elapsed_ms > event_banner["until_ms"]:
+                    event_banner = None
 
                 if game_over:
                     draw_end_overlay(

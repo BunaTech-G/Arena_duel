@@ -1,6 +1,11 @@
 import unittest
 
-from game.match_text import build_scoreline_candidates, format_scoreline
+from game.match_text import (
+    build_scoreline_candidates,
+    format_pickup_event,
+    format_scoreline,
+    format_trap_event,
+)
 
 
 class MatchTextTests(unittest.TestCase):
@@ -24,6 +29,29 @@ class MatchTextTests(unittest.TestCase):
         self.assertEqual(
             candidates[-1],
             "Braise : 6.7k  |  Azur : 10M",
+        )
+
+    def test_format_pickup_event_mentions_rare_orb_and_combo(self):
+        self.assertEqual(
+            format_pickup_event(
+                "Aelys",
+                "A",
+                4,
+                combo_count=3,
+                combo_bonus=2,
+                variant="rare",
+            ),
+            "Braise · Aelys capte orbe rare +4 · combo x3 (+2)",
+        )
+
+    def test_format_trap_event_uses_named_trap_label(self):
+        self.assertEqual(
+            format_trap_event(
+                "Nox",
+                "B",
+                trap_kind="spike_trap",
+            ),
+            "Azur · Nox heurte les pointes",
         )
 
 

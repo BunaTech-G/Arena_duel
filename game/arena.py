@@ -160,6 +160,80 @@ def _draw_orb_sparkle(
     )
 
 
+def _draw_orb_floor_signal(
+    surface: pygame.Surface,
+    *,
+    center_x: int,
+    floor_y: int,
+    radius: int,
+    color: tuple[int, int, int],
+    elapsed_ms: float,
+    spawn_progress: float,
+    is_rare: bool,
+) -> None:
+    if not is_rare:
+        return
+
+    pulse = 0.52 + 0.48 * math.sin((elapsed_ms / 260.0) + center_x * 0.017)
+    signal_radius_x = max(radius + 12, int(radius * 2.1))
+    signal_radius_y = max(7, int(radius * 0.85))
+    signal_surface = pygame.Surface(
+        (signal_radius_x * 2 + 18, signal_radius_y * 2 + 18),
+        PG_SRCALPHA,
+    )
+    signal_rect = signal_surface.get_rect().inflate(-8, -10)
+    signal_center = signal_surface.get_rect().center
+    glow_color = _mix_color(color, (255, 240, 194), 0.34)
+    alpha_scale = 0.6 + (0.4 * spawn_progress)
+
+    pygame.draw.ellipse(
+        signal_surface,
+        (*color, _clamp_color_channel((24 + 30 * pulse) * alpha_scale)),
+        signal_rect,
+        width=2,
+    )
+    pygame.draw.ellipse(
+        signal_surface,
+        (*glow_color, _clamp_color_channel((38 + 44 * pulse) * alpha_scale)),
+        signal_rect.inflate(-10, -4),
+        width=2,
+    )
+
+    bracket_color = (*glow_color, _clamp_color_channel((52 + 38 * pulse) * alpha_scale))
+    bracket_gap = max(10, signal_radius_x - 8)
+    for direction in (-1, 1):
+        anchor_x = signal_center[0] + direction * bracket_gap
+        pygame.draw.line(
+            signal_surface,
+            bracket_color,
+            (anchor_x, signal_center[1] - 6),
+            (anchor_x, signal_center[1] + 6),
+            2,
+        )
+        pygame.draw.line(
+            signal_surface,
+            bracket_color,
+            (anchor_x, signal_center[1] - 6),
+            (anchor_x - direction * 5, signal_center[1] - 10),
+            2,
+        )
+        pygame.draw.line(
+            signal_surface,
+            bracket_color,
+            (anchor_x, signal_center[1] + 6),
+            (anchor_x - direction * 5, signal_center[1] + 10),
+            2,
+        )
+
+    surface.blit(
+        signal_surface,
+        (
+            center_x - signal_surface.get_width() // 2,
+            floor_y - signal_surface.get_height() // 2,
+        ),
+    )
+
+
 def _mix_color(
     start: tuple[int, int, int], end: tuple[int, int, int], blend: float
 ) -> tuple[int, int, int]:
@@ -359,10 +433,100 @@ def _draw_banner_shadow(surface: pygame.Surface, rect: pygame.Rect) -> None:
     surface.blit(banner_surface, rect.topleft)
 
 
+def _draw_spawn_marker(
+    surface: pygame.Surface,
+    center: tuple[int, int],
+    team_code: str,
+    elapsed_ms: float,
+    *,
+    slot_index: int = 0,
+) -> None:
+    center_x, center_y = (int(center[0]), int(center[1]))
+    base_color = get_team_color(team_code, slot_index)
+    glow_color = _mix_color(base_color, (252, 244, 224), 0.32)
+    pulse = 0.52 + 0.48 * math.sin(
+        (elapsed_ms / 420.0) + center_x * 0.014 + center_y * 0.01
+    )
+    outer_radius = 24
+    marker_surface = pygame.Surface((outer_radius * 4, outer_radius * 4), PG_SRCALPHA)
+    marker_center = (marker_surface.get_width() // 2, marker_surface.get_height() // 2)
+
+    pygame.draw.circle(
+        marker_surface,
+        (*base_color, int(16 + 16 * pulse)),
+        marker_center,
+        outer_radius + 8,
+    )
+    pygame.draw.circle(
+        marker_surface,
+        (*glow_color, int(42 + 18 * pulse)),
+        marker_center,
+        outer_radius + 2,
+        width=2,
+    )
+    pygame.draw.circle(
+        marker_surface,
+        (*base_color, 72),
+        marker_center,
+        outer_radius - 4,
+        width=1,
+    )
+
+    diamond_radius = max(8, outer_radius - 9)
+    diamond_points = [
+        (marker_center[0], marker_center[1] - diamond_radius),
+        (marker_center[0] + diamond_radius, marker_center[1]),
+        (marker_center[0], marker_center[1] + diamond_radius),
+        (marker_center[0] - diamond_radius, marker_center[1]),
+    ]
+    pygame.draw.polygon(
+        marker_surface,
+        (*glow_color, int(62 + 28 * pulse)),
+        diamond_points,
+        width=2,
+    )
+
+    chevron_depth = 7
+    if str(team_code or "A").upper() == "A":
+        chevron_points = [
+            (marker_center[0] - 5, marker_center[1] - chevron_depth),
+            (marker_center[0] + 4, marker_center[1]),
+            (marker_center[0] - 5, marker_center[1] + chevron_depth),
+        ]
+    else:
+        chevron_points = [
+            (marker_center[0] + 5, marker_center[1] - chevron_depth),
+            (marker_center[0] - 4, marker_center[1]),
+            (marker_center[0] + 5, marker_center[1] + chevron_depth),
+        ]
+    pygame.draw.polygon(
+        marker_surface,
+        (*base_color, 146),
+        chevron_points,
+    )
+    pygame.draw.circle(
+        marker_surface,
+        (*glow_color, 214),
+        marker_center,
+        4,
+    )
+    pygame.draw.circle(
+        marker_surface,
+        (*base_color, 255),
+        marker_center,
+        2,
+    )
+
+    surface.blit(
+        marker_surface,
+        (center_x - marker_center[0], center_y - marker_center[1]),
+    )
+
+
 def _draw_corner_brackets(
     surface: pygame.Surface,
     rect: pygame.Rect,
-    color: tuple[int, int, int],
+    color: tuple[int, int, int] | tuple[int, int, int, int],
     *,
     length: int = 8,
     width: int = 2,
@@ -423,7 +587,7 @@ def _draw_ring_ticks(
     surface: pygame.Surface,
     center: tuple[int, int],
     radius: int,
-    color: tuple[int, int, int],
+    color: tuple[int, int, int] | tuple[int, int, int, int],
     *,
     count: int,
     tick_length: int,
@@ -446,12 +610,263 @@ def _draw_ring_ticks(
         )
 
 
+def _draw_trap_floor_signal(
+    surface: pygame.Surface,
+    rect: pygame.Rect,
+    *,
+    kind: str,
+    color: tuple[int, int, int],
+    elapsed_ms: float,
+    active_presence: float,
+) -> None:
+    presence = max(0.0, min(1.0, float(active_presence)))
+    pulse = 0.5 + 0.5 * math.sin(
+        (elapsed_ms / 260.0) + rect.centerx * 0.011 + rect.centery * 0.013
+    )
+    signal_margin = 10
+    signal_surface = pygame.Surface(
+        (rect.width + signal_margin * 2, rect.height + signal_margin * 2),
+        PG_SRCALPHA,
+    )
+    signal_bounds = signal_surface.get_rect().inflate(-4, -4)
+    center = signal_surface.get_rect().center
+    halo_alpha = _clamp_color_channel(14 + (18 * pulse) + (28 * presence))
+    ring_alpha = _clamp_color_channel(30 + (22 * pulse) + (52 * presence))
+    accent_alpha = _clamp_color_channel(44 + (20 * pulse) + (60 * presence))
+
+    pygame.draw.ellipse(
+        signal_surface,
+        (*color, halo_alpha),
+        signal_bounds.inflate(-2, -8),
+        width=1,
+    )
+
+    if kind == "spike_trap":
+        spike_rect = signal_bounds.inflate(-8, -8)
+        pygame.draw.ellipse(
+            signal_surface,
+            (*color, ring_alpha),
+            spike_rect,
+            width=2,
+        )
+        _draw_ring_ticks(
+            signal_surface,
+            center,
+            max(18, min(spike_rect.width, spike_rect.height) // 2),
+            (*color, accent_alpha),
+            count=6,
+            tick_length=7,
+            width=2,
+        )
+    elif kind == "ember_trap":
+        ember_rect = signal_bounds.inflate(-6, -12)
+        pygame.draw.ellipse(
+            signal_surface,
+            (*color, ring_alpha),
+            ember_rect,
+            width=2,
+        )
+        pygame.draw.arc(
+            signal_surface,
+            (*color, accent_alpha),
+            ember_rect.inflate(8, 2),
+            math.pi * 0.14,
+            math.pi * 0.86,
+            2,
+        )
+        pygame.draw.arc(
+            signal_surface,
+            (*color, _clamp_color_channel(accent_alpha - 10)),
+            ember_rect.inflate(8, 2),
+            math.pi * 1.14,
+            math.pi * 1.86,
+            2,
+        )
+        ember_row_y = center[1] - max(8, rect.height // 2 - 2)
+        for offset_x in (-10, 0, 10):
+            pygame.draw.circle(
+                signal_surface,
+                (*color, _clamp_color_channel(accent_alpha + 8)),
+                (center[0] + offset_x, ember_row_y),
+                2,
+            )
+    else:
+        rune_rect = signal_bounds.inflate(-10, -10)
+        pygame.draw.rect(
+            signal_surface,
+            (*color, ring_alpha),
+            rune_rect,
+            width=2,
+            border_radius=12,
+        )
+        _draw_corner_brackets(
+            signal_surface,
+            rune_rect,
+            (*color, accent_alpha),
+            length=6,
+            width=2,
+        )
+        orbit_radius = max(12, min(rune_rect.width, rune_rect.height) // 2 - 2)
+        orbit_angle = elapsed_ms / 320.0
+        orbit_points = [
+            (
+                int(center[0] + math.cos(orbit_angle) * orbit_radius),
+                int(center[1] + math.sin(orbit_angle) * orbit_radius),
+            ),
+            (
+                int(center[0] + math.cos(orbit_angle + math.pi) * orbit_radius),
+                int(center[1] + math.sin(orbit_angle + math.pi) * orbit_radius),
+            ),
+        ]
+        for orbit_x, orbit_y in orbit_points:
+            pygame.draw.circle(
+                signal_surface,
+                (*color, accent_alpha),
+                (orbit_x, orbit_y),
+                2,
+            )
+
+    beacon_presence = max(0.0, (presence - 0.22) / 0.56)
+    if beacon_presence > 0.0:
+        beacon_color = _mix_color(color, (255, 236, 196), 0.2 + 0.18 * pulse)
+        beacon_alpha = _clamp_color_channel(
+            (28 + 48 * pulse) * (0.32 + 0.68 * beacon_presence)
+        )
+        beacon_radius = max(2, int(2 + 2 * beacon_presence))
+        width = signal_surface.get_width()
+        height = signal_surface.get_height()
+        beacon_positions = [
+            (2, center[1]),
+            (width - 3, center[1]),
+            (center[0], 2),
+            (center[0], height - 3),
+        ]
+        for beacon_x, beacon_y in beacon_positions:
+            pygame.draw.circle(
+                signal_surface,
+                (*beacon_color, beacon_alpha),
+                (beacon_x, beacon_y),
+                beacon_radius,
+            )
+
+        if kind == "spike_trap":
+            spike_alpha = _clamp_color_channel(beacon_alpha + 22)
+            spike_tip_y = max(10, center[1] - rect.height // 2)
+            spike_offset_x = max(20, rect.width // 2 - 6)
+            spike_blades = [
+                [
+                    (center[0] - spike_offset_x, spike_tip_y),
+                    (center[0] - spike_offset_x - 4, spike_tip_y + 7),
+                    (center[0] - spike_offset_x + 4, spike_tip_y + 7),
+                ],
+                [
+                    (center[0] + spike_offset_x, spike_tip_y),
+                    (center[0] + spike_offset_x - 4, spike_tip_y + 7),
+                    (center[0] + spike_offset_x + 4, spike_tip_y + 7),
+                ],
+            ]
+            for blade_points in spike_blades:
+                pygame.draw.polygon(
+                    signal_surface,
+                    (*beacon_color, spike_alpha),
+                    blade_points,
+                )
+        elif kind == "ember_trap":
+            ember_spark_y = max(6, center[1] - rect.height // 2 - 4)
+            ember_alpha = _clamp_color_channel(beacon_alpha + 18)
+            ember_positions = [
+                (center[0] - 10, ember_spark_y + 1),
+                (center[0], ember_spark_y - 1),
+                (center[0] + 10, ember_spark_y + 1),
+            ]
+            for ember_x, ember_y in ember_positions:
+                pygame.draw.circle(
+                    signal_surface,
+                    (*beacon_color, ember_alpha),
+                    (ember_x, ember_y),
+                    max(2, beacon_radius - 1),
+                )
+        elif kind == "rune_trap":
+            rune_alpha = _clamp_color_channel(beacon_alpha + 26)
+            rune_offset = max(24, rect.width // 2 - 2)
+            rune_positions = [
+                (center[0] - rune_offset, center[1] - rune_offset),
+                (center[0] + rune_offset, center[1] - rune_offset),
+                (center[0] - rune_offset, center[1] + rune_offset),
+                (center[0] + rune_offset, center[1] + rune_offset),
+            ]
+            for rune_x, rune_y in rune_positions:
+                pygame.draw.polygon(
+                    signal_surface,
+                    (*beacon_color, rune_alpha),
+                    [
+                        (rune_x, rune_y - 3),
+                        (rune_x + 3, rune_y),
+                        (rune_x, rune_y + 3),
+                        (rune_x - 3, rune_y),
+                    ],
+                )
+
+    alert_presence = max(0.0, (presence - 0.62) / 0.38)
+    if alert_presence > 0.0:
+        alert_color = _mix_color(color, (255, 241, 205), 0.34 + 0.14 * pulse)
+        alert_alpha = _clamp_color_channel(
+            (52 + 84 * pulse) * (0.45 + 0.55 * alert_presence)
+        )
+        tip_length = max(9, int(10 + 4 * alert_presence))
+        tip_span = max(5, int(6 + 2 * alert_presence))
+        tip_color = (*alert_color, alert_alpha)
+        width = signal_surface.get_width()
+        height = signal_surface.get_height()
+        warning_markers = [
+            [
+                (0, center[1]),
+                (tip_length, center[1] - tip_span),
+                (tip_length, center[1] + tip_span),
+            ],
+            [
+                (width - 1, center[1]),
+                (width - 1 - tip_length, center[1] - tip_span),
+                (width - 1 - tip_length, center[1] + tip_span),
+            ],
+            [
+                (center[0], 0),
+                (center[0] - tip_span, tip_length),
+                (center[0] + tip_span, tip_length),
+            ],
+            [
+                (center[0], height - 1),
+                (center[0] - tip_span, height - 1 - tip_length),
+                (center[0] + tip_span, height - 1 - tip_length),
+            ],
+        ]
+        for marker_points in warning_markers:
+            pygame.draw.polygon(
+                signal_surface,
+                tip_color,
+                marker_points,
+            )
+
+    surface.blit(
+        signal_surface,
+        (rect.left - signal_margin, rect.top - signal_margin),
+    )
+
+
 def _draw_spike_trap(
     surface: pygame.Surface,
     rect: pygame.Rect,
     elapsed_ms: float,
     active_presence: float,
 ) -> None:
+    _draw_trap_floor_signal(
+        surface,
+        rect,
+        kind="spike_trap",
+        color=_mix_color(TRAP_EDGE, TRAP_GLOW, 0.28),
+        elapsed_ms=elapsed_ms,
+        active_presence=active_presence,
+    )
     pulse = 0.52 + 0.48 * math.sin(elapsed_ms / 220.0 + rect.centerx * 0.013)
     aura_margin = 12
     aura_size = (rect.width + aura_margin * 2, rect.height + aura_margin * 2)
@@ -572,6 +987,14 @@ def _draw_ember_trap(
     elapsed_ms: float,
     active_presence: float,
 ) -> None:
+    _draw_trap_floor_signal(
+        surface,
+        rect,
+        kind="ember_trap",
+        color=_mix_color(EMBER_TRAP_EDGE, EMBER_TRAP_GLOW, 0.18),
+        elapsed_ms=elapsed_ms,
+        active_presence=active_presence,
+    )
     pulse = 0.5 + 0.5 * math.sin(elapsed_ms / 170.0 + rect.centery * 0.015)
     base_rect = rect.inflate(-12, -12)
     pygame.draw.ellipse(surface, (30, 20, 18), base_rect)
@@ -677,6 +1100,14 @@ def _draw_rune_trap(
     elapsed_ms: float,
     active_presence: float,
 ) -> None:
+    _draw_trap_floor_signal(
+        surface,
+        rect,
+        kind="rune_trap",
+        color=_mix_color(RUNE_TRAP_EDGE, RUNE_TRAP_GLOW, 0.2),
+        elapsed_ms=elapsed_ms,
+        active_presence=active_presence,
+    )
     active_presence = max(0.0, min(1.0, float(active_presence)))
     pulse = 0.5 + 0.5 * math.sin(elapsed_ms / 260.0 + rect.centerx * 0.012)
     frame_rect = rect.inflate(-4, -4)
@@ -899,6 +1330,18 @@ def draw_arena(
         elif decor.kind == "banner_shadow":
             _draw_banner_shadow(surface, decor_rect)
 
+    for team_code in ("A", "B"):
+        for slot_index, spawn_point in enumerate(
+            active_layout.spawn_positions(team_code)
+        ):
+            _draw_spawn_marker(
+                surface,
+                spawn_point,
+                team_code,
+                elapsed_ms,
+                slot_index=slot_index,
+            )
+
     active_trap_states = trap_states or [
         {
             "kind": trap.kind,
@@ -980,11 +1423,23 @@ def draw_orb_visual(
         (center_x - shadow_width, floor_y - shadow_height),
     )
 
+    aura_color = (255, 162, 76) if is_rare else (247, 208, 106)
+
+    _draw_orb_floor_signal(
+        surface,
+        center_x=center_x,
+        floor_y=floor_y,
+        radius=radius,
+        color=aura_color,
+        elapsed_ms=elapsed_ms,
+        spawn_progress=spawn_progress,
+        is_rare=is_rare,
+    )
+
     aura_radius = max(
         radius + 10,
         int(token_size * (0.46 if is_rare else 0.4)),
     )
-    aura_color = (255, 162, 76) if is_rare else (247, 208, 106)
     aura_surface = pygame.Surface(
         (aura_radius * 2, aura_radius * 2),
         PG_SRCALPHA,
@@ -1107,6 +1562,7 @@ def draw_orb_collection_effect(
     started_at_ms: float,
     combo_count: int = 0,
     combo_bonus: int = 0,
+    variant: str | None = None,
 ) -> bool:
     age = max(0.0, elapsed_ms - started_at_ms)
     if age >= ORB_COLLECTION_EFFECT_MS:
@@ -1114,7 +1570,13 @@ def draw_orb_collection_effect(
 
     progress = age / ORB_COLLECTION_EFFECT_MS
     fade = 1.0 - progress
-    is_rare = value >= ORB_RARE_SCORE_VALUE
+    cue_fade = fade**1.3
+    normalized_variant = str(variant or "").strip().lower()
+    is_rare = (
+        normalized_variant == "rare"
+        if normalized_variant
+        else value >= ORB_RARE_SCORE_VALUE
+    )
     accent_color = (255, 166, 86) if is_rare else (247, 208, 106)
     text_color = (255, 245, 214) if is_rare else (255, 238, 196)
 
@@ -1147,10 +1609,145 @@ def draw_orb_collection_effect(
             particle_radius,
         )
 
+    if combo_count >= 2:
+        combo_glow_color = _mix_color(accent_color, (255, 244, 218), 0.34)
+        combo_alpha = _clamp_color_channel(
+            (112 + (18 * min(combo_count, 5))) * cue_fade
+        )
+        combo_spark_radius = max(2, particle_radius)
+        combo_offset = max(10, effect_radius)
+        combo_positions = [
+            (effect_center[0] - combo_offset, effect_center[1] + combo_offset),
+            (effect_center[0] + combo_offset, effect_center[1] + combo_offset),
+        ]
+        for combo_x, combo_y in combo_positions:
+            pygame.draw.polygon(
+                effect_surface,
+                (*combo_glow_color, combo_alpha),
+                [
+                    (combo_x, combo_y - combo_spark_radius),
+                    (combo_x + combo_spark_radius, combo_y),
+                    (combo_x, combo_y + combo_spark_radius),
+                    (combo_x - combo_spark_radius, combo_y),
+                ],
+            )
+
+        if combo_count >= 3:
+            center_combo_y = effect_center[1] + combo_offset + 4
+            center_combo_radius = max(2, combo_spark_radius)
+            pygame.draw.polygon(
+                effect_surface,
+                (*combo_glow_color, combo_alpha),
+                [
+                    (effect_center[0], center_combo_y - center_combo_radius),
+                    (effect_center[0] + center_combo_radius, center_combo_y),
+                    (effect_center[0], center_combo_y + center_combo_radius),
+                    (effect_center[0] - center_combo_radius, center_combo_y),
+                ],
+            )
+
+        if combo_count >= 4:
+            shoulder_offset_x = max(9, combo_offset // 2)
+            shoulder_combo_y = effect_center[1] + combo_offset + 2
+            shoulder_radius = max(2, combo_spark_radius - 1)
+            shoulder_positions = [
+                (effect_center[0] - shoulder_offset_x, shoulder_combo_y),
+                (effect_center[0] + shoulder_offset_x, shoulder_combo_y),
+            ]
+            for shoulder_x, shoulder_y in shoulder_positions:
+                pygame.draw.polygon(
+                    effect_surface,
+                    (*combo_glow_color, combo_alpha),
+                    [
+                        (shoulder_x, shoulder_y - shoulder_radius),
+                        (shoulder_x + shoulder_radius, shoulder_y),
+                        (shoulder_x, shoulder_y + shoulder_radius),
+                        (shoulder_x - shoulder_radius, shoulder_y),
+                    ],
+                )
+
     surface.blit(
         effect_surface,
         (int(x) - effect_center[0], int(y) - effect_center[1]),
     )
+
+    if combo_count >= 2 and is_rare:
+        crown_color = _mix_color(accent_color, (255, 248, 226), 0.48)
+        crown_alpha = _clamp_color_channel(
+            (150 + (16 * min(combo_count, 5))) * cue_fade
+        )
+        crown_radius = max(3, particle_radius)
+        crown_spacing = max(12, int(10 + (4 * progress)))
+        crown_center_y = int(y - 28 - (18 * progress))
+        crown_specs = [
+            (int(x - crown_spacing), crown_center_y + 4, crown_radius),
+            (int(x), crown_center_y, crown_radius + 1),
+            (int(x + crown_spacing), crown_center_y + 4, crown_radius),
+        ]
+        for crown_x, crown_y, local_radius in crown_specs:
+            pygame.draw.polygon(
+                surface,
+                (*crown_color, crown_alpha),
+                [
+                    (crown_x, crown_y - local_radius),
+                    (crown_x + local_radius, crown_y),
+                    (crown_x, crown_y + local_radius),
+                    (crown_x - local_radius, crown_y),
+                ],
+            )
+
+        if combo_count >= 4:
+            crest_radius = max(2, crown_radius - 1)
+            crest_offset_x = crown_spacing + 6
+            crest_y = crown_center_y - 5
+            crest_specs = [
+                (int(x - crest_offset_x), crest_y, crest_radius),
+                (int(x + crest_offset_x), crest_y, crest_radius),
+            ]
+            for crest_x, crest_peak_y, local_radius in crest_specs:
+                pygame.draw.polygon(
+                    surface,
+                    (*crown_color, crown_alpha),
+                    [
+                        (crest_x, crest_peak_y - local_radius),
+                        (crest_x + local_radius, crest_peak_y),
+                        (crest_x, crest_peak_y + local_radius),
+                        (crest_x - local_radius, crest_peak_y),
+                    ],
+                )
+
+            bridge_radius = max(2, crown_radius - 1)
+            bridge_offset_x = max(10, crown_spacing - 2)
+            bridge_y = crown_center_y - 7
+            bridge_specs = [
+                (int(x - bridge_offset_x), bridge_y, bridge_radius),
+                (int(x + bridge_offset_x), bridge_y, bridge_radius),
+            ]
+            for bridge_x, bridge_peak_y, local_radius in bridge_specs:
+                pygame.draw.polygon(
+                    surface,
+                    (*crown_color, crown_alpha),
+                    [
+                        (bridge_x, bridge_peak_y - local_radius),
+                        (bridge_x + local_radius, bridge_peak_y),
+                        (bridge_x, bridge_peak_y + local_radius),
+                        (bridge_x - local_radius, bridge_peak_y),
+                    ],
+                )
+
+        if combo_count >= 5:
+            apex_radius = max(2, crown_radius - 1)
+            apex_y = crown_center_y - 9
+            pygame.draw.polygon(
+                surface,
+                (*crown_color, crown_alpha),
+                [
+                    (int(x), apex_y - apex_radius),
+                    (int(x) + apex_radius, apex_y),
+                    (int(x), apex_y + apex_radius),
+                    (int(x) - apex_radius, apex_y),
+                ],
+            )
 
     text_font = _get_orb_effect_font(24 if is_rare else 20)
     text_surface = text_font.render(f"+{value}", True, text_color)
@@ -1168,7 +1765,7 @@ def draw_orb_collection_effect(
             combo_label += f"  +{combo_bonus}"
         combo_surface = combo_font.render(combo_label, True, text_color)
         combo_surface = combo_surface.copy()
-        combo_surface.set_alpha(int(232 * fade))
+        combo_surface.set_alpha(int(232 * (fade**1.18)))
         combo_rect = combo_surface.get_rect(
             center=(int(x), int(y + 12 - (14 * progress))),
         )

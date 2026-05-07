@@ -253,6 +253,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
         default_server_invitation=None,
         server_port=None,
         host_mode=False,
+        *,
+        restore_parent_on_close: bool = True,
+        destroy_parent_on_close: bool = False,
     ):
         super().__init__(parent)
         style_window(self)
@@ -293,6 +296,8 @@ class NetworkLobbyView(ctk.CTkToplevel):
             self.server_port,
         )
         self.host_mode = host_mode
+        self._restore_parent_on_close = bool(restore_parent_on_close)
+        self._destroy_parent_on_close = bool(destroy_parent_on_close)
 
         self.my_slot = None
         self.my_team = None
@@ -412,6 +417,8 @@ class NetworkLobbyView(ctk.CTkToplevel):
             default_server_invitation=invitation,
             server_port=self.server_port,
             host_mode=self.host_mode,
+            restore_parent_on_close=self._restore_parent_on_close,
+            destroy_parent_on_close=self._destroy_parent_on_close,
         )
         resumed_lobby.hydrate_resumed_session(
             invitation,
@@ -1990,7 +1997,12 @@ class NetworkLobbyView(ctk.CTkToplevel):
             ),
         )
 
-    def request_close(self) -> bool:
+    def request_close(
+        self,
+        *,
+        restore_parent: bool | None = None,
+        destroy_parent: bool | None = None,
+    ) -> bool:
         confirmation = self._close_confirmation()
         if confirmation is not None:
             title, message = confirmation
@@ -2005,15 +2017,27 @@ class NetworkLobbyView(ctk.CTkToplevel):
                     )
                 return False
 
-        self.shutdown()
+        self.shutdown(
+            restore_parent=restore_parent,
+            destroy_parent=destroy_parent,
+        )
         return True
 
-    def shutdown(self):
+    def shutdown(
+        self,
+        *,
+        restore_parent: bool | None = None,
+        destroy_parent: bool | None = None,
+    ):
         if self._shutdown_requested:
             return
 
         self._shutdown_requested = True
         self.running = False
+        if restore_parent is None:
+            restore_parent = self._restore_parent_on_close
+        if destroy_parent is None:
+            destroy_parent = self._destroy_parent_on_close
         if self._launch_match_after_id is not None:
             try:
                 self.after_cancel(self._launch_match_after_id)
@@ -2032,6 +2056,18 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         parent = self.master
         self.destroy()
+
+        if not restore_parent and not destroy_parent:
+            return
+
+        if destroy_parent:
+            try:
+                if parent.winfo_exists():
+                    parent.destroy()
+            except TclError:
+                return
+            return
+
         try:
             if parent.winfo_exists():
                 present_window(parent)

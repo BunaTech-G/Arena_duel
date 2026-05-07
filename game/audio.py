@@ -136,6 +136,18 @@ ROLE_SOUND_ATTRS = {
     "alert": "alert_sound",
 }
 
+TRAP_ROLE_BY_KIND = {
+    "spike_trap": "trap_a",
+    "ember_trap": "trap_b",
+    "rune_trap": "trap_b",
+}
+
+TRAP_ROLE_PREFERENCES_BY_KIND = {
+    "spike_trap": ("trap_a", "trap_b"),
+    "ember_trap": ("trap_b", "trap_a"),
+    "rune_trap": ("alert", "trap_b", "trap_a"),
+}
+
 
 def _log_audio(message):
     if is_runtime_flag_enabled("debug_console_logs", default=False):
@@ -309,7 +321,29 @@ def stop_music(fade_ms=250):
         _active_music_track = None
 
 
-def play_pickup():
+def play_pickup(*, combo_bonus: int = 0, variant: str | None = None):
+    normalized_variant = str(variant or "").strip().lower()
+    if normalized_variant == "rare":
+        _safe_play(
+            _get_role_sound("transition")
+            or _get_role_sound("bonus_spawn")
+            or _get_role_sound("pickup"),
+            "pickup_rare",
+            _role_maxtime("transition")
+            or _role_maxtime("bonus_spawn")
+            or _role_maxtime("pickup"),
+        )
+        return
+
+    normalized_bonus = max(0, int(combo_bonus or 0))
+    if normalized_bonus > 0:
+        _safe_play(
+            _get_role_sound("select") or _get_role_sound("pickup"),
+            "pickup_combo",
+            _role_maxtime("select") or _role_maxtime("pickup"),
+        )
+        return
+
     _safe_play(_get_role_sound("pickup"), "pickup", _role_maxtime("pickup"))
 
 
@@ -368,8 +402,33 @@ def play_lose(consecutive_rematch_loss: bool = False):
     )
 
 
-def play_trap():
+def play_trap(trap_kind: str | None = None):
     global _trap_sound_index
+
+    normalized_kind = str(trap_kind or "").strip().lower()
+    preferred_roles = TRAP_ROLE_PREFERENCES_BY_KIND.get(normalized_kind)
+    if preferred_roles:
+        for preferred_role in preferred_roles:
+            preferred_sound = _get_role_sound(preferred_role)
+            if preferred_sound is None:
+                continue
+            _safe_play(
+                preferred_sound,
+                preferred_role,
+                _role_maxtime(preferred_role),
+            )
+            return
+
+    preferred_role = TRAP_ROLE_BY_KIND.get(normalized_kind)
+    if preferred_role:
+        preferred_sound = _get_role_sound(preferred_role)
+        if preferred_sound is not None:
+            _safe_play(
+                preferred_sound,
+                preferred_role,
+                _role_maxtime(preferred_role),
+            )
+            return
 
     trap_sounds = [
         sound

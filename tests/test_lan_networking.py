@@ -354,6 +354,7 @@ class LanNetworkingTests(unittest.TestCase):
         self.assertEqual(last_pickup["x"], 128.0)
         self.assertEqual(last_pickup["y"], 144.0)
         self.assertEqual(last_pickup["value"], 1)
+        self.assertEqual(last_pickup["variant"], "common")
         self.assertEqual(last_pickup["combo_count"], 1)
         self.assertEqual(last_pickup["combo_bonus"], 0)
 

@@ -192,7 +192,7 @@ class OnlineWifiIndicator(ctk.CTkFrame):
 
         self.set_available(self.available)
         self.bind("<Destroy>", self._handle_destroy, add="+")
-        self.after(90, self.refresh_network_status)
+        self._status_refresh_after_id = self.after(90, self.refresh_network_status)
 
     def _handle_destroy(self, _event=None) -> None:
         self.shutdown()
@@ -363,7 +363,14 @@ class OnlineWifiIndicator(ctk.CTkFrame):
 
 
 class OnlineLobbyWindow(ctk.CTkToplevel):
-    def __init__(self, master=None, *, network_available: bool = True):
+    def __init__(
+        self,
+        master=None,
+        *,
+        network_available: bool = True,
+        restore_parent_on_close: bool = True,
+        destroy_parent_on_close: bool = False,
+    ):
         super().__init__(master)
         style_window(self)
         self.configure(fg_color=PALETTE["launcher_blend"])
@@ -377,6 +384,8 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
         self.join_window = None
         self.create_window = None
         self.network_available = bool(network_available)
+        self._restore_parent_on_close = bool(restore_parent_on_close)
+        self._destroy_parent_on_close = bool(destroy_parent_on_close)
         self.network_indicator = None
 
         self._build_ui()
@@ -650,9 +659,19 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
             ),
         )
 
-    def shutdown(self) -> None:
+    def shutdown(
+        self,
+        *,
+        restore_parent: bool | None = None,
+        destroy_parent: bool | None = None,
+    ) -> None:
         parent = self.master
         play_click()
+
+        if restore_parent is None:
+            restore_parent = self._restore_parent_on_close
+        if destroy_parent is None:
+            destroy_parent = self._destroy_parent_on_close
 
         if self.network_indicator is not None:
             self.network_indicator.shutdown()
@@ -670,13 +689,30 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
             setattr(self, attr_name, None)
 
         self.destroy()
+
+        if not restore_parent and not destroy_parent:
+            return
+
+        if destroy_parent:
+            try:
+                if parent is not None and parent.winfo_exists():
+                    parent.destroy()
+            except TclError:
+                pass
+            return
+
         try:
             if parent is not None and parent.winfo_exists():
                 present_window(parent)
         except TclError:
             pass
 
-    def request_close(self) -> bool:
+    def request_close(
+        self,
+        *,
+        restore_parent: bool | None = None,
+        destroy_parent: bool | None = None,
+    ) -> bool:
         for attr_name in ("join_window", "create_window"):
             child_window = getattr(self, attr_name)
             if child_window is None:
@@ -700,7 +736,10 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
                 except TclError:
                     setattr(self, attr_name, None)
 
-        self.shutdown()
+        self.shutdown(
+            restore_parent=restore_parent,
+            destroy_parent=destroy_parent,
+        )
         return True
 
 
@@ -4690,7 +4729,12 @@ def run_online_lobby() -> None:
             pass
         return
 
-    window = OnlineLobbyWindow(app, network_available=network_available)
+    window = OnlineLobbyWindow(
+        app,
+        network_available=network_available,
+        restore_parent_on_close=False,
+        destroy_parent_on_close=True,
+    )
 
     close_all = build_graceful_shutdown(
         app,

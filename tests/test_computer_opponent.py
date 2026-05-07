@@ -2,6 +2,8 @@ import importlib
 import os
 import unittest
 
+import pygame
+
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
@@ -17,6 +19,16 @@ class _DummyPlayer:
         self.team_code = team_code
         self.speed = 5
         self.radius = 20
+
+    def get_rect(self, x=None, y=None):
+        px = self.x if x is None else x
+        py = self.y if y is None else y
+        return pygame.Rect(
+            int(px - self.radius),
+            int(py - self.radius),
+            self.radius * 2,
+            self.radius * 2,
+        )
 
 
 class _DummyOrb:
@@ -140,6 +152,78 @@ class BotDifficultyTests(unittest.TestCase):
         self.assertIs(cadet.target_orb, common_orb)
         self.assertIs(standard.target_orb, rare_orb)
         self.assertIs(champion.target_orb, rare_orb)
+
+    def test_obstacle_avoidance_prefers_shorter_detour_when_gap_is_clearer(self):
+        controller = BotController(difficulty="standard", seed=1)
+        player = _DummyPlayer(60, 120)
+        orb = _DummyOrb(140, 80)
+        obstacle = pygame.Rect(90, 40, 60, 60)
+
+        controller.get_movement_intent(
+            player=player,
+            players=[player],
+            orbs=[orb],
+            obstacles=(obstacle,),
+            elapsed_ms=0,
+        )
+        player.x = 65
+        controller.get_movement_intent(
+            player=player,
+            players=[player],
+            orbs=[orb],
+            obstacles=(obstacle,),
+            elapsed_ms=100,
+        )
+        player.x = 70
+
+        intent = controller.get_movement_intent(
+            player=player,
+            players=[player],
+            orbs=[orb],
+            obstacles=(obstacle,),
+            elapsed_ms=200,
+        )
+
+        self.assertTrue(intent.down)
+        self.assertFalse(intent.up)
+        self.assertEqual(controller.avoidance_axis, "vertical")
+        self.assertEqual(controller.avoidance_direction, 1)
+
+    def test_obstacle_avoidance_also_prefers_shorter_horizontal_detour(self):
+        controller = BotController(difficulty="standard", seed=1)
+        player = _DummyPlayer(120, 60)
+        orb = _DummyOrb(160, 140)
+        obstacle = pygame.Rect(100, 90, 60, 60)
+
+        controller.get_movement_intent(
+            player=player,
+            players=[player],
+            orbs=[orb],
+            obstacles=(obstacle,),
+            elapsed_ms=0,
+        )
+        player.y = 65
+        controller.get_movement_intent(
+            player=player,
+            players=[player],
+            orbs=[orb],
+            obstacles=(obstacle,),
+            elapsed_ms=100,
+        )
+        player.y = 70
+
+        intent = controller.get_movement_intent(
+            player=player,
+            players=[player],
+            orbs=[orb],
+            obstacles=(obstacle,),
+            elapsed_ms=200,
+        )
+
+        self.assertTrue(intent.left)
+        self.assertFalse(intent.right)
+        self.assertEqual(controller.avoidance_axis, "horizontal")
+        self.assertEqual(controller.avoidance_direction, -1)
 
 
 if __name__ == "__main__":

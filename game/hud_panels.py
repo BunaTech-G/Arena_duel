@@ -22,13 +22,21 @@ PG_SRCALPHA = getattr(pygame, "SRCALPHA")
 _BG = (10, 14, 22, 220)  # fond panneau principal
 _BG_ROW = (14, 20, 32, 210)  # fond rangée joueur
 _BG_BADGE = (18, 26, 42, 230)  # fond badge score
+_BG_ROW_FOCUS = (22, 30, 44, 228)  # fond rangée joueur local / focus
+_BG_BADGE_FOCUS = (32, 44, 64, 236)  # fond badge score focus
 _BORDER = (52, 68, 98, 255)  # bordure neutre
+_FOCUS_BORDER = (242, 209, 118, 255)  # bordure focus joueur local
+_FOCUS_BADGE_FILL = (242, 209, 118, 232)  # fond pilule TOI
+_FOCUS_BADGE_TEXT = (28, 22, 14, 255)  # texte pilule TOI
 _TEXT = (240, 240, 240, 255)  # texte principal
 _TEXT_MUTED = (165, 182, 208, 255)  # texte secondaire / labels
 _TRACK = (26, 36, 52, 255)  # fond barre de progression
 _TIMER_OK = (100, 210, 255, 255)  # timer normal  (bleu ciel)
 _TIMER_WARN = (255, 185, 55, 255)  # timer < 30 s  (or chaud)
 _TIMER_URG = (255, 65, 65, 255)  # timer < 10 s  (rouge urgence)
+_EVENT_BG = (10, 14, 22, 232)
+_EVENT_TEXT = (247, 241, 226, 255)
+_EVENT_HAZE = (255, 255, 255, 28)
 
 # ── Constantes de mise en page ──────────────────────────────────────────────
 _RADIUS = 14  # arrondi principal des panneaux
@@ -280,6 +288,46 @@ def _load_score_token(size: int) -> pygame.Surface | None:
     )
 
 
+def draw_match_event_banner(
+    surface: pygame.Surface,
+    font,
+    message: str,
+    *,
+    accent_color: tuple[int, int, int],
+    top_y: int = 88,
+) -> None:
+    clean = str(message or "").strip()
+    if not clean:
+        return
+
+    max_width = min(460, max(200, surface.get_width() - 240))
+    fitted = fit_text_to_width(font, clean, max_width - 36)
+    if not fitted:
+        return
+
+    label = font.render(fitted, True, _EVENT_TEXT[:3])
+    banner_width = min(max_width, max(184, label.get_width() + 36))
+    banner_height = max(30, label.get_height() + 16)
+    banner_rect = pygame.Rect(
+        (surface.get_width() - banner_width) // 2,
+        int(top_y),
+        banner_width,
+        banner_height,
+    )
+    _panel(surface, banner_rect, fill=_EVENT_BG, border=accent_color, radius=12)
+    _accent_stripe(surface, banner_rect, accent_color, side="left")
+
+    haze = pygame.Surface(banner_rect.size, PG_SRCALPHA)
+    pygame.draw.rect(
+        haze,
+        _EVENT_HAZE,
+        pygame.Rect(10, 6, max(0, banner_rect.width - 20), banner_height // 2),
+        border_radius=10,
+    )
+    surface.blit(haze, banner_rect.topleft)
+    surface.blit(label, label.get_rect(center=banner_rect.center))
+
+
 # ── Bloc Timer ───────────────────────────────────────────────────────────────
 
 
@@ -424,6 +472,7 @@ def draw_player_summary_row(
     score_format_mode: str = "grouped",
     score_slot_width: int | None = None,
     value_label: str | None = None,
+    is_focus: bool = False,
 ):
     """
     Rangée joueur compacte : portrait encadré | nom tronqué | badge score.
@@ -431,13 +480,23 @@ def draw_player_summary_row(
     """
     row_h = max(portrait_size + 8, row_height or portrait_size + 8)
     row_rect = pygame.Rect(x, y, panel_width, row_h)
+    row_fill = _BG_ROW_FOCUS if is_focus else _BG_ROW
+    row_border = _FOCUS_BORDER if is_focus else accent_color
     _panel(
         surface,
         row_rect,
-        fill=_BG_ROW,
-        border=accent_color,
+        fill=row_fill,
+        border=row_border,
         radius=_RADIUS_ROW,
     )
+    if is_focus and row_rect.width > 10 and row_rect.height > 10:
+        pygame.draw.rect(
+            surface,
+            row_border[:3],
+            row_rect.inflate(-6, -6),
+            width=1,
+            border_radius=max(4, _RADIUS_ROW - 3),
+        )
 
     resolved_player_score = int(
         player_score if player_score is not None else score or 0
@@ -460,8 +519,8 @@ def draw_player_summary_row(
         _panel(
             surface,
             score_badge_rect,
-            fill=_BG_BADGE,
-            border=accent_color,
+            fill=_BG_BADGE_FOCUS if is_focus else _BG_BADGE,
+            border=row_border,
             radius=8,
         )
 
@@ -549,7 +608,7 @@ def draw_player_summary_row(
     pygame.draw.rect(surface, (14, 20, 32), frame, border_radius=8)
     pygame.draw.rect(
         surface,
-        accent_color[:3],
+        row_border[:3],
         frame,
         width=2,
         border_radius=8,
@@ -574,6 +633,53 @@ def draw_player_summary_row(
         content_left = portrait_rect.right + 8
         if score_badge_rect is not None:
             content_right = score_badge_rect.x - 8
+
+    if is_focus:
+        focus_label = "TOI"
+        focus_h = max(12, min(16, row_h - 14))
+        focus_w = max(30, small_font.size(focus_label)[0] + 12)
+        if content_right - content_left >= focus_w + 36:
+            focus_y = row_rect.centery - focus_h // 2
+            if mirror:
+                focus_rect = pygame.Rect(
+                    content_right - focus_w,
+                    focus_y,
+                    focus_w,
+                    focus_h,
+                )
+                content_right = focus_rect.x - 6
+            else:
+                focus_rect = pygame.Rect(
+                    content_left,
+                    focus_y,
+                    focus_w,
+                    focus_h,
+                )
+                content_left = focus_rect.right + 6
+
+            pygame.draw.rect(
+                surface,
+                _FOCUS_BADGE_FILL[:3],
+                focus_rect,
+                border_radius=max(6, focus_h // 2),
+            )
+            pygame.draw.rect(
+                surface,
+                row_border[:3],
+                focus_rect,
+                width=1,
+                border_radius=max(6, focus_h // 2),
+            )
+            focus_surface = _render_fitted_text(
+                small_font,
+                focus_label,
+                _FOCUS_BADGE_TEXT,
+                focus_rect.width - 8,
+                focus_rect.height - 2,
+                max_scale=0.75,
+            )
+            focus_text_rect = focus_surface.get_rect(center=focus_rect.center)
+            surface.blit(focus_surface, focus_text_rect)
 
     name_max_w = max(24, content_right - content_left)
     trimmed = fit_text_to_width(small_font, trim_player_name(name), name_max_w)
@@ -673,6 +779,7 @@ def draw_team_summary_panel(
             mirror=(align == "right"),
             score_format_mode=score_format_mode,
             score_slot_width=rows_score_width,
+            is_focus=bool(row.get("is_focus", False)),
         )
 
 
@@ -770,8 +877,151 @@ def draw_end_team_card(
             score_format_mode=score_format_mode,
             score_slot_width=score_slot_width,
             value_label=row_value_label if show_score else None,
+            is_focus=bool(row.get("is_focus", False)),
         )
         row_y += clamped_row_height + row_gap
+
+
+def compute_end_overlay_layout(
+    surface_size: tuple[int, int],
+    max_team_size: int,
+    *,
+    footer_height: int = 82,
+    min_panel_height: int = 392,
+    min_available_rows_height: int = 160,
+    header_height: int = 126,
+    row_gap: int = 8,
+) -> dict:
+    width, height = surface_size
+    safe_team_size = max(1, int(max_team_size))
+    panel_width = min(920, width - 48)
+    available_rows_height = max(
+        min_available_rows_height,
+        height - header_height - footer_height - 96,
+    )
+    row_height = max(
+        _END_CARD_MIN_ROW_H,
+        min(
+            _END_CARD_MAX_ROW_H,
+            int(
+                (available_rows_height - 76 - row_gap * (safe_team_size - 1))
+                / safe_team_size
+            ),
+        ),
+    )
+    portrait_size = max(30, min(36, row_height - 10))
+    card_height = 62 + safe_team_size * row_height
+    card_height += max(0, safe_team_size - 1) * row_gap
+    card_height += 16
+    panel_height = min(
+        height - 40,
+        max(min_panel_height, header_height + card_height + footer_height + 16),
+    )
+    panel_x = (width - panel_width) // 2
+    panel_y = (height - panel_height) // 2
+    side_padding = max(24, min(36, panel_width // 24))
+    column_gap = max(20, min(32, panel_width // 28))
+    column_width = (panel_width - side_padding * 2 - column_gap) // 2
+    team_a_rect = pygame.Rect(
+        panel_x + side_padding,
+        panel_y + header_height,
+        column_width,
+        card_height,
+    )
+    team_b_rect = pygame.Rect(
+        team_a_rect.right + column_gap,
+        panel_y + header_height,
+        column_width,
+        card_height,
+    )
+    footer_rect = pygame.Rect(
+        panel_x + 24,
+        panel_y + panel_height - footer_height + 12,
+        panel_width - 48,
+        footer_height - 24,
+    )
+    panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+
+    return {
+        "panel_rect": panel_rect,
+        "panel_width": panel_width,
+        "panel_height": panel_height,
+        "header_height": header_height,
+        "footer_height": footer_height,
+        "side_padding": side_padding,
+        "column_gap": column_gap,
+        "column_width": column_width,
+        "row_gap": row_gap,
+        "row_height": row_height,
+        "portrait_size": portrait_size,
+        "card_height": card_height,
+        "team_a_rect": team_a_rect,
+        "team_b_rect": team_b_rect,
+        "footer_rect": footer_rect,
+    }
+
+
+def compute_match_hud_layout(
+    surface_size: tuple[int, int],
+    layout,
+    small_font,
+    *,
+    team_a_rows,
+    team_b_rows,
+    team_a_score: int,
+    team_b_score: int,
+    player_score_format_mode: str = "grouped",
+    top_y: int = 8,
+) -> dict:
+    sw, _ = surface_size
+    margin = max(12, min(36, getattr(layout, "margin", 60) // 2))
+    arena_top = int(getattr(layout, "top", 220))
+    configured_hud_h = int(getattr(layout, "hud_height", arena_top))
+    available_h = max(140, min(configured_hud_h, arena_top - top_y))
+    max_rows = max(1, len(team_a_rows), len(team_b_rows))
+    hud_h = max(_SCORE_H_MIN, min(_SCORE_H_MAX, int(available_h * 0.34)))
+    roster_gap = 8
+    available_roster_h = max(40, available_h - hud_h - roster_gap)
+    row_h = max(
+        _ROW_H_MIN,
+        min(
+            _ROW_H_MAX,
+            int((available_roster_h - (max_rows * _PANEL_SECTION_GAP) - 6) / max_rows),
+        ),
+    )
+    portrait_size = max(22, min(30, row_h - 8))
+    timer_w = min(214, max(180, sw // 7))
+    available_score_w = sw - margin * 2 - timer_w - 18
+    panel_w = min(320, max(236, available_score_w // 2))
+    timer_x = (sw - timer_w) // 2
+    team_a_x = margin
+    team_b_x = sw - margin - panel_w
+    timer_rect = pygame.Rect(timer_x, top_y, timer_w, hud_h)
+    team_a_score_rect = pygame.Rect(team_a_x, top_y, panel_w, hud_h)
+    team_b_score_rect = pygame.Rect(team_b_x, top_y, panel_w, hud_h)
+
+    return {
+        "margin": margin,
+        "available_height": available_h,
+        "hud_height": hud_h,
+        "row_height": row_h,
+        "roster_gap": roster_gap,
+        "portrait_size": portrait_size,
+        "panel_width": panel_w,
+        "timer_rect": timer_rect,
+        "team_a_score_rect": team_a_score_rect,
+        "team_b_score_rect": team_b_score_rect,
+        "roster_y": top_y + hud_h + roster_gap,
+        "shared_row_score_width": get_shared_player_score_slot_width(
+            small_font,
+            panel_w,
+            team_a_rows,
+            team_b_rows,
+            team_a_score,
+            team_b_score,
+            score_format_mode=player_score_format_mode,
+        ),
+    }
 
 
 # ── Point d'entrée principal ──────────────────────────────────────────────
@@ -800,34 +1050,16 @@ def draw_match_hud(
     Le timer reste centré, les scores s'ancrent aux marges et les rosters
     tiennent sous les scores sans repousser la zone de jeu inutilement.
     """
-    sw, _ = surface.get_size()
-    top_y = 8
-    margin = max(12, min(36, getattr(layout, "margin", 60) // 2))
-    arena_top = int(getattr(layout, "top", 220))
-    configured_hud_h = int(getattr(layout, "hud_height", arena_top))
-    available_h = max(140, min(configured_hud_h, arena_top - top_y))
-    max_rows = max(1, len(team_a_rows), len(team_b_rows))
-    hud_h = max(_SCORE_H_MIN, min(_SCORE_H_MAX, int(available_h * 0.34)))
-    roster_gap = 8
-    available_roster_h = max(40, available_h - hud_h - roster_gap)
-    row_h = max(
-        _ROW_H_MIN,
-        min(
-            _ROW_H_MAX,
-            int((available_roster_h - (max_rows * _PANEL_SECTION_GAP) - 6) / max_rows),
-        ),
+    layout_metrics = compute_match_hud_layout(
+        surface.get_size(),
+        layout,
+        small_font,
+        team_a_rows=team_a_rows,
+        team_b_rows=team_b_rows,
+        team_a_score=team_a_score,
+        team_b_score=team_b_score,
+        player_score_format_mode=player_score_format_mode,
     )
-    portrait_size = max(22, min(30, row_h - 8))
-
-    # Dimensions des blocs
-    timer_w = min(214, max(180, sw // 7))
-    avail = sw - margin * 2 - timer_w - 18
-    panel_w = min(320, max(236, avail // 2))
-
-    # Positions horizontales — symétrie autour du centre
-    timer_x = (sw - timer_w) // 2
-    a_x = margin
-    b_x = sw - margin - panel_w
 
     # Couleurs d'accent
     if team_a_rows:
@@ -839,22 +1071,13 @@ def draw_match_hud(
         b_accent = team_b_rows[0]["accent_color"]
     else:
         b_accent = (100, 186, 255)
-    shared_row_score_width = get_shared_player_score_slot_width(
-        small_font,
-        panel_w,
-        team_a_rows,
-        team_b_rows,
-        team_a_score,
-        team_b_score,
-        score_format_mode=player_score_format_mode,
-    )
 
     # ── Bande supérieure ─────────────────────────────────────────────────────
     _draw_timer_block(
         surface,
         big_font,
         small_font,
-        pygame.Rect(timer_x, top_y, timer_w, hud_h),
+        layout_metrics["timer_rect"],
         remaining=remaining_time,
         total=match_duration,
     )
@@ -862,7 +1085,7 @@ def draw_match_hud(
         surface,
         big_font,
         small_font,
-        pygame.Rect(a_x, top_y, panel_w, hud_h),
+        layout_metrics["team_a_score_rect"],
         title=team_a_title,
         score=team_a_score,
         accent_color=a_accent,
@@ -874,7 +1097,7 @@ def draw_match_hud(
         surface,
         big_font,
         small_font,
-        pygame.Rect(b_x, top_y, panel_w, hud_h),
+        layout_metrics["team_b_score_rect"],
         title=team_b_title,
         score=team_b_score,
         accent_color=b_accent,
@@ -884,38 +1107,37 @@ def draw_match_hud(
     )
 
     # ── Rosters sous les blocs score ─────────────────────────────────────────
-    roster_y = top_y + hud_h + roster_gap
     draw_team_summary_panel(
         surface,
         small_font,
-        a_x,
-        roster_y,
+        layout_metrics["team_a_score_rect"].x,
+        layout_metrics["roster_y"],
         team_a_title,
         team_a_rows,
         align="left",
-        panel_width=panel_w,
-        row_height=row_h,
+        panel_width=layout_metrics["panel_width"],
+        row_height=layout_metrics["row_height"],
         header_height=0,
-        portrait_size=portrait_size,
+        portrait_size=layout_metrics["portrait_size"],
         team_score=team_a_score,
         show_header=False,
         score_format_mode=player_score_format_mode,
-        score_slot_width=shared_row_score_width,
+        score_slot_width=layout_metrics["shared_row_score_width"],
     )
     draw_team_summary_panel(
         surface,
         small_font,
-        b_x,
-        roster_y,
+        layout_metrics["team_b_score_rect"].x,
+        layout_metrics["roster_y"],
         team_b_title,
         team_b_rows,
         align="right",
-        panel_width=panel_w,
-        row_height=row_h,
+        panel_width=layout_metrics["panel_width"],
+        row_height=layout_metrics["row_height"],
         header_height=0,
-        portrait_size=portrait_size,
+        portrait_size=layout_metrics["portrait_size"],
         team_score=team_b_score,
         show_header=False,
         score_format_mode=player_score_format_mode,
-        score_slot_width=shared_row_score_width,
+        score_slot_width=layout_metrics["shared_row_score_width"],
     )

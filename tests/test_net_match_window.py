@@ -9,6 +9,8 @@ from unittest import mock
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 net_match_window = importlib.import_module("game.net_match_window")
+settings_module = importlib.import_module("game.settings")
+ORB_RARE_SCORE_VALUE = settings_module.ORB_RARE_SCORE_VALUE
 
 
 class _NoKeys(dict):
@@ -124,6 +126,9 @@ class RunNetworkMatchTests(unittest.TestCase):
                         "movement_flags": dict(args[8]),
                         "facing_by_slot": dict(args[9]),
                         "orb_effects": [dict(effect) for effect in args[10]],
+                        "event_banner": (
+                            dict(args[11]) if len(args) > 11 and args[11] else None
+                        ),
                     }
                 )
 
@@ -344,6 +349,7 @@ class RunNetworkMatchTests(unittest.TestCase):
                         "value": 2,
                         "x": 10.0,
                         "y": 12.0,
+                        "variant": "common",
                         "combo_count": 1,
                         "combo_bonus": 0,
                     },
@@ -381,6 +387,7 @@ class RunNetworkMatchTests(unittest.TestCase):
                         "value": 3,
                         "x": 18.0,
                         "y": 12.0,
+                        "variant": "rare",
                         "combo_count": 2,
                         "combo_bonus": 1,
                     },
@@ -415,8 +422,13 @@ class RunNetworkMatchTests(unittest.TestCase):
             client.sent_inputs,
             [(False, False, False, False)] * 2,
         )
-        handles["play_pickup"].assert_called_once_with()
-        handles["play_trap"].assert_called_once_with()
+        handles["play_pickup"].assert_has_calls(
+            [
+                mock.call(combo_bonus=0, variant="common"),
+                mock.call(combo_bonus=1, variant="rare"),
+            ]
+        )
+        handles["play_trap"].assert_called_once_with(trap_kind=None)
         handles["play_bonus_spawn"].assert_called_once_with()
         self.assertEqual(handles["draw_state"].call_count, 2)
 
@@ -433,6 +445,80 @@ class RunNetworkMatchTests(unittest.TestCase):
         self.assertEqual(len(first_snapshot["orb_effects"]), 1)
         self.assertEqual(len(second_snapshot["orb_effects"]), 2)
         self.assertEqual(second_snapshot["orb_effects"][-1]["combo_bonus"], 1)
+        self.assertEqual(
+            first_snapshot["event_banner"]["message"],
+            "Braise · HostPlayer capte orbe +2",
+        )
+        self.assertEqual(
+            second_snapshot["event_banner"]["message"],
+            "Braise · HostPlayer capte orbe rare +3 · combo x2 (+1)",
+        )
+
+    def test_run_network_match_keeps_common_variant_for_threshold_combo_pickup(self):
+        state = {
+            "type": "STATE",
+            "team_a_score": ORB_RARE_SCORE_VALUE,
+            "team_b_score": 0,
+            "remaining_time": 41,
+            "players": [
+                {
+                    "slot": 1,
+                    "name": "HostPlayer",
+                    "team": "A",
+                    "score": ORB_RARE_SCORE_VALUE,
+                    "x": 24.0,
+                    "y": 20.0,
+                    "direction": "right",
+                    "is_moving": True,
+                    "last_pickup_serial": 1,
+                    "last_trap_serial": 0,
+                    "last_pickup": {
+                        "value": ORB_RARE_SCORE_VALUE,
+                        "x": 24.0,
+                        "y": 20.0,
+                        "variant": "common",
+                        "combo_count": 3,
+                        "combo_bonus": 2,
+                    },
+                }
+            ],
+            "orbs": [
+                {
+                    "orb_id": 7,
+                    "x": 100.0,
+                    "y": 110.0,
+                    "value": 1,
+                    "variant": "common",
+                    "spawn_serial": 1,
+                }
+            ],
+        }
+        end_message = {
+            "type": "END",
+            "winner_team": "A",
+            "winner_text": "Victoire équipe A",
+            "team_a_score": ORB_RARE_SCORE_VALUE,
+            "team_b_score": 0,
+            "players": [],
+        }
+
+        result, client, handles = self._run_match([[state], [end_message]])
+
+        self.assertTrue(result["completed"])
+        self.assertEqual(
+            client.sent_inputs,
+            [(False, False, False, False)] * 2,
+        )
+        handles["play_pickup"].assert_called_once_with(
+            combo_bonus=2,
+            variant="common",
+        )
+        snapshot = handles["draw_state_snapshots"][0]
+        self.assertEqual(snapshot["orb_effects"][0]["variant"], "common")
+        self.assertEqual(
+            snapshot["event_banner"]["message"],
+            "Braise · HostPlayer capte orbe +3 · combo x3 (+2)",
+        )
 
     def test_draw_state_routes_hud_orbs_and_players(self):
         screen = _FakeSurface((640, 360))
@@ -442,6 +528,7 @@ class RunNetworkMatchTests(unittest.TestCase):
                 "x": 50.0,
                 "y": 60.0,
                 "value": 2,
+                "variant": "rare",
                 "started_at_ms": 1000,
                 "combo_count": 2,
                 "combo_bonus": 1,
@@ -522,6 +609,10 @@ class RunNetworkMatchTests(unittest.TestCase):
             ) as draw_orb_collection_effect,
             mock.patch.object(
                 net_match_window,
+                "draw_match_event_banner",
+            ) as draw_match_event_banner,
+            mock.patch.object(
+                net_match_window,
                 "get_team_color",
                 side_effect=[
                     "ember-color",
@@ -543,6 +634,11 @@ class RunNetworkMatchTests(unittest.TestCase):
                 movement_flags={1: True, 2: False},
                 facing_by_slot={1: -1, 2: 1},
                 orb_effects=orb_effects,
+                event_banner={
+                    "message": "Braise · HostPlayer capte orbe +3",
+                    "accent_color": (242, 209, 118),
+                    "until_ms": 2000,
+                },
             )
 
         draw_arena.assert_called_once_with(
@@ -560,6 +656,8 @@ class RunNetworkMatchTests(unittest.TestCase):
         self.assertEqual(hud_kwargs["remaining_time"], 27)
         self.assertEqual(hud_kwargs["team_a_rows"][0]["name"], "HostPlayer")
         self.assertEqual(hud_kwargs["team_b_rows"][0]["name"], "GuestPlayer")
+        self.assertTrue(hud_kwargs["team_a_rows"][0]["is_focus"])
+        self.assertFalse(hud_kwargs["team_b_rows"][0]["is_focus"])
         self.assertEqual(
             hud_kwargs["team_b_rows"][0]["sprite_id"],
             "skeleton_fighter_aether",
@@ -582,6 +680,16 @@ class RunNetworkMatchTests(unittest.TestCase):
         self.assertEqual(second_player_kwargs["direction_name"], "right")
         self.assertFalse(second_player_kwargs["moving"])
         draw_orb_collection_effect.assert_called_once()
+        self.assertEqual(
+            draw_orb_collection_effect.call_args.kwargs["variant"],
+            "rare",
+        )
+        draw_match_event_banner.assert_called_once_with(
+            screen,
+            "small-font",
+            "Braise · HostPlayer capte orbe +3",
+            accent_color=(242, 209, 118),
+        )
         self.assertEqual(orb_effects, [])
 
     def test_draw_end_overlay_renders_history_and_team_cards(self):
@@ -641,12 +749,19 @@ class RunNetworkMatchTests(unittest.TestCase):
                 big_font,
                 medium_font,
                 small_font,
+                my_slot=1,
             )
 
         self.assertIn("Victoire équipe A", big_font.render_calls)
         self.assertIn(
             "Chronique du hall scellée · joute #12",
             small_font.render_calls,
+        )
+        self.assertTrue(
+            draw_end_team_card.call_args_list[0].kwargs["rows"][0]["is_focus"]
+        )
+        self.assertFalse(
+            draw_end_team_card.call_args_list[1].kwargs["rows"][0]["is_focus"]
         )
         self.assertIn(
             "Entrée, Espace ou Échap pour revenir.",

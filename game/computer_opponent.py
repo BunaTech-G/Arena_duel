@@ -434,13 +434,40 @@ class BotController:
             dx,
         )
 
+    def _pick_clearance_biased_direction(
+        self,
+        negative_clearance: float,
+        positive_clearance: float,
+        *,
+        preferred_direction: int,
+        bias_window: float,
+    ) -> int:
+        shorter_direction = -1 if negative_clearance <= positive_clearance else 1
+        preferred_clearance = (
+            negative_clearance if preferred_direction < 0 else positive_clearance
+        )
+        alternate_clearance = (
+            positive_clearance if preferred_direction < 0 else negative_clearance
+        )
+        if preferred_clearance <= alternate_clearance + bias_window:
+            return preferred_direction
+        return shorter_direction
+
     def _pick_vertical_avoidance(self, player, obstacle, dy: float) -> int:
         clearance_padding = player.radius + 12
         top_clearance = abs(player.y - (obstacle.top - clearance_padding))
         bottom_clearance = abs((obstacle.bottom + clearance_padding) - player.y)
 
         if abs(dy) > self.settings["axis_threshold"]:
-            return -1 if dy < 0 else 1
+            return self._pick_clearance_biased_direction(
+                top_clearance,
+                bottom_clearance,
+                preferred_direction=-1 if dy < 0 else 1,
+                bias_window=max(
+                    float(self.settings["axis_threshold"]) * 2.0,
+                    float(player.speed) * 2.0,
+                ),
+            )
 
         return -1 if top_clearance <= bottom_clearance else 1
 
@@ -450,7 +477,15 @@ class BotController:
         right_clearance = abs((obstacle.right + clearance_padding) - player.x)
 
         if abs(dx) > self.settings["axis_threshold"]:
-            return -1 if dx < 0 else 1
+            return self._pick_clearance_biased_direction(
+                left_clearance,
+                right_clearance,
+                preferred_direction=-1 if dx < 0 else 1,
+                bias_window=max(
+                    float(self.settings["axis_threshold"]) * 2.0,
+                    float(player.speed) * 2.0,
+                ),
+            )
 
         return -1 if left_clearance <= right_clearance else 1
 

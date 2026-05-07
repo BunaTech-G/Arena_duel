@@ -22,6 +22,8 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 launcher_module = importlib.import_module("ui.launcher")
 online_client_module = importlib.import_module("ui.online_client")
 online_lobby_module = importlib.import_module("ui.online_lobby")
+player_select_module = importlib.import_module("ui.player_select")
+network_lobby_module = importlib.import_module("ui.network_lobby")
 
 
 def _make_network_status(
@@ -1027,6 +1029,14 @@ class LauncherOnlineFlowTests(unittest.TestCase):
                 _cancel_pending_after_callbacks(online_window)
                 online_window.shutdown()
 
+            for attr_name in ("host_lobby_window", "join_lobby_window"):
+                lobby_window = getattr(self.app, attr_name, None)
+                if lobby_window is None or not lobby_window.winfo_exists():
+                    continue
+
+                _cancel_pending_after_callbacks(lobby_window)
+                lobby_window.shutdown()
+
             if self.app.winfo_exists():
                 _cancel_pending_after_callbacks(self.app)
                 self.app.destroy()
@@ -1728,6 +1738,261 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             if not _window_is_destroyed(standalone_app):
                 _cancel_pending_after_callbacks(standalone_app)
                 standalone_app.destroy()
+
+    def test_standalone_player_select_return_does_not_show_hidden_root(self):
+        standalone_app = ctk.CTk()
+        standalone_app.withdraw()
+        player_select_window = None
+
+        try:
+            with (
+                mock.patch.object(player_select_module, "play_click"),
+                mock.patch.object(player_select_module, "play_transition"),
+                mock.patch.object(player_select_module, "play_error"),
+                mock.patch.object(player_select_module, "init_audio"),
+                mock.patch.object(player_select_module, "start_menu_music"),
+                mock.patch.object(player_select_module, "stop_music"),
+                mock.patch.object(player_select_module, "apply_window_icon"),
+                mock.patch.object(player_select_module, "enable_large_window"),
+                mock.patch.object(
+                    player_select_module,
+                    "get_player_registry_snapshot",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    player_select_module,
+                    "present_window",
+                ) as present_parent,
+                mock.patch.object(
+                    player_select_module.PlayerSelectView,
+                    "_hydrate_visual_assets",
+                    new=_noop_tk_callback,
+                ),
+                mock.patch.object(
+                    player_select_module.PlayerSelectView,
+                    "_handle_first_paint",
+                    new=_noop_tk_callback,
+                ),
+                mock.patch.object(
+                    player_select_module.PlayerSelectView,
+                    "_refresh_responsive_layout",
+                    new=_noop_tk_callback,
+                ),
+                mock.patch.object(
+                    player_select_module.PlayerSelectView,
+                    "refresh_players",
+                    new=_noop_tk_callback,
+                ),
+            ):
+                player_select_window = player_select_module.PlayerSelectView(
+                    standalone_app,
+                    restore_parent_on_close=False,
+                    destroy_parent_on_close=True,
+                )
+                standalone_app.update_idletasks()
+                standalone_app.update()
+
+                present_parent.reset_mock()
+                _cancel_pending_after_callbacks(player_select_window)
+                player_select_window.close_button.invoke()
+
+                self.assertTrue(_window_is_destroyed(player_select_window))
+                self.assertTrue(_window_is_destroyed(standalone_app))
+                present_parent.assert_not_called()
+        finally:
+            if player_select_window is not None and not _window_is_destroyed(
+                player_select_window
+            ):
+                _cancel_pending_after_callbacks(player_select_window)
+                player_select_window.destroy()
+            if not _window_is_destroyed(standalone_app):
+                _cancel_pending_after_callbacks(standalone_app)
+                standalone_app.destroy()
+
+    def test_run_online_lobby_uses_destroy_parent_on_close_for_hidden_root(self):
+        fake_app = mock.Mock()
+        fake_window = mock.Mock()
+        close_all = mock.Mock()
+        restore_signal_handlers = mock.Mock()
+
+        with (
+            mock.patch.object(online_lobby_module.ctk, "CTk", return_value=fake_app),
+            mock.patch.object(online_lobby_module, "apply_theme_settings"),
+            mock.patch.object(
+                online_lobby_module,
+                "probe_online_service",
+                return_value=True,
+            ),
+            mock.patch.object(
+                online_lobby_module,
+                "OnlineLobbyWindow",
+                return_value=fake_window,
+            ) as build_window,
+            mock.patch.object(
+                online_lobby_module,
+                "build_graceful_shutdown",
+                return_value=close_all,
+            ),
+            mock.patch.object(
+                online_lobby_module,
+                "install_signal_shutdown",
+                return_value=restore_signal_handlers,
+            ),
+        ):
+            online_lobby_module.run_online_lobby()
+
+        fake_app.withdraw.assert_called_once_with()
+        build_window.assert_called_once_with(
+            fake_app,
+            network_available=True,
+            restore_parent_on_close=False,
+            destroy_parent_on_close=True,
+        )
+        fake_window.protocol.assert_called_once_with("WM_DELETE_WINDOW", close_all)
+        fake_app.mainloop.assert_called_once_with()
+        restore_signal_handlers.assert_called_once_with()
+
+    def test_standalone_lan_lobby_return_does_not_show_hidden_root(self):
+        standalone_app = ctk.CTk()
+        standalone_app.withdraw()
+        lobby_window = None
+
+        try:
+            with (
+                mock.patch.object(network_lobby_module, "apply_window_icon"),
+                mock.patch.object(network_lobby_module, "enable_large_window"),
+                mock.patch.object(network_lobby_module, "start_menu_music"),
+                mock.patch.object(
+                    network_lobby_module, "present_window"
+                ) as present_parent,
+                mock.patch.object(
+                    network_lobby_module,
+                    "load_lan_runtime_config",
+                    return_value=mock.Mock(
+                        port=5000, client_state_path="lan-state.json"
+                    ),
+                ),
+                mock.patch.object(
+                    network_lobby_module,
+                    "get_lan_address_info",
+                    return_value=mock.Mock(primary_ip="192.168.1.20"),
+                ),
+            ):
+                lobby_window = network_lobby_module.NetworkLobbyView(
+                    standalone_app,
+                    restore_parent_on_close=False,
+                    destroy_parent_on_close=True,
+                )
+                standalone_app.update_idletasks()
+                standalone_app.update()
+
+                present_parent.reset_mock()
+                _cancel_pending_after_callbacks(lobby_window)
+                lobby_window.shutdown()
+
+                self.assertTrue(_window_is_destroyed(lobby_window))
+                self.assertTrue(_window_is_destroyed(standalone_app))
+                present_parent.assert_not_called()
+        finally:
+            if lobby_window is not None and not _window_is_destroyed(lobby_window):
+                _cancel_pending_after_callbacks(lobby_window)
+                lobby_window.destroy()
+            if not _window_is_destroyed(standalone_app):
+                _cancel_pending_after_callbacks(standalone_app)
+                standalone_app.destroy()
+
+    def test_player_select_hides_launcher_and_restores_it_on_close(self):
+        with (
+            mock.patch.object(player_select_module, "play_click"),
+            mock.patch.object(player_select_module, "play_transition"),
+            mock.patch.object(player_select_module, "play_error"),
+            mock.patch.object(player_select_module, "init_audio"),
+            mock.patch.object(player_select_module, "start_menu_music"),
+            mock.patch.object(player_select_module, "stop_music"),
+            mock.patch.object(player_select_module, "apply_window_icon"),
+            mock.patch.object(player_select_module, "enable_large_window"),
+            mock.patch.object(
+                player_select_module,
+                "get_player_registry_snapshot",
+                return_value=[],
+            ),
+            mock.patch.object(
+                player_select_module,
+                "present_window",
+            ) as present_parent,
+            mock.patch.object(
+                player_select_module.PlayerSelectView,
+                "_hydrate_visual_assets",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                player_select_module.PlayerSelectView,
+                "_handle_first_paint",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                player_select_module.PlayerSelectView,
+                "_refresh_responsive_layout",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                player_select_module.PlayerSelectView,
+                "refresh_players",
+                new=_noop_tk_callback,
+            ),
+        ):
+            present_parent.side_effect = _deiconify_window_without_ctk_callbacks
+
+            self.app._handle_new_game()
+            self._update_ui()
+
+            player_select_window = self.app.player_select_window
+            self.assertIsNotNone(player_select_window)
+            self.assertEqual(self.app.state(), "withdrawn")
+
+            present_parent.reset_mock()
+            _cancel_pending_after_callbacks(player_select_window)
+            player_select_window.close_button.invoke()
+            self._update_ui()
+
+            present_parent.assert_called_once_with(self.app)
+            self.assertFalse(player_select_window.winfo_exists())
+            self.assertNotEqual(self.app.state(), "withdrawn")
+
+    def test_lan_lobby_hides_launcher_and_restores_it_on_close(self):
+        with (
+            mock.patch.object(network_lobby_module, "apply_window_icon"),
+            mock.patch.object(network_lobby_module, "enable_large_window"),
+            mock.patch.object(network_lobby_module, "start_menu_music"),
+            mock.patch.object(network_lobby_module, "present_window") as present_parent,
+            mock.patch.object(
+                network_lobby_module,
+                "load_lan_runtime_config",
+                return_value=mock.Mock(port=5000, client_state_path="lan-state.json"),
+            ),
+            mock.patch.object(
+                network_lobby_module,
+                "get_lan_address_info",
+                return_value=mock.Mock(primary_ip="192.168.1.20"),
+            ),
+        ):
+            present_parent.side_effect = _deiconify_window_without_ctk_callbacks
+
+            self.app._handle_join_lan()
+            self._update_ui()
+
+            lobby_window = self.app.join_lobby_window
+            self.assertIsNotNone(lobby_window)
+            self.assertEqual(self.app.state(), "withdrawn")
+
+            present_parent.reset_mock()
+            _cancel_pending_after_callbacks(lobby_window)
+            lobby_window.shutdown()
+            self._update_ui()
+
+            present_parent.assert_called_once_with(self.app)
+            self.assertFalse(lobby_window.winfo_exists())
+            self.assertNotEqual(self.app.state(), "withdrawn")
 
     def test_online_connect_starts_poll_loop(self):
         self.app.open_online_lobby()

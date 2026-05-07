@@ -37,7 +37,11 @@ def run_main_lan():
     app = ctk.CTk()
     app.withdraw()
 
-    window = NetworkLobbyView(app)
+    window = NetworkLobbyView(
+        app,
+        restore_parent_on_close=False,
+        destroy_parent_on_close=True,
+    )
 
     close_all = build_graceful_shutdown(
         app,

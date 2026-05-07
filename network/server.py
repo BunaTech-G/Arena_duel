@@ -369,6 +369,7 @@ class GameState:
                     "last_pickup_value": 0,
                     "last_pickup_x": 0.0,
                     "last_pickup_y": 0.0,
+                    "last_pickup_variant": "",
                     "last_pickup_combo_count": 0,
                     "last_pickup_combo_bonus": 0,
                     "disconnected": False,
@@ -545,6 +546,7 @@ class GameState:
                     player["last_pickup_value"] = awarded_value
                     player["last_pickup_x"] = float(orb["x"])
                     player["last_pickup_y"] = float(orb["y"])
+                    player["last_pickup_variant"] = str(orb.get("variant") or "")
                     player["last_pickup_combo_count"] = int(
                         player.get("combo_count", 0)
                     )
@@ -589,6 +591,7 @@ class GameState:
                         "x": round(float(p.get("last_pickup_x", p["x"])), 1),
                         "y": round(float(p.get("last_pickup_y", p["y"])), 1),
                         "value": int(p.get("last_pickup_value", 0)),
+                        "variant": str(p.get("last_pickup_variant") or ""),
                         "combo_count": int(p.get("last_pickup_combo_count", 0)),
                         "combo_bonus": int(p.get("last_pickup_combo_bonus", 0)),
                     },
