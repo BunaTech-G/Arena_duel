@@ -10,3 +10,4 @@
   "remind_later_hours": 24,
   "windows_installer_sha256": "d38c60048ef281da1efecb86ee3278016687f6b9464a0bb3ade2357228e44e47"
 }
+scp "C:\Dev\arena_duel_clean\version.json" root@165.232.108.225:/root/version.json
