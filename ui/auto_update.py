@@ -19,7 +19,11 @@ from tkinter import TclError
 
 import customtkinter as ctk
 
-from runtime_utils import runtime_user_file_path
+from runtime_utils import (
+    load_runtime_config,
+    runtime_file_path,
+    runtime_user_file_path,
+)
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
@@ -28,11 +32,13 @@ from ui.theme import (
     create_button,
     present_window,
     style_frame,
+    style_scrollable_frame,
     style_window,
 )
 
 
-GAME_VERSION = "1.0.0"
+DEFAULT_GAME_VERSION = "1.0.0"
+LOCAL_VERSION_METADATA_FILENAME = "version.json"
 DEFAULT_UPDATE_MANIFEST_URL = (
     "https://raw.githubusercontent.com/BunaTech-G/Arena_duel/main/version.json"
 )
@@ -52,11 +58,13 @@ AUTO_UPDATE_PROMPT_DETAIL = (
     "continuer vers le menu."
 )
 AUTO_UPDATE_PROMPT_WIDTH = 720
-AUTO_UPDATE_PROMPT_HEIGHT = 420
+AUTO_UPDATE_PROMPT_HEIGHT = 500
 AUTO_UPDATE_PROMPT_CLOSE_DELAY_MS = 140
 AUTO_UPDATE_DOWNLOAD_POLL_MS = 80
 AUTO_UPDATE_MANIFEST_URL_ENV = "ARENA_DUEL_UPDATE_MANIFEST_URL"
 AUTO_UPDATE_PAGE_URL_ENV = "ARENA_DUEL_UPDATE_PAGE_URL"
+AUTO_UPDATE_MANIFEST_URL_CONFIG_KEY = "update_manifest_url"
+AUTO_UPDATE_PAGE_URL_CONFIG_KEY = "update_page_url"
 AUTO_UPDATE_DOWNLOAD_DIRNAME = "updates"
 AUTO_UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 30.0
 AUTO_UPDATE_DOWNLOAD_CHUNK_SIZE = 64 * 1024
@@ -128,6 +136,7 @@ class UpdateManifest:
     update_url: str
     remind_later_seconds: int | None = None
     installer_sha256: str | None = None
+    release_notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -136,6 +145,7 @@ class AvailableUpdate:
     update_url: str
     remind_later_seconds: int | None = None
     installer_sha256: str | None = None
+    release_notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +158,34 @@ class AutoUpdateState:
 class DownloadProgressSnapshot:
     bytes_downloaded: int = 0
     total_bytes: int | None = None
+
+
+def _load_local_version_manifest(version_path: str | None = None) -> dict:
+    manifest_path = Path(
+        version_path or runtime_file_path(LOCAL_VERSION_METADATA_FILENAME)
+    )
+
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as file_handle:
+            payload = json.load(file_handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    return payload
+
+
+def current_game_version(version_path: str | None = None) -> str:
+    manifest_data = _load_local_version_manifest(version_path)
+    version_text = str(manifest_data.get("version") or "").strip()
+    return version_text or DEFAULT_GAME_VERSION
+
+
+def _update_user_agent(current_version: str | None = None) -> str:
+    normalized_version = str(current_version or current_game_version()).strip()
+    return f"ArenaDuel/{normalized_version or DEFAULT_GAME_VERSION}"
 
 
 def _parse_version_parts(version_text: str) -> tuple[int, ...]:
@@ -204,15 +242,21 @@ def _normalize_optional_url(raw_value: object) -> str:
 
 
 def configured_update_manifest_url() -> str:
+    runtime_config = load_runtime_config(include_session_overrides=False)
     return (
         _normalize_optional_url(os.environ.get(AUTO_UPDATE_MANIFEST_URL_ENV))
+        or _normalize_optional_url(
+            runtime_config.get(AUTO_UPDATE_MANIFEST_URL_CONFIG_KEY)
+        )
         or DEFAULT_UPDATE_MANIFEST_URL
     )
 
 
 def configured_update_page_url() -> str:
+    runtime_config = load_runtime_config(include_session_overrides=False)
     return (
         _normalize_optional_url(os.environ.get(AUTO_UPDATE_PAGE_URL_ENV))
+        or _normalize_optional_url(runtime_config.get(AUTO_UPDATE_PAGE_URL_CONFIG_KEY))
         or DEFAULT_UPDATE_PAGE_URL
     )
 
@@ -297,6 +341,45 @@ def _resolve_manifest_installer_sha256(manifest_data: dict) -> str | None:
             return candidate_hash
 
     return None
+
+
+def _normalize_release_notes(raw_value: object) -> tuple[str, ...]:
+    if isinstance(raw_value, str):
+        candidates = raw_value.splitlines()
+    elif isinstance(raw_value, (list, tuple, set)):
+        candidates = list(raw_value)
+    else:
+        return ()
+
+    normalized_notes: list[str] = []
+
+    def _service_current_version_text(service) -> str:
+        current_version = getattr(service, "current_version", None)
+        if isinstance(current_version, str) and current_version.strip():
+            return current_version.strip()
+        return current_game_version()
+
+    for candidate in candidates:
+        normalized_note = re.sub(r"^[-*\s]+", "", str(candidate or "").strip())
+        if normalized_note:
+            normalized_notes.append(normalized_note)
+
+    return tuple(normalized_notes[:12])
+
+
+def _resolve_manifest_release_notes(manifest_data: dict) -> tuple[str, ...]:
+    for candidate_key in (
+        "release_notes",
+        "release_notes_lines",
+        "notes",
+        "changes",
+        "changelog",
+    ):
+        notes = _normalize_release_notes(manifest_data.get(candidate_key))
+        if notes:
+            return notes
+
+    return ()
 
 
 def _local_installer_path(update_url: str) -> Path | None:
@@ -466,7 +549,7 @@ def _download_remote_installer(
     temp_path = target_path.with_suffix(f"{target_path.suffix}.download")
     request = urllib.request.Request(
         normalized_url,
-        headers={"User-Agent": f"ArenaDuel/{GAME_VERSION}"},
+        headers={"User-Agent": _update_user_agent()},
     )
 
     try:
@@ -591,7 +674,7 @@ def fetch_remote_update_manifest(
 
     request = urllib.request.Request(
         normalized_manifest_url,
-        headers={"User-Agent": f"ArenaDuel/{GAME_VERSION}"},
+        headers={"User-Agent": _update_user_agent()},
     )
 
     try:
@@ -625,22 +708,25 @@ def fetch_remote_update_manifest(
 
     remind_later_seconds = _parse_manifest_remind_later_seconds(manifest_data)
     installer_sha256 = _resolve_manifest_installer_sha256(manifest_data)
+    release_notes = _resolve_manifest_release_notes(manifest_data)
 
     return UpdateManifest(
         version=version_text,
         update_url=update_url,
         remind_later_seconds=remind_later_seconds,
         installer_sha256=installer_sha256,
+        release_notes=release_notes,
     )
 
 
 def check_for_available_update(
     *,
-    current_version: str = GAME_VERSION,
+    current_version: str | None = None,
     manifest_url: str | None = None,
     default_update_url: str | None = None,
     timeout_seconds: float = AUTO_UPDATE_CHECK_TIMEOUT_SECONDS,
 ) -> AvailableUpdate | None:
+    resolved_current_version = str(current_version or current_game_version()).strip()
     manifest = fetch_remote_update_manifest(
         manifest_url,
         default_update_url=default_update_url,
@@ -649,7 +735,7 @@ def check_for_available_update(
     if manifest is None:
         return None
 
-    if not is_newer_version(manifest.version, current_version):
+    if not is_newer_version(manifest.version, resolved_current_version):
         return None
 
     return AvailableUpdate(
@@ -657,7 +743,26 @@ def check_for_available_update(
         update_url=manifest.update_url,
         remind_later_seconds=manifest.remind_later_seconds,
         installer_sha256=manifest.installer_sha256,
+        release_notes=manifest.release_notes,
     )
+
+
+def _notice_detail_text(update: AvailableUpdate) -> str:
+    if not update.release_notes:
+        return AUTO_UPDATE_NOTICE_DETAIL
+
+    first_note = update.release_notes[0]
+    if len(update.release_notes) == 1:
+        return f"Nouveau : {first_note}"
+
+    return f"{len(update.release_notes)} changements disponibles, dont : {first_note}"
+
+
+def _service_current_version_text(service) -> str:
+    current_version = getattr(service, "current_version", None)
+    if isinstance(current_version, str) and current_version.strip():
+        return current_version.strip()
+    return current_game_version()
 
 
 def open_update_page(
@@ -736,6 +841,7 @@ class AutoUpdateNotice(ctk.CTkFrame):
         self,
         master=None,
         *,
+        update: AvailableUpdate,
         on_update,
         on_later,
         width: int = AUTO_UPDATE_NOTICE_MIN_WIDTH,
@@ -750,6 +856,7 @@ class AutoUpdateNotice(ctk.CTkFrame):
 
         self._on_update = on_update
         self._on_later = on_later
+        self._update = update
         self.update_button = None
         self.later_button = None
         self.detail_label = None
@@ -769,7 +876,7 @@ class AutoUpdateNotice(ctk.CTkFrame):
 
         self.detail_label = ctk.CTkLabel(
             self,
-            text=AUTO_UPDATE_NOTICE_DETAIL,
+            text=_notice_detail_text(self._update),
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
             justify="left",
@@ -864,6 +971,7 @@ class AutoUpdatePromptApp(ctk.CTk):
         self.progress_bar = None
         self.progress_value_label = None
         self.progress_status_label = None
+        self.notes_shell = None
         self._progress_mode = "determinate"
 
         style_window(self)
@@ -916,7 +1024,10 @@ class AutoUpdatePromptApp(ctk.CTk):
 
         self.version_label = ctk.CTkLabel(
             shell,
-            text=f"Version {self._update.version} prête à être installée.",
+            text=(
+                f"Version {self._update.version} disponible "
+                f"(actuel : {_service_current_version_text(self._service)})."
+            ),
             font=TYPOGRAPHY["body_bold"],
             text_color=PALETTE["gold"],
             justify="left",
@@ -934,9 +1045,14 @@ class AutoUpdatePromptApp(ctk.CTk):
         )
         self.detail_label.grid(row=3, column=0, padx=26, pady=(0, 26), sticky="w")
 
+        button_row_grid_row = 4
+        if self._update.release_notes:
+            self._build_release_notes_ui(shell, row=4)
+            button_row_grid_row = 5
+
         button_row = ctk.CTkFrame(shell, fg_color="transparent")
         button_row.grid(
-            row=4,
+            row=button_row_grid_row,
             column=0,
             padx=26,
             pady=(0, 26),
@@ -963,6 +1079,53 @@ class AutoUpdatePromptApp(ctk.CTk):
             height=50,
         )
         self.later_button.grid(row=0, column=1, padx=(10, 0), sticky="ew")
+
+    def _build_release_notes_ui(self, shell, *, row: int) -> None:
+        notes_shell = ctk.CTkFrame(shell, corner_radius=18)
+        style_frame(
+            notes_shell,
+            tone="panel",
+            border_color=PALETTE["divider"],
+            border_width=0,
+        )
+        notes_shell.grid(row=row, column=0, padx=26, pady=(0, 20), sticky="ew")
+        notes_shell.grid_columnconfigure(0, weight=1)
+        self.notes_shell = notes_shell
+
+        ctk.CTkLabel(
+            notes_shell,
+            text="Nouveautés",
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["gold"],
+            justify="left",
+        ).grid(row=0, column=0, padx=18, pady=(16, 10), sticky="w")
+
+        notes_scroll = ctk.CTkScrollableFrame(
+            notes_shell,
+            height=132,
+            corner_radius=14,
+            fg_color=PALETTE["panel_soft"],
+            border_width=0,
+            border_color=PALETTE["divider"],
+        )
+        style_scrollable_frame(
+            notes_scroll,
+            tone="panel_soft",
+            border_color=PALETTE["divider"],
+            border_width=0,
+        )
+        notes_scroll.grid(row=1, column=0, padx=18, pady=(0, 16), sticky="ew")
+        notes_scroll.grid_columnconfigure(0, weight=1)
+
+        for row_index, note in enumerate(self._update.release_notes):
+            ctk.CTkLabel(
+                notes_scroll,
+                text=f"- {note}",
+                font=TYPOGRAPHY["small"],
+                text_color=PALETTE["text_soft"],
+                justify="left",
+                wraplength=500,
+            ).grid(row=row_index, column=0, padx=12, pady=(0, 10), sticky="ew")
 
     def _set_actions_enabled(self, enabled: bool) -> None:
         new_state = "normal" if enabled else "disabled"
@@ -1301,7 +1464,7 @@ class AutoUpdateService:
     def __init__(
         self,
         *,
-        current_version: str = GAME_VERSION,
+        current_version: str | None = None,
         manifest_url: str | None = None,
         default_update_url: str | None = None,
         timeout_seconds: float = AUTO_UPDATE_CHECK_TIMEOUT_SECONDS,
@@ -1310,7 +1473,7 @@ class AutoUpdateService:
         state_path: str | None = None,
         now_provider=None,
     ):
-        self._current_version = current_version
+        self._current_version = str(current_version or current_game_version()).strip()
         self._manifest_url = manifest_url or configured_update_manifest_url()
         self._default_update_url = default_update_url or configured_update_page_url()
         self._timeout_seconds = timeout_seconds
@@ -1327,6 +1490,10 @@ class AutoUpdateService:
         self._offer_resolved = False
         self._notice_window = None
         self._snoozed_state = load_auto_update_state(self._state_path)
+
+    @property
+    def current_version(self) -> str:
+        return self._current_version
 
     def start_background_check(self) -> None:
         if self._check_started:
@@ -1484,6 +1651,7 @@ class AutoUpdateService:
         notice_width = self._notice_width_for_window(window)
         notice = AutoUpdateNotice(
             window,
+            update=update,
             on_update=lambda: self._handle_update_choice(window, update),
             on_later=lambda: self._handle_later_choice(window, update),
             width=notice_width,

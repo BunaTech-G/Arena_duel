@@ -189,6 +189,16 @@ class _ImmediateThread:
 
 
 class AutoUpdateLogicTests(unittest.TestCase):
+    def test_current_game_version_reads_local_manifest_version(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = os.path.join(temp_dir, "version.json")
+            with open(manifest_path, "w", encoding="utf-8") as file_handle:
+                json.dump({"version": "2.4.1"}, file_handle)
+
+            version_text = auto_update_module.current_game_version(manifest_path)
+
+        self.assertEqual(version_text, "2.4.1")
+
     def test_cancel_pending_after_callbacks_cancels_all_known_ids(self):
         widget = _FakeAfterWidget(("after#1", "after#2"))
 
@@ -212,6 +222,71 @@ class AutoUpdateLogicTests(unittest.TestCase):
             manifest_url,
             "https://example.com/test-version.json",
         )
+
+    def test_configured_manifest_url_uses_runtime_config_override(self):
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.object(
+                auto_update_module,
+                "load_runtime_config",
+                return_value={
+                    auto_update_module.AUTO_UPDATE_MANIFEST_URL_CONFIG_KEY: (
+                        "https://updates.example.com/arena/version.json"
+                    )
+                },
+            ),
+        ):
+            manifest_url = auto_update_module.configured_update_manifest_url()
+
+        self.assertEqual(
+            manifest_url,
+            "https://updates.example.com/arena/version.json",
+        )
+
+    def test_configured_update_page_url_uses_runtime_config_override(self):
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.object(
+                auto_update_module,
+                "load_runtime_config",
+                return_value={
+                    auto_update_module.AUTO_UPDATE_PAGE_URL_CONFIG_KEY: (
+                        "https://updates.example.com/arena/releases"
+                    )
+                },
+            ),
+        ):
+            page_url = auto_update_module.configured_update_page_url()
+
+        self.assertEqual(
+            page_url,
+            "https://updates.example.com/arena/releases",
+        )
+
+    def test_environment_update_manifest_url_keeps_priority_over_runtime_config(self):
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    auto_update_module.AUTO_UPDATE_MANIFEST_URL_ENV: (
+                        "https://env.example.com/version.json"
+                    )
+                },
+                clear=False,
+            ),
+            mock.patch.object(
+                auto_update_module,
+                "load_runtime_config",
+                return_value={
+                    auto_update_module.AUTO_UPDATE_MANIFEST_URL_CONFIG_KEY: (
+                        "https://config.example.com/version.json"
+                    )
+                },
+            ),
+        ):
+            manifest_url = auto_update_module.configured_update_manifest_url()
+
+        self.assertEqual(manifest_url, "https://env.example.com/version.json")
 
     def test_check_for_available_update_detects_newer_manifest(self):
         payload = json.dumps(
@@ -344,6 +419,40 @@ class AutoUpdateLogicTests(unittest.TestCase):
 
         self.assertIsNotNone(update)
         self.assertEqual(update.installer_sha256, "a" * 64)
+
+    def test_check_for_available_update_reads_release_notes(self):
+        payload = json.dumps(
+            {
+                "version": "1.2.0",
+                "update_url": "https://example.com/update",
+                "release_notes": [
+                    "Nouveau menu online plus clair",
+                    "Fermeture propre des sessions fantômes",
+                ],
+            }
+        ).encode("utf-8")
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = payload
+
+        with mock.patch.object(
+            auto_update_module.urllib.request,
+            "urlopen",
+            return_value=response,
+        ):
+            update = auto_update_module.check_for_available_update(
+                current_version="1.0.0",
+                manifest_url="https://example.com/version.json",
+            )
+
+        self.assertIsNotNone(update)
+        self.assertEqual(
+            update.release_notes,
+            (
+                "Nouveau menu online plus clair",
+                "Fermeture propre des sessions fantômes",
+            ),
+        )
 
     def test_check_for_available_update_stays_silent_when_up_to_date(self):
         payload = json.dumps(
@@ -821,6 +930,10 @@ class AutoUpdateNoticeTests(unittest.TestCase):
         self.app = ctk.CTk()
         self.notice = auto_update_module.AutoUpdateNotice(
             self.app,
+            update=auto_update_module.AvailableUpdate(
+                version="1.2.0",
+                update_url="https://example.com/update",
+            ),
             on_update=lambda: None,
             on_later=lambda: None,
         )
@@ -857,6 +970,20 @@ class AutoUpdateNoticeTests(unittest.TestCase):
         )
         self.assertIn("Mettre à jour", _collect_button_texts(self.notice))
         self.assertIn("Plus tard", _collect_button_texts(self.notice))
+
+    def test_notice_summarizes_release_notes_when_present(self):
+        detail_text = auto_update_module._notice_detail_text(
+            auto_update_module.AvailableUpdate(
+                version="1.2.0",
+                update_url="https://example.com/update",
+                release_notes=(
+                    "Détection Wi-Fi corrigée",
+                    "Nettoyage des salons abandonnés",
+                ),
+            )
+        )
+
+        self.assertIn("2 changements disponibles", detail_text)
 
 
 class AutoUpdatePromptTests(unittest.TestCase):
@@ -940,7 +1067,7 @@ class AutoUpdatePromptTests(unittest.TestCase):
             _collect_label_texts(self.app),
         )
         self.assertIn(
-            "Version 1.2.0 prête à être installée.",
+            "Version 1.2.0 disponible (actuel : 1.0.0).",
             _collect_label_texts(self.app),
         )
         self.assertIn(
@@ -952,6 +1079,31 @@ class AutoUpdatePromptTests(unittest.TestCase):
         )
         self.assertIn("Mettre à jour", _collect_button_texts(self.app))
         self.assertIn("Plus tard", _collect_button_texts(self.app))
+
+    def test_prompt_shows_release_notes_when_manifest_provides_them(self):
+        self.app._update = auto_update_module.AvailableUpdate(
+            version="1.2.0",
+            update_url="https://example.com/update",
+            release_notes=(
+                "Détection Wi-Fi et Ethernet fiabilisée",
+                "Fermeture propre des sessions online",
+            ),
+        )
+
+        self.app._build_release_notes_ui(self.app.shell, row=4)
+        self.app.update_idletasks()
+        self.app.update()
+
+        label_texts = _collect_label_texts(self.app)
+        self.assertIn("Nouveautés", label_texts)
+        self.assertTrue(
+            any(
+                "Détection Wi-Fi et Ethernet fiabilisée" in text for text in label_texts
+            )
+        )
+        self.assertTrue(
+            any("Fermeture propre des sessions online" in text for text in label_texts)
+        )
 
     def test_prompt_later_button_disables_actions_and_schedules_close(self):
         later_button = _find_button(self.app, "Plus tard")

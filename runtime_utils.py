@@ -270,6 +270,8 @@ def load_runtime_config(include_session_overrides: bool = True) -> dict:
         "lan_connect_timeout_seconds": 4,
         "online_server_host": "165.232.108.225",
         "online_server_port": 27015,
+        "update_manifest_url": "",
+        "update_page_url": "",
         "hardware_bridge_enabled": False,
         "hardware_bridge_backend": "arduino",
         "hardware_serial_port": "",
