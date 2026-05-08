@@ -70,12 +70,24 @@ class OnlineClientTests(unittest.TestCase):
             stdout=interface_listing,
             stderr="",
         )
+        adapter_metadata = {
+            9: {
+                "name": "Ethernet",
+                "description": "Realtek PCIe GbE Family Controller",
+                "status": "up",
+            }
+        }
 
         with (
             mock.patch.object(
-                online_client_module.subprocess,
-                "run",
-                return_value=completed_process,
+                online_client_module,
+                "_run_netsh_ipv4_interface_listing",
+                return_value=completed_process.stdout,
+            ),
+            mock.patch.object(
+                online_client_module,
+                "_load_adapter_metadata_by_index",
+                return_value=adapter_metadata,
             ),
             mock.patch.object(
                 online_client_module,
@@ -104,18 +116,29 @@ class OnlineClientTests(unittest.TestCase):
             " 12          25        1500  connected     Ethernet\n"
             " 14          10        1500  connected     Wi-Fi\n"
         )
-        completed_process = subprocess.CompletedProcess(
-            args=["netsh"],
-            returncode=0,
-            stdout=ipv4_listing,
-            stderr="",
-        )
+        adapter_metadata = {
+            12: {
+                "name": "Ethernet",
+                "description": "Realtek PCIe GbE Family Controller",
+                "status": "up",
+            },
+            14: {
+                "name": "Wi-Fi",
+                "description": "Intel(R) Wi-Fi 6E AX210 160MHz",
+                "status": "up",
+            },
+        }
 
         with (
             mock.patch.object(
                 online_client_module,
                 "_run_netsh_ipv4_interface_listing",
-                return_value=completed_process.stdout,
+                return_value=ipv4_listing,
+            ),
+            mock.patch.object(
+                online_client_module,
+                "_load_adapter_metadata_by_index",
+                return_value=adapter_metadata,
             ),
             mock.patch.object(
                 online_client_module,
@@ -247,24 +270,35 @@ class OnlineClientTests(unittest.TestCase):
     def test_get_online_network_status_ignores_virtual_ethernet_when_wifi_is_real_link(
         self,
     ):
-        interface_listing = (
-            "État admin    État          Type            Nom de l’interface\n"
-            "---------------------------------------------------------\n"
-            "Activé         Connecté       Dédié            vEthernet (Default Switch)\n"
-            "Activé         Connecté       Dédié            Wi-Fi\n"
+        ipv4_listing = (
+            "Idx     Met         MTU          État                Nom\n"
+            "---  ----------  ----------  ------------  ---------------------------\n"
+            "  2          25        1500  connected     Ethernet 2\n"
+            " 14          45        1500  connected     Wi-Fi\n"
         )
-        completed_process = subprocess.CompletedProcess(
-            args=["netsh"],
-            returncode=0,
-            stdout=interface_listing,
-            stderr="",
-        )
+        adapter_metadata = {
+            2: {
+                "name": "Ethernet 2",
+                "description": "VirtualBox Host-Only Ethernet Adapter",
+                "status": "up",
+            },
+            14: {
+                "name": "Wi-Fi",
+                "description": "Intel(R) Wi-Fi 6E AX210 160MHz",
+                "status": "up",
+            },
+        }
 
         with (
             mock.patch.object(
-                online_client_module.subprocess,
-                "run",
-                return_value=completed_process,
+                online_client_module,
+                "_run_netsh_ipv4_interface_listing",
+                return_value=ipv4_listing,
+            ),
+            mock.patch.object(
+                online_client_module,
+                "_load_adapter_metadata_by_index",
+                return_value=adapter_metadata,
             ),
             mock.patch.object(
                 online_client_module,

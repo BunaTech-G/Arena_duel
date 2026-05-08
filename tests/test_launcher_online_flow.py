@@ -1963,6 +1963,39 @@ class LauncherOnlineFlowTests(unittest.TestCase):
                 _cancel_pending_after_callbacks(standalone_app)
                 standalone_app.destroy()
 
+    def test_session_window_request_close_notifies_leave_room_before_disconnect(self):
+        present_parent = online_lobby_module.present_window
+        present_parent.side_effect = _deiconify_window_without_ctk_callbacks
+
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_create_window()
+        self._update_ui()
+
+        create_window = online_window.create_window
+        create_window.connected = True
+        create_window.current_room_id = "room-ghost"
+
+        call_order = mock.Mock()
+        create_window.client.send = call_order.send
+        create_window.client.disconnect = call_order.disconnect
+
+        online_lobby_module.messagebox.askyesno.return_value = True
+        closed = create_window.request_close(play_sound=False)
+        self._update_ui()
+
+        self.assertTrue(closed)
+        self.assertEqual(
+            call_order.mock_calls[:2],
+            [
+                mock.call.send({"type": "LEAVE_ROOM"}),
+                mock.call.disconnect(),
+            ],
+        )
+        self.assertFalse(create_window.winfo_exists())
+
     def test_standalone_player_select_return_does_not_show_hidden_root(self):
         standalone_app = ctk.CTk()
         standalone_app.withdraw()

@@ -4149,6 +4149,15 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
         return True
 
+    def _leave_room_before_disconnect(self) -> None:
+        if self.current_room_id is None:
+            return
+
+        try:
+            self.client.send({"type": "LEAVE_ROOM"})
+        except OnlineConnectionError:
+            pass
+
     def on_connect(self) -> None:
         if self.connected or self.connecting:
             return
@@ -4182,6 +4191,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
     def on_disconnect(self) -> None:
         play_click()
+        self._leave_room_before_disconnect()
         self.client.disconnect()
         self._apply_disconnected_state(
             self._default_disconnected_message(),
@@ -4639,6 +4649,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._cancel_room_created_join_timer()
         self._cancel_match_launch_timer()
         self._close_room_id_prompt()
+        self._leave_room_before_disconnect()
         self.client.disconnect()
 
         if destroy_parent:

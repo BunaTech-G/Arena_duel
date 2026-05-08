@@ -282,8 +282,11 @@ def _is_virtual_interface_name(interface_name: str) -> bool:
         for token in (
             "vethernet",
             "virtual",
+            "virtualbox",
             "vmware",
             "hyper-v",
+            "host-only",
+            "default switch",
             "loopback",
             "npcap",
             "wintun",
@@ -337,6 +340,61 @@ def _run_netsh_ipv4_interface_listing() -> str:
     return str(completed.stdout or "")
 
 
+def _load_adapter_metadata_by_index() -> dict[int, dict[str, str]]:
+    try:
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Get-NetAdapter | Select-Object ifIndex,Name,"
+                    "InterfaceDescription,Status | ConvertTo-Json -Compress"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            errors="ignore",
+            timeout=DEFAULT_ONLINE_NETSH_TIMEOUT_SECONDS,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+
+    raw_output = str(completed.stdout or "").strip()
+    if not raw_output:
+        return {}
+
+    try:
+        parsed = json.loads(raw_output)
+    except json.JSONDecodeError:
+        return {}
+
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        return {}
+
+    metadata_by_index: dict[int, dict[str, str]] = {}
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+
+        try:
+            if_index = int(item.get("ifIndex"))
+        except (TypeError, ValueError):
+            continue
+
+        metadata_by_index[if_index] = {
+            "name": str(item.get("Name") or ""),
+            "description": str(item.get("InterfaceDescription") or ""),
+            "status": _normalize_network_text(str(item.get("Status") or "")),
+        }
+
+    return metadata_by_index
+
+
 def _connected_interface_kinds() -> list[str]:
     output = _run_netsh_interface_listing()
     interface_kinds: list[str] = []
@@ -379,6 +437,7 @@ def _connected_interface_kinds() -> list[str]:
 
 def _connected_interface_metrics() -> list[tuple[int, str]]:
     output = _run_netsh_ipv4_interface_listing()
+    adapter_metadata_by_index = _load_adapter_metadata_by_index()
     ranked_interfaces: list[tuple[int, str]] = []
 
     for raw_line in output.splitlines():
@@ -400,11 +459,25 @@ def _connected_interface_metrics() -> list[tuple[int, str]]:
         if not index_text.isdigit() or not metric_text.isdigit():
             continue
 
+        if_index = int(index_text)
+
         normalized_state = _normalize_network_text(state_text)
         if normalized_state.startswith(("deconnect", "dconnect", "disconnect")):
             continue
         if not normalized_state.startswith(("connect", "link")):
             continue
+
+        adapter_metadata = adapter_metadata_by_index.get(if_index)
+        if adapter_metadata is not None:
+            adapter_status = adapter_metadata.get("status", "")
+            if adapter_status not in {"up", "connected"}:
+                continue
+
+            if _is_virtual_interface_name(adapter_metadata.get("name", "")):
+                continue
+
+            if _is_virtual_interface_name(adapter_metadata.get("description", "")):
+                continue
 
         if _is_virtual_interface_name(interface_name):
             continue
