@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "update_url": "https://github.com/BunaTech-G/Arena_duel/releases",
   "windows_installer_url": "https://github.com/BunaTech-G/Arena_duel/releases/latest/download/Setup_ArenaDuel.exe",
   "release_notes": [
@@ -8,5 +8,5 @@
     "Téléchargement et relance de l'installateur Windows sécurisés par SHA-256."
   ],
   "remind_later_hours": 24,
-  "windows_installer_sha256": "67bd31ad770c5faf58f4c9c82c19523a8d04fedad715bbb4ebfed3a713f83f45"
+  "windows_installer_sha256": "d38c60048ef281da1efecb86ee3278016687f6b9464a0bb3ade2357228e44e47"
 }
