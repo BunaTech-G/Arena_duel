@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 import pygame
 
 from runtime_utils import (
@@ -103,6 +104,7 @@ MUSIC_CONFIG = {
 _audio_ready = False
 _active_music_track = None
 _missing_sound_roles = set()
+CLICK_DEBOUNCE_SECONDS = 0.08
 
 pickup_sound = None
 win_sound = None
@@ -118,6 +120,7 @@ lose_alt_sound = None
 trap_a_sound = None
 trap_b_sound = None
 _trap_sound_index = 0
+_last_click_played_at = None
 
 
 ROLE_SOUND_ATTRS = {
@@ -245,6 +248,7 @@ def init_audio():
     """
     global _audio_ready
     global _trap_sound_index
+    global _last_click_played_at
 
     try:
         if pygame.mixer.get_init() is None:
@@ -252,6 +256,7 @@ def init_audio():
         _audio_ready = True
         _missing_sound_roles.clear()
         _trap_sound_index = 0
+        _last_click_played_at = None
     except Exception as e:
         _log_audio(f"initialisation audio echouee : {e}")
         _audio_ready = False
@@ -364,6 +369,14 @@ def play_draw():
 
 
 def play_click():
+    global _last_click_played_at
+
+    now = time.monotonic()
+    if _last_click_played_at is not None:
+        if (now - _last_click_played_at) < CLICK_DEBOUNCE_SECONDS:
+            return
+
+    _last_click_played_at = now
     _safe_play(_get_role_sound("click"), "clic", _role_maxtime("click"))
 
 

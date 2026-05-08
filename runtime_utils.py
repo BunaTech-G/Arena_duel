@@ -1,6 +1,10 @@
 import json
 import os
+import subprocess
 import sys
+import time
+from ctypes import WINFUNCTYPE, byref, create_unicode_buffer, windll
+from ctypes import wintypes
 from pathlib import Path
 
 
@@ -10,6 +14,7 @@ APP_ICON_PNG_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 # override runtime temporaire (en mémoire)
 _RUNTIME_OVERRIDES = {}
+ARENA_WINDOW_TITLE_PREFIX = "Arena Duel"
 
 
 def resource_path(*parts) -> str:
@@ -112,6 +117,78 @@ def runtime_user_file_path(filename: str) -> str:
 
 def runtime_user_config_path() -> str:
     return runtime_user_file_path(USER_RUNTIME_OVERRIDE_FILENAME)
+
+
+def _iter_visible_arena_window_pids() -> set[int]:
+    if not sys.platform.startswith("win"):
+        return set()
+
+    user32 = windll.user32
+    enum_windows = user32.EnumWindows
+    get_window_text = user32.GetWindowTextW
+    get_window_text_length = user32.GetWindowTextLengthW
+    is_window_visible = user32.IsWindowVisible
+    get_window_thread_process_id = user32.GetWindowThreadProcessId
+
+    window_pids: set[int] = set()
+    enum_windows_proc = WINFUNCTYPE(
+        wintypes.BOOL,
+        wintypes.HWND,
+        wintypes.LPARAM,
+    )
+
+    def _callback(hwnd, _lparam):
+        if not is_window_visible(hwnd):
+            return True
+
+        title_length = int(get_window_text_length(hwnd))
+        if title_length <= 0:
+            return True
+
+        title_buffer = create_unicode_buffer(title_length + 1)
+        get_window_text(hwnd, title_buffer, title_length + 1)
+        window_title = str(title_buffer.value or "").strip()
+        if not window_title.startswith(ARENA_WINDOW_TITLE_PREFIX):
+            return True
+
+        process_id = wintypes.DWORD()
+        get_window_thread_process_id(hwnd, byref(process_id))
+        if process_id.value:
+            window_pids.add(int(process_id.value))
+        return True
+
+    enum_windows(enum_windows_proc(_callback), 0)
+    return window_pids
+
+
+def _taskkill_process_tree(pid: int) -> bool:
+    result = subprocess.run(
+        ["taskkill", "/PID", str(int(pid)), "/F", "/T"],
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def terminate_previous_arena_duel_instances(
+    current_pid: int | None = None,
+) -> list[int]:
+    if not sys.platform.startswith("win"):
+        return []
+
+    active_pid = int(os.getpid() if current_pid is None else current_pid)
+    terminated_pids: list[int] = []
+
+    for pid in sorted(_iter_visible_arena_window_pids()):
+        if pid <= 0 or pid == active_pid:
+            continue
+        if _taskkill_process_tree(pid):
+            terminated_pids.append(pid)
+
+    if terminated_pids:
+        time.sleep(0.25)
+
+    return terminated_pids
 
 
 def is_runtime_flag_enabled(

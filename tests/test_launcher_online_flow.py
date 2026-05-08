@@ -36,6 +36,7 @@ def _make_network_status(
     is_connected: bool = True,
     quality_label: str = "Stable",
     latency_ms: int | None = 45,
+    service_available: bool = True,
 ):
     return online_client_module.OnlineNetworkStatus(
         transport_kind=transport_kind,
@@ -46,6 +47,7 @@ def _make_network_status(
         is_connected=is_connected,
         quality_label=quality_label,
         latency_ms=latency_ms,
+        service_available=service_available,
     )
 
 
@@ -129,7 +131,7 @@ def _deiconify_window_without_ctk_callbacks(window):
 def _cancel_pending_after_callbacks(widget):
     try:
         callback_ids = widget.tk.call("after", "info")
-    except TclError:
+    except (AttributeError, TclError, TypeError):
         return
 
     if not callback_ids:
@@ -137,11 +139,13 @@ def _cancel_pending_after_callbacks(widget):
 
     if isinstance(callback_ids, str):
         callback_ids = (callback_ids,)
+    elif not isinstance(callback_ids, (tuple, list)):
+        return
 
     for callback_id in callback_ids:
         try:
             widget.after_cancel(callback_id)
-        except TclError:
+        except (AttributeError, TclError, TypeError):
             continue
 
 
@@ -194,6 +198,7 @@ class _CompactMenuTestCase(unittest.TestCase):
     menu_class = None
 
     def setUp(self):
+        launcher_module.ACTIVE_COMPACT_MENU_STATE["window"] = None
         tracker = appearance_mode_tracker.AppearanceModeTracker
         scaling_tracker.ScalingTracker.window_widgets_dict.clear()
         scaling_tracker.ScalingTracker.window_dpi_scaling_dict.clear()
@@ -255,6 +260,7 @@ class _CompactMenuTestCase(unittest.TestCase):
         except TclError:
             pass
         finally:
+            launcher_module.ACTIVE_COMPACT_MENU_STATE["window"] = None
             tracker = appearance_mode_tracker.AppearanceModeTracker
             scaling_tracker.ScalingTracker.window_widgets_dict.clear()
             scaling_tracker.ScalingTracker.window_dpi_scaling_dict.clear()
@@ -272,6 +278,7 @@ class _CompactMenuTestCase(unittest.TestCase):
 
 class StartupModeAppTests(unittest.TestCase):
     def setUp(self):
+        launcher_module.ACTIVE_COMPACT_MENU_STATE["window"] = None
         tracker = appearance_mode_tracker.AppearanceModeTracker
         scaling_tracker.ScalingTracker.window_widgets_dict.clear()
         scaling_tracker.ScalingTracker.window_dpi_scaling_dict.clear()
@@ -338,6 +345,7 @@ class StartupModeAppTests(unittest.TestCase):
         except TclError:
             pass
         finally:
+            launcher_module.ACTIVE_COMPACT_MENU_STATE["window"] = None
             tracker = appearance_mode_tracker.AppearanceModeTracker
             scaling_tracker.ScalingTracker.window_widgets_dict.clear()
             scaling_tracker.ScalingTracker.window_dpi_scaling_dict.clear()
@@ -368,6 +376,37 @@ class StartupModeAppTests(unittest.TestCase):
     def test_startup_mode_binds_auto_update_service(self):
         launcher_module.bind_auto_update_window.assert_called_once_with(self.app)
 
+    def test_startup_close_uses_graceful_root_shutdown(self):
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
+            self.app._handle_close()
+
+        self.assertIsNone(self.app.selection)
+        close_root.assert_called_once_with(self.app)
+
+    def test_open_launcher_uses_graceful_root_shutdown(self):
+        with (
+            mock.patch.object(
+                launcher_module,
+                "destroy_root_window_gracefully",
+            ) as close_root,
+            mock.patch.object(
+                launcher_module,
+                "_warm_launcher_visual_cache",
+            ),
+        ):
+            self.app._pending_selection = {
+                "mode": "demo",
+                "db_status": "local",
+                "probe_db_on_start": False,
+            }
+            self.app._open_launcher()
+
+        self.assertEqual(self.app.selection, self.app._pending_selection)
+        close_root.assert_called_once_with(self.app)
+
 
 class ModeSelectionMenuTests(_CompactMenuTestCase):
     menu_class = launcher_module.ModeSelectionMenuApp
@@ -394,35 +433,44 @@ class ModeSelectionMenuTests(_CompactMenuTestCase):
         )
 
     def test_local_selection_closes_menu(self):
-        with mock.patch.object(self.app, "destroy") as destroy:
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
             getattr(self.app, "_handle_local")()
 
         self.assertEqual(self.app.selection, "local")
-        destroy.assert_called_once_with()
+        close_root.assert_called_once_with(self.app)
 
     def test_local_selection_plays_transition_sound(self):
-        with mock.patch.object(self.app, "destroy"):
+        with mock.patch.object(launcher_module, "destroy_root_window_gracefully"):
             getattr(self.app, "_handle_local")()
 
         launcher_module.play_transition.assert_called_once_with()
         launcher_module.play_click.assert_not_called()
 
     def test_online_selection_closes_menu(self):
-        with mock.patch.object(self.app, "destroy") as destroy:
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
             getattr(self.app, "_handle_online")()
 
         self.assertEqual(self.app.selection, "online")
-        destroy.assert_called_once_with()
+        close_root.assert_called_once_with(self.app)
 
     def test_quit_selection_closes_menu(self):
-        with mock.patch.object(self.app, "destroy") as destroy:
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
             getattr(self.app, "_handle_quit")()
 
         self.assertEqual(self.app.selection, "quit")
-        destroy.assert_called_once_with()
+        close_root.assert_called_once_with(self.app)
 
     def test_quit_selection_plays_click_sound(self):
-        with mock.patch.object(self.app, "destroy"):
+        with mock.patch.object(launcher_module, "destroy_root_window_gracefully"):
             getattr(self.app, "_handle_quit")()
 
         launcher_module.play_click.assert_called_once_with()
@@ -455,32 +503,44 @@ class LocalModeMenuTests(_CompactMenuTestCase):
         )
 
     def test_lan_host_selection_closes_menu(self):
-        with mock.patch.object(self.app, "destroy") as destroy:
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
             getattr(self.app, "_handle_lan_host")()
 
         self.assertEqual(self.app.selection, "lan_host")
-        destroy.assert_called_once_with()
+        close_root.assert_called_once_with(self.app)
 
     def test_lan_join_selection_closes_menu(self):
-        with mock.patch.object(self.app, "destroy") as destroy:
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
             getattr(self.app, "_handle_lan_join")()
 
         self.assertEqual(self.app.selection, "lan_join")
-        destroy.assert_called_once_with()
+        close_root.assert_called_once_with(self.app)
 
     def test_local_game_selection_closes_menu(self):
-        with mock.patch.object(self.app, "destroy") as destroy:
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
             getattr(self.app, "_handle_local_game")()
 
         self.assertEqual(self.app.selection, "local")
-        destroy.assert_called_once_with()
+        close_root.assert_called_once_with(self.app)
 
     def test_back_selection_closes_menu(self):
-        with mock.patch.object(self.app, "destroy") as destroy:
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
             getattr(self.app, "_handle_back")()
 
         self.assertEqual(self.app.selection, "back")
-        destroy.assert_called_once_with()
+        close_root.assert_called_once_with(self.app)
 
 
 class OnlineModeMenuTests(_CompactMenuTestCase):
@@ -505,25 +565,94 @@ class OnlineModeMenuTests(_CompactMenuTestCase):
         )
 
     def test_host_selection_closes_menu(self):
-        with mock.patch.object(self.app, "destroy") as destroy:
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
             getattr(self.app, "_handle_host")()
 
         self.assertEqual(self.app.selection, "host")
-        destroy.assert_called_once_with()
+        close_root.assert_called_once_with(self.app)
 
     def test_join_selection_closes_menu(self):
-        with mock.patch.object(self.app, "destroy") as destroy:
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
             getattr(self.app, "_handle_join")()
 
         self.assertEqual(self.app.selection, "join")
-        destroy.assert_called_once_with()
+        close_root.assert_called_once_with(self.app)
 
     def test_back_selection_closes_menu(self):
-        with mock.patch.object(self.app, "destroy") as destroy:
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as close_root:
             getattr(self.app, "_handle_back")()
 
         self.assertEqual(self.app.selection, "back")
-        destroy.assert_called_once_with()
+        close_root.assert_called_once_with(self.app)
+
+
+class RunMenuTests(unittest.TestCase):
+    def tearDown(self):
+        launcher_module.ACTIVE_COMPACT_MENU_STATE["window"] = None
+
+    def test_run_menu_destroys_menu_after_mainloop_returns(self):
+        fake_menu = mock.Mock()
+        fake_menu.selection = "local"
+        fake_factory = mock.Mock(return_value=fake_menu)
+
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as destroy_root:
+            selection = launcher_module._run_menu(fake_factory)
+
+        self.assertEqual(selection, "local")
+        fake_factory.assert_called_once_with(play_open_sound=True)
+        fake_menu.mainloop.assert_called_once_with()
+        destroy_root.assert_called_once_with(fake_menu)
+
+    def test_run_menu_forwards_open_sound_flag(self):
+        fake_menu = mock.Mock()
+        fake_menu.selection = "local"
+        fake_factory = mock.Mock(return_value=fake_menu)
+
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ):
+            selection = launcher_module._run_menu(
+                fake_factory,
+                play_open_sound=False,
+            )
+
+        self.assertEqual(selection, "local")
+        fake_factory.assert_called_once_with(play_open_sound=False)
+
+    def test_run_menu_closes_previous_active_menu_before_opening_next(self):
+        fake_previous_menu = mock.Mock()
+        fake_menu = mock.Mock()
+        fake_menu.selection = "local"
+        fake_factory = mock.Mock(return_value=fake_menu)
+        launcher_module.ACTIVE_COMPACT_MENU_STATE["window"] = fake_previous_menu
+
+        with mock.patch.object(
+            launcher_module,
+            "destroy_root_window_gracefully",
+        ) as destroy_root:
+            selection = launcher_module._run_menu(fake_factory)
+
+        self.assertEqual(selection, "local")
+        self.assertEqual(
+            destroy_root.call_args_list,
+            [
+                mock.call(fake_previous_menu),
+                mock.call(fake_menu),
+            ],
+        )
 
 
 class MainModeMenuDispatchTests(unittest.TestCase):
@@ -558,7 +687,10 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             run_menu.call_args_list,
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
-                mock.call(launcher_module.LocalModeMenuApp),
+                mock.call(
+                    launcher_module.LocalModeMenuApp,
+                    play_open_sound=False,
+                ),
             ],
         )
         run_local.assert_called_once_with()
@@ -590,8 +722,14 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             run_menu.call_args_list,
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
-                mock.call(launcher_module.LocalModeMenuApp),
-                mock.call(launcher_module.LocalModeMenuApp),
+                mock.call(
+                    launcher_module.LocalModeMenuApp,
+                    play_open_sound=False,
+                ),
+                mock.call(
+                    launcher_module.LocalModeMenuApp,
+                    play_open_sound=False,
+                ),
                 mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
@@ -622,8 +760,14 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             run_menu.call_args_list,
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
-                mock.call(launcher_module.LocalModeMenuApp),
-                mock.call(launcher_module.LocalModeMenuApp),
+                mock.call(
+                    launcher_module.LocalModeMenuApp,
+                    play_open_sound=False,
+                ),
+                mock.call(
+                    launcher_module.LocalModeMenuApp,
+                    play_open_sound=False,
+                ),
                 mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
@@ -654,7 +798,10 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             run_menu.call_args_list,
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
-                mock.call(launcher_module.LocalModeMenuApp),
+                mock.call(
+                    launcher_module.LocalModeMenuApp,
+                    play_open_sound=False,
+                ),
                 mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
@@ -690,8 +837,14 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             run_menu.call_args_list,
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
-                mock.call(launcher_module.OnlineModeMenuApp),
-                mock.call(launcher_module.OnlineModeMenuApp),
+                mock.call(
+                    launcher_module.OnlineModeMenuApp,
+                    play_open_sound=False,
+                ),
+                mock.call(
+                    launcher_module.OnlineModeMenuApp,
+                    play_open_sound=False,
+                ),
                 mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
@@ -728,8 +881,14 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             run_menu.call_args_list,
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
-                mock.call(launcher_module.OnlineModeMenuApp),
-                mock.call(launcher_module.OnlineModeMenuApp),
+                mock.call(
+                    launcher_module.OnlineModeMenuApp,
+                    play_open_sound=False,
+                ),
+                mock.call(
+                    launcher_module.OnlineModeMenuApp,
+                    play_open_sound=False,
+                ),
                 mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
@@ -765,8 +924,14 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             run_menu.call_args_list,
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
-                mock.call(launcher_module.OnlineModeMenuApp),
-                mock.call(launcher_module.OnlineModeMenuApp),
+                mock.call(
+                    launcher_module.OnlineModeMenuApp,
+                    play_open_sound=False,
+                ),
+                mock.call(
+                    launcher_module.OnlineModeMenuApp,
+                    play_open_sound=False,
+                ),
                 mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
@@ -800,7 +965,10 @@ class MainModeMenuDispatchTests(unittest.TestCase):
             run_menu.call_args_list,
             [
                 mock.call(launcher_module.ModeSelectionMenuApp),
-                mock.call(launcher_module.OnlineModeMenuApp),
+                mock.call(
+                    launcher_module.OnlineModeMenuApp,
+                    play_open_sound=False,
+                ),
                 mock.call(launcher_module.ModeSelectionMenuApp),
             ],
         )
@@ -1234,7 +1402,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
 
         self.assertEqual(
             online_window.network_indicator.label.cget("text"),
-            "Wi-Fi",
+            "Wi-Fi • Moyen",
         )
         self.assertTrue(online_window.network_indicator.available)
         self.assertEqual(
@@ -1252,6 +1420,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
                 is_connected=False,
                 quality_label="Aucun",
                 latency_ms=None,
+                service_available=False,
             )
         )
         self._update_ui()
@@ -1424,6 +1593,40 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             join_window.rooms_meta_label.cget("text"),
         )
 
+    def test_join_window_preview_keeps_server_room_even_if_room_id_looks_old(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_join_window()
+        self._update_ui()
+
+        join_window = online_window.join_window
+        self.assertIsNotNone(join_window)
+
+        getattr(join_window, "_apply_room_preview")(
+            [
+                {
+                    "room_id": "r1000abcd",
+                    "name": "Salon ancien mais ouvert",
+                    "players": 1,
+                    "max_players": 2,
+                    "match_duration_seconds": 90,
+                    "state": "lobby",
+                    "host_pseudo": "HostPlayer",
+                }
+            ],
+            manual=False,
+        )
+        self._update_ui()
+
+        room_texts = _collect_label_texts(join_window.rooms_scroll)
+        self.assertIn("Salon ancien mais ouvert", room_texts)
+        self.assertIn(
+            "1 session(s) visible(s)",
+            join_window.rooms_meta_label.cget("text"),
+        )
+
     def test_join_window_room_card_buttons_show_feedback_instead_of_being_dead(self):
         self.app.open_online_lobby()
         self._update_ui()
@@ -1510,6 +1713,27 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         join_room_id.assert_not_called()
         self.assertEqual(join_window._pending_join_room_id, "room-manual")
         self.assertIsNone(join_window._room_id_prompt_window)
+
+    def test_join_window_opening_room_id_prompt_does_not_schedule_second_click(self):
+        self.app.open_online_lobby()
+        self._update_ui()
+
+        online_window = self.app.online_lobby_window
+        online_window.open_join_window()
+        self._update_ui()
+
+        join_window = online_window.join_window
+        self.assertIsNotNone(join_window)
+
+        with mock.patch.object(
+            online_lobby_module,
+            "_schedule_window_sound",
+        ) as schedule_window_sound:
+            join_window.btn_join_room_id.invoke()
+            self._update_ui()
+
+        self.assertIsNotNone(join_window._room_id_prompt_window)
+        schedule_window_sound.assert_not_called()
 
     def test_join_window_room_id_prompt_shows_missing_pseudo_feedback(self):
         self.app.open_online_lobby()
@@ -1793,7 +2017,6 @@ class LauncherOnlineFlowTests(unittest.TestCase):
                 standalone_app.update()
 
                 present_parent.reset_mock()
-                _cancel_pending_after_callbacks(player_select_window)
                 player_select_window.close_button.invoke()
 
                 self.assertTrue(_window_is_destroyed(player_select_window))
@@ -1820,6 +2043,10 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             mock.patch.object(online_lobby_module, "apply_theme_settings"),
             mock.patch.object(
                 online_lobby_module,
+                "prepare_hidden_root_window",
+            ) as prepare_root,
+            mock.patch.object(
+                online_lobby_module,
                 "probe_online_service",
                 return_value=True,
             ),
@@ -1841,9 +2068,94 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         ):
             online_lobby_module.run_online_lobby()
 
-        fake_app.withdraw.assert_called_once_with()
+        prepare_root.assert_called_once_with(fake_app)
         build_window.assert_called_once_with(
             fake_app,
+            network_available=True,
+            restore_parent_on_close=False,
+            destroy_parent_on_close=True,
+        )
+        fake_window.protocol.assert_called_once_with("WM_DELETE_WINDOW", close_all)
+        fake_app.mainloop.assert_called_once_with()
+        restore_signal_handlers.assert_called_once_with()
+
+    def test_run_local_forge_prepares_hidden_root(self):
+        fake_app = mock.Mock()
+        fake_window = mock.Mock()
+        close_all = mock.Mock()
+        restore_signal_handlers = mock.Mock()
+
+        with (
+            mock.patch.object(launcher_module.ctk, "CTk", return_value=fake_app),
+            mock.patch.object(
+                launcher_module,
+                "prepare_hidden_root_window",
+            ) as prepare_root,
+            mock.patch.object(
+                launcher_module,
+                "_build_player_select_view",
+                return_value=fake_window,
+            ) as build_window,
+            mock.patch.object(
+                launcher_module,
+                "build_graceful_shutdown",
+                return_value=close_all,
+            ),
+            mock.patch.object(
+                launcher_module,
+                "install_signal_shutdown",
+                return_value=restore_signal_handlers,
+            ),
+        ):
+            launcher_module.run_local_forge()
+
+        prepare_root.assert_called_once_with(fake_app)
+        build_window.assert_called_once_with(
+            fake_app,
+            restore_parent_on_close=False,
+            destroy_parent_on_close=True,
+        )
+        fake_window.protocol.assert_called_once_with("WM_DELETE_WINDOW", close_all)
+        fake_app.mainloop.assert_called_once_with()
+        restore_signal_handlers.assert_called_once_with()
+
+    def test_run_online_session_mode_prepares_hidden_root(self):
+        fake_app = mock.Mock()
+        fake_window = mock.Mock()
+        close_all = mock.Mock()
+        restore_signal_handlers = mock.Mock()
+
+        with (
+            mock.patch.object(
+                launcher_module, "_guard_online_entry", return_value=True
+            ),
+            mock.patch.object(launcher_module.ctk, "CTk", return_value=fake_app),
+            mock.patch.object(
+                launcher_module,
+                "prepare_hidden_root_window",
+            ) as prepare_root,
+            mock.patch.object(
+                launcher_module,
+                "_build_online_session_window",
+                return_value=fake_window,
+            ) as build_window,
+            mock.patch.object(
+                launcher_module,
+                "build_graceful_shutdown",
+                return_value=close_all,
+            ),
+            mock.patch.object(
+                launcher_module,
+                "install_signal_shutdown",
+                return_value=restore_signal_handlers,
+            ),
+        ):
+            launcher_module._run_online_session_mode("join")
+
+        prepare_root.assert_called_once_with(fake_app)
+        build_window.assert_called_once_with(
+            fake_app,
+            mode="join",
             network_available=True,
             restore_parent_on_close=False,
             destroy_parent_on_close=True,
@@ -1943,7 +2255,7 @@ class LauncherOnlineFlowTests(unittest.TestCase):
         ):
             present_parent.side_effect = _deiconify_window_without_ctk_callbacks
 
-            self.app._handle_new_game()
+            getattr(self.app, "_handle_new_game")()
             self._update_ui()
 
             player_select_window = self.app.player_select_window
@@ -1993,6 +2305,105 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             present_parent.assert_called_once_with(self.app)
             self.assertFalse(lobby_window.winfo_exists())
             self.assertNotEqual(self.app.state(), "withdrawn")
+
+    def test_forge_guide_restores_player_select_on_close(self):
+        with (
+            mock.patch.object(player_select_module, "play_click"),
+            mock.patch.object(player_select_module, "play_transition"),
+            mock.patch.object(player_select_module, "play_error"),
+            mock.patch.object(player_select_module, "init_audio"),
+            mock.patch.object(player_select_module, "start_menu_music"),
+            mock.patch.object(player_select_module, "stop_music"),
+            mock.patch.object(player_select_module, "apply_window_icon"),
+            mock.patch.object(player_select_module, "enable_large_window"),
+            mock.patch.object(
+                player_select_module,
+                "get_player_registry_snapshot",
+                return_value=[],
+            ),
+            mock.patch.object(
+                player_select_module,
+                "present_window",
+            ) as present_parent,
+            mock.patch.object(
+                player_select_module.PlayerSelectView,
+                "_hydrate_visual_assets",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                player_select_module.PlayerSelectView,
+                "_handle_first_paint",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                player_select_module.PlayerSelectView,
+                "_refresh_responsive_layout",
+                new=_noop_tk_callback,
+            ),
+            mock.patch.object(
+                player_select_module.PlayerSelectView,
+                "refresh_players",
+                new=_noop_tk_callback,
+            ),
+        ):
+            present_parent.side_effect = _deiconify_window_without_ctk_callbacks
+
+            self.app._handle_new_game()
+            self._update_ui()
+
+            player_select_window = self.app.player_select_window
+            self.assertIsNotNone(player_select_window)
+            _cancel_pending_after_callbacks(player_select_window)
+            getattr(player_select_window, "_open_guide_window")()
+            self._update_ui()
+
+            guide_window = player_select_window.guide_window
+            self.assertIsNotNone(guide_window)
+
+            present_parent.reset_mock()
+            getattr(guide_window, "_handle_close")()
+            self._update_ui()
+
+            present_parent.assert_called_once_with(player_select_window)
+            self.assertFalse(guide_window.winfo_exists())
+
+    def test_lan_guide_restores_lobby_on_close(self):
+        with (
+            mock.patch.object(network_lobby_module, "apply_window_icon"),
+            mock.patch.object(network_lobby_module, "enable_large_window"),
+            mock.patch.object(network_lobby_module, "start_menu_music"),
+            mock.patch.object(network_lobby_module, "present_window") as present_parent,
+            mock.patch.object(
+                network_lobby_module,
+                "load_lan_runtime_config",
+                return_value=mock.Mock(port=5000, client_state_path="lan-state.json"),
+            ),
+            mock.patch.object(
+                network_lobby_module,
+                "get_lan_address_info",
+                return_value=mock.Mock(primary_ip="192.168.1.20"),
+            ),
+        ):
+            present_parent.side_effect = _deiconify_window_without_ctk_callbacks
+
+            getattr(self.app, "_handle_join_lan")()
+            self._update_ui()
+
+            lobby_window = self.app.join_lobby_window
+            self.assertIsNotNone(lobby_window)
+            _cancel_pending_after_callbacks(lobby_window)
+            getattr(lobby_window, "_open_guide_window")()
+            self._update_ui()
+
+            guide_window = lobby_window.guide_window
+            self.assertIsNotNone(guide_window)
+
+            present_parent.reset_mock()
+            getattr(guide_window, "_handle_close")()
+            self._update_ui()
+
+            present_parent.assert_called_once_with(lobby_window)
+            self.assertFalse(guide_window.winfo_exists())
 
     def test_online_connect_starts_poll_loop(self):
         self.app.open_online_lobby()

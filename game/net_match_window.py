@@ -195,6 +195,81 @@ def _build_network_end_overlay_payload(
     }
 
 
+def _select_network_event_banner(
+    current_banner: dict | None,
+    next_banner: dict | None,
+) -> dict | None:
+    if next_banner is None:
+        return current_banner
+    if current_banner is None:
+        return next_banner
+
+    current_priority = int(current_banner.get("priority", 0))
+    next_priority = int(next_banner.get("priority", 0))
+    if next_priority > current_priority:
+        return next_banner
+    if next_priority < current_priority:
+        return current_banner
+
+    current_until = int(current_banner.get("until_ms", 0))
+    next_until = int(next_banner.get("until_ms", 0))
+    if next_until > current_until:
+        return next_banner
+    if next_until < current_until:
+        return current_banner
+
+    return next_banner
+
+
+def _build_network_trap_banner(player_state: dict, elapsed_ms: int) -> dict:
+    slot = int(player_state.get("slot", 0) or 0)
+    return {
+        "message": format_trap_event(
+            player_state.get("name", "Combattant"),
+            player_state.get("team"),
+            trap_kind=player_state.get("last_trap_kind"),
+        ),
+        "accent_color": get_team_color(
+            player_state.get("team", "A"),
+            max(0, slot - 1),
+        ),
+        "until_ms": elapsed_ms + MATCH_EVENT_BANNER_DURATION_MS,
+        "priority": 2,
+    }
+
+
+def _build_network_pickup_banner(
+    player_state: dict,
+    pickup: dict,
+    elapsed_ms: int,
+) -> dict | None:
+    pickup_value = int(pickup.get("value", 0))
+    if pickup_value <= 0:
+        return None
+
+    slot = int(player_state.get("slot", 0) or 0)
+    variant = pickup.get("variant")
+    combo_bonus = int(pickup.get("combo_bonus", 0))
+    normalized_variant = str(variant or "").strip().lower()
+    priority = 4 if normalized_variant == "rare" else 3 if combo_bonus > 0 else 1
+    return {
+        "message": format_pickup_event(
+            player_state.get("name", "Combattant"),
+            player_state.get("team"),
+            pickup_value,
+            combo_count=int(pickup.get("combo_count", 0)),
+            combo_bonus=combo_bonus,
+            variant=variant,
+        ),
+        "accent_color": get_team_color(
+            player_state.get("team", "A"),
+            max(0, slot - 1),
+        ),
+        "until_ms": elapsed_ms + MATCH_EVENT_BANNER_DURATION_MS,
+        "priority": priority,
+    }
+
+
 def run_network_match(client, my_slot, my_name, my_team):
     pg_init()
     init_audio()
@@ -289,6 +364,10 @@ def run_network_match(client, my_slot, my_name, my_team):
                 next_trap_serials = {}
                 bonus_spawned = False
                 current_ticks = pygame.time.get_ticks()
+                if event_banner and current_ticks > int(
+                    event_banner.get("until_ms", 0)
+                ):
+                    event_banner = None
                 for player_state in msg.get("players", []):
                     slot = player_state["slot"]
                     pickup_serial = int(player_state.get("last_pickup_serial", 0))
@@ -320,18 +399,10 @@ def run_network_match(client, my_slot, my_name, my_team):
                         slot, 0
                     ):
                         play_trap(trap_kind=player_state.get("last_trap_kind"))
-                        event_banner = {
-                            "message": format_trap_event(
-                                player_state.get("name", "Combattant"),
-                                player_state.get("team"),
-                                trap_kind=player_state.get("last_trap_kind"),
-                            ),
-                            "accent_color": get_team_color(
-                                player_state.get("team", "A"),
-                                max(0, slot - 1),
-                            ),
-                            "until_ms": current_ticks + MATCH_EVENT_BANNER_DURATION_MS,
-                        }
+                        event_banner = _select_network_event_banner(
+                            event_banner,
+                            _build_network_trap_banner(player_state, current_ticks),
+                        )
                     if pickup_serial > previous_pickup_serials.get(slot, 0):
                         pickup = player_state.get("last_pickup") or {}
                         if int(pickup.get("value", 0)) > 0:
@@ -351,22 +422,14 @@ def run_network_match(client, my_slot, my_name, my_team):
                                 combo_bonus=int(pickup.get("combo_bonus", 0)),
                                 variant=pickup.get("variant"),
                             )
-                            event_banner = {
-                                "message": format_pickup_event(
-                                    player_state.get("name", "Combattant"),
-                                    player_state.get("team"),
-                                    int(pickup.get("value", 0)),
-                                    combo_count=int(pickup.get("combo_count", 0)),
-                                    combo_bonus=int(pickup.get("combo_bonus", 0)),
-                                    variant=pickup.get("variant"),
+                            event_banner = _select_network_event_banner(
+                                event_banner,
+                                _build_network_pickup_banner(
+                                    player_state,
+                                    pickup,
+                                    current_ticks,
                                 ),
-                                "accent_color": get_team_color(
-                                    player_state.get("team", "A"),
-                                    max(0, slot - 1),
-                                ),
-                                "until_ms": current_ticks
-                                + MATCH_EVENT_BANNER_DURATION_MS,
-                            }
+                            )
                 previous_positions = {
                     player_state["slot"]: (
                         player_state["x"],
@@ -385,6 +448,11 @@ def run_network_match(client, my_slot, my_name, my_team):
                     spawned_at_ms = orb_spawn_times.get(orb_id, current_ticks)
                     if previous_orb is None:
                         spawned_at_ms = current_ticks
+                        if (
+                            latest_state is not None
+                            and str(orb_state.get("variant") or "") == "rare"
+                        ):
+                            bonus_spawned = True
                     else:
                         previous_serial = int(
                             previous_orb.get(

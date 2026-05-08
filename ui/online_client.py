@@ -184,6 +184,7 @@ class OnlineNetworkStatus:
     is_connected: bool
     quality_label: str
     latency_ms: int | None = None
+    service_available: bool = False
 
 
 def _format_connect_error(host: str, port: int, error: OSError) -> str:
@@ -274,6 +275,24 @@ def _classify_interface_name(interface_name: str) -> str:
     return "network"
 
 
+def _is_virtual_interface_name(interface_name: str) -> bool:
+    normalized_name = _normalize_network_text(interface_name)
+    return any(
+        token in normalized_name
+        for token in (
+            "vethernet",
+            "virtual",
+            "vmware",
+            "hyper-v",
+            "loopback",
+            "npcap",
+            "wintun",
+            "tap-windows",
+            "bluetooth",
+        )
+    )
+
+
 def _transport_label(transport_kind: str) -> str:
     if transport_kind == "ethernet":
         return "Ethernet"
@@ -288,6 +307,23 @@ def _run_netsh_interface_listing() -> str:
     try:
         completed = subprocess.run(
             ["netsh", "interface", "show", "interface"],
+            capture_output=True,
+            text=True,
+            errors="ignore",
+            timeout=DEFAULT_ONLINE_NETSH_TIMEOUT_SECONDS,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+    return str(completed.stdout or "")
+
+
+def _run_netsh_ipv4_interface_listing() -> str:
+    try:
+        completed = subprocess.run(
+            ["netsh", "interface", "ipv4", "show", "interfaces"],
             capture_output=True,
             text=True,
             errors="ignore",
@@ -333,12 +369,58 @@ def _connected_interface_kinds() -> list[str]:
         if not normalized_state.startswith(("connect", "link")):
             continue
 
+        if _is_virtual_interface_name(interface_name):
+            continue
+
         interface_kinds.append(_classify_interface_name(interface_name))
 
     return interface_kinds
 
 
+def _connected_interface_metrics() -> list[tuple[int, str]]:
+    output = _run_netsh_ipv4_interface_listing()
+    ranked_interfaces: list[tuple[int, str]] = []
+
+    for raw_line in output.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+
+        normalized_line = _normalize_network_text(stripped)
+        if not normalized_line:
+            continue
+        if normalized_line.startswith("idx") or set(normalized_line) == {"-"}:
+            continue
+
+        parts = stripped.split(None, 4)
+        if len(parts) < 5:
+            continue
+
+        index_text, metric_text, _mtu_text, state_text, interface_name = parts
+        if not index_text.isdigit() or not metric_text.isdigit():
+            continue
+
+        normalized_state = _normalize_network_text(state_text)
+        if normalized_state.startswith(("deconnect", "dconnect", "disconnect")):
+            continue
+        if not normalized_state.startswith(("connect", "link")):
+            continue
+
+        if _is_virtual_interface_name(interface_name):
+            continue
+
+        ranked_interfaces.append(
+            (int(metric_text), _classify_interface_name(interface_name))
+        )
+
+    return ranked_interfaces
+
+
 def _primary_interface_kind() -> str | None:
+    ranked_interfaces = _connected_interface_metrics()
+    if ranked_interfaces:
+        return min(ranked_interfaces, key=lambda item: item[0])[1]
+
     interface_kinds = _connected_interface_kinds()
     if not interface_kinds:
         return None
@@ -393,25 +475,27 @@ def get_online_network_status(
             online_available=False,
             is_connected=False,
             quality_label="Aucun",
+            service_available=False,
         )
 
     started_at = time.perf_counter()
-    is_online_available = probe_online_service(
+    service_available = probe_online_service(
         host,
         port,
         timeout_seconds=timeout_seconds,
     )
     latency_ms = max(1, int(round((time.perf_counter() - started_at) * 1000)))
 
-    if not is_online_available:
+    if not service_available:
         return OnlineNetworkStatus(
             transport_kind=interface_kind,
             transport_label=_transport_label(interface_kind),
-            tone="danger",
-            signal_bars=1,
-            online_available=False,
+            tone="warning",
+            signal_bars=2,
+            online_available=True,
             is_connected=True,
-            quality_label="Faible",
+            quality_label="Connecté",
+            service_available=False,
         )
 
     if latency_ms <= ONLINE_NETWORK_GOOD_LATENCY_MS:
@@ -424,6 +508,7 @@ def get_online_network_status(
             is_connected=True,
             quality_label="Stable",
             latency_ms=latency_ms,
+            service_available=True,
         )
 
     return OnlineNetworkStatus(
@@ -435,6 +520,7 @@ def get_online_network_status(
         is_connected=True,
         quality_label="Moyen",
         latency_ms=latency_ms,
+        service_available=True,
     )
 
 

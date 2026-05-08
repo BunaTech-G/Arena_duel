@@ -25,7 +25,9 @@ from ui.online_client import (
 from ui.shutdown import (
     build_graceful_shutdown,
     close_window_gracefully,
+    close_embedded_root_gracefully,
     install_signal_shutdown,
+    prepare_hidden_root_window,
 )
 from ui.theme import (
     PALETTE,
@@ -328,7 +330,7 @@ class OnlineWifiIndicator(ctk.CTkFrame):
         inactive_color = PALETTE["neutral_dim"]
         active_bars = max(0, min(4, int(status.signal_bars)))
 
-        self.available = bool(status.online_available)
+        self.available = bool(status.is_connected)
         self.last_status = status
 
         for index, bar in enumerate(self._bars, start=1):
@@ -336,10 +338,11 @@ class OnlineWifiIndicator(ctk.CTkFrame):
                 fg_color=(active_color if index <= active_bars else inactive_color)
             )
 
-        self.label.configure(
-            text=status.transport_label,
-            text_color=active_color,
-        )
+        label_text = status.transport_label
+        if status.is_connected and status.transport_kind != "offline":
+            label_text = f"{status.transport_label} • {status.quality_label}"
+
+        self.label.configure(text=label_text, text_color=active_color)
 
     def set_available(self, available: bool) -> None:
         self.apply_network_status(self._initial_status(available))
@@ -688,17 +691,17 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
                 pass
             setattr(self, attr_name, None)
 
-        self.destroy()
-
-        if not restore_parent and not destroy_parent:
-            return
-
         if destroy_parent:
             try:
                 if parent is not None and parent.winfo_exists():
-                    parent.destroy()
+                    close_embedded_root_gracefully(parent)
             except TclError:
                 pass
+            return
+
+        self.destroy()
+
+        if not restore_parent:
             return
 
         try:
@@ -736,10 +739,16 @@ class OnlineLobbyWindow(ctk.CTkToplevel):
                 except TclError:
                     setattr(self, attr_name, None)
 
-        self.shutdown(
-            restore_parent=restore_parent,
-            destroy_parent=destroy_parent,
-        )
+        shutdown_kwargs = {}
+        if restore_parent is not None:
+            shutdown_kwargs["restore_parent"] = restore_parent
+        if destroy_parent is not None:
+            shutdown_kwargs["destroy_parent"] = destroy_parent
+
+        if shutdown_kwargs:
+            self.shutdown(**shutdown_kwargs)
+        else:
+            self.shutdown()
         return True
 
 
@@ -761,7 +770,6 @@ class RoomIdPromptWindow(ctk.CTkToplevel):
         self._build_ui()
         self._fit_window_to_content()
         present_window(self)
-        _schedule_window_sound(self, tone="click", delay_ms=0)
         self.after(40, self.focus_input)
 
     def _fit_window_to_content(self) -> None:
@@ -2135,6 +2143,7 @@ class OnlineSessionWindow(ctk.CTkToplevel):
 
     def _apply_room_preview(self, rooms: list[dict], *, manual: bool) -> None:
         normalized_rooms = [room for room in rooms if isinstance(room, dict)]
+
         self._known_rooms_by_id = {
             str(room.get("room_id") or "").strip(): room
             for room in normalized_rooms
@@ -4631,9 +4640,18 @@ class OnlineSessionWindow(ctk.CTkToplevel):
         self._cancel_match_launch_timer()
         self._close_room_id_prompt()
         self.client.disconnect()
+
+        if destroy_parent:
+            try:
+                if parent is not None and parent.winfo_exists():
+                    close_embedded_root_gracefully(parent)
+            except TclError:
+                pass
+            return
+
         self.destroy()
 
-        if not restore_parent and not destroy_parent:
+        if not restore_parent:
             return
 
         if restore_parent:
@@ -4642,13 +4660,6 @@ class OnlineSessionWindow(ctk.CTkToplevel):
                     present_window(parent)
             except TclError:
                 pass
-            return
-
-        try:
-            if parent is not None and parent.winfo_exists():
-                parent.destroy()
-        except TclError:
-            pass
 
     def _close_confirmation(self) -> tuple[str, str] | None:
         if self._shutdown_requested:
@@ -4713,7 +4724,7 @@ def run_online_lobby() -> None:
     apply_theme_settings()
 
     app = ctk.CTk()
-    app.withdraw()
+    prepare_hidden_root_window(app)
 
     network_available = probe_online_service()
     if not network_available:

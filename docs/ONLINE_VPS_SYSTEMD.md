@@ -48,12 +48,25 @@ Copie-le vers systemd:
 sudo cp /opt/arena_duel_clean/tools/arena-duel-online.service /etc/systemd/system/arena-duel-online.service
 ~~~
 
+Le service charge aussi optionnellement /etc/default/arena-duel-online pour les variables d'environnement de diagnostic.
+
 Si ton chemin, ton utilisateur ou ton port sont differents, modifie ces lignes dans le service avant activation:
 
 - User=arena
 - Group=arena
 - WorkingDirectory=/opt/arena_duel_clean
+- EnvironmentFile=-/etc/default/arena-duel-online
 - ExecStart=/opt/arena_duel_clean/.venv/bin/python -m network.online_server --host 0.0.0.0 --port 27015
+
+Pour activer temporairement le diagnostic de l'annuaire online sans modifier l'unite systemd, cree le fichier d'environnement:
+
+~~~bash
+sudo tee /etc/default/arena-duel-online >/dev/null <<'EOF'
+ARENA_ONLINE_DIAGNOSTIC_LIST_ROOMS=1
+EOF
+~~~
+
+Pour revenir au comportement normal, supprime la variable ou mets-la a 0, puis redemarre le service.
 
 Recharge systemd puis active le service:
 
@@ -68,6 +81,8 @@ Suivi des logs:
 ~~~bash
 sudo journalctl -u arena-duel-online.service -f
 ~~~
+
+Quand le diagnostic est actif, chaque requete LIST_ROOMS ecrit une ligne de log prefixee par ONLINE/LIST_ROOMS avec le detail de chaque room et l'idle de chaque client.
 
 ## Firewall
 

@@ -520,6 +520,160 @@ class RunNetworkMatchTests(unittest.TestCase):
             "Braise · HostPlayer capte orbe +3 · combo x3 (+2)",
         )
 
+    def test_run_network_match_plays_bonus_spawn_for_new_rare_orb_id(self):
+        first_state = {
+            "type": "STATE",
+            "team_a_score": 0,
+            "team_b_score": 0,
+            "remaining_time": 43,
+            "players": [
+                {
+                    "slot": 1,
+                    "name": "HostPlayer",
+                    "team": "A",
+                    "score": 0,
+                    "x": 24.0,
+                    "y": 20.0,
+                    "direction": "right",
+                    "is_moving": False,
+                    "last_pickup_serial": 0,
+                    "last_trap_serial": 0,
+                    "last_pickup": {},
+                }
+            ],
+            "orbs": [
+                {
+                    "orb_id": 1,
+                    "x": 100.0,
+                    "y": 110.0,
+                    "value": 1,
+                    "variant": "common",
+                    "spawn_serial": 1,
+                }
+            ],
+        }
+        second_state = {
+            "type": "STATE",
+            "team_a_score": 0,
+            "team_b_score": 0,
+            "remaining_time": 40,
+            "players": [
+                {
+                    "slot": 1,
+                    "name": "HostPlayer",
+                    "team": "A",
+                    "score": 0,
+                    "x": 24.0,
+                    "y": 20.0,
+                    "direction": "right",
+                    "is_moving": False,
+                    "last_pickup_serial": 0,
+                    "last_trap_serial": 0,
+                    "last_pickup": {},
+                }
+            ],
+            "orbs": [
+                {
+                    "orb_id": 1,
+                    "x": 100.0,
+                    "y": 110.0,
+                    "value": 1,
+                    "variant": "common",
+                    "spawn_serial": 1,
+                },
+                {
+                    "orb_id": 8,
+                    "x": 140.0,
+                    "y": 120.0,
+                    "value": 1,
+                    "variant": "rare",
+                    "spawn_serial": 1,
+                },
+            ],
+        }
+        end_message = {
+            "type": "END",
+            "winner_team": None,
+            "winner_text": "Match nul",
+            "team_a_score": 0,
+            "team_b_score": 0,
+            "players": [],
+        }
+
+        result, client, handles = self._run_match(
+            [[first_state], [second_state, end_message]]
+        )
+
+        self.assertTrue(result["completed"])
+        self.assertEqual(
+            client.sent_inputs,
+            [(False, False, False, False)] * 2,
+        )
+        handles["play_pickup"].assert_not_called()
+        handles["play_trap"].assert_not_called()
+        handles["play_bonus_spawn"].assert_called_once_with()
+        snapshots = handles["draw_state_snapshots"]
+        self.assertIsNone(snapshots[0]["event_banner"])
+        self.assertIsNone(snapshots[1]["event_banner"])
+
+    def test_run_network_match_keeps_trap_banner_over_common_pickup_in_same_state(self):
+        state = {
+            "type": "STATE",
+            "team_a_score": 2,
+            "team_b_score": 0,
+            "remaining_time": 41,
+            "players": [
+                {
+                    "slot": 1,
+                    "name": "HostPlayer",
+                    "team": "A",
+                    "score": 2,
+                    "x": 24.0,
+                    "y": 20.0,
+                    "direction": "right",
+                    "is_moving": True,
+                    "last_pickup_serial": 1,
+                    "last_trap_serial": 1,
+                    "last_trap_kind": "spike_trap",
+                    "last_pickup": {
+                        "value": 2,
+                        "x": 24.0,
+                        "y": 20.0,
+                        "variant": "common",
+                        "combo_count": 1,
+                        "combo_bonus": 0,
+                    },
+                }
+            ],
+            "orbs": [],
+        }
+        end_message = {
+            "type": "END",
+            "winner_team": "A",
+            "winner_text": "Victoire équipe A",
+            "team_a_score": 2,
+            "team_b_score": 0,
+            "players": [],
+        }
+
+        result, client, handles = self._run_match([[state], [end_message]])
+
+        self.assertTrue(result["completed"])
+        self.assertEqual(
+            client.sent_inputs,
+            [(False, False, False, False)] * 2,
+        )
+        handles["play_pickup"].assert_called_once_with(
+            combo_bonus=0,
+            variant="common",
+        )
+        handles["play_trap"].assert_called_once_with(trap_kind="spike_trap")
+        snapshot = handles["draw_state_snapshots"][0]
+        self.assertEqual(
+            snapshot["event_banner"]["message"],
+            "Braise · HostPlayer heurte les pointes",
+        )
+
     def test_draw_state_routes_hud_orbs_and_players(self):
         screen = _FakeSurface((640, 360))
         layout = SimpleNamespace(window_size=(640, 360))

@@ -5,13 +5,14 @@ import asyncio
 import contextlib
 import inspect
 import json
+import os
 import secrets
 import struct
 import time
 from dataclasses import dataclass, field
 
 from game.settings import MATCH_DURATION_SECONDS, coerce_match_duration
-from network.messages import ASSIGN_SLOT, START
+from network.messages import ASSIGN_SLOT, DISCONNECTED, START
 from network.server import GameState, TICK_RATE
 
 
@@ -23,6 +24,10 @@ MAX_PSEUDO_LENGTH = 24
 MAX_ROOM_NAME_LENGTH = 32
 MIN_ROOM_PLAYERS = 2
 MAX_ROOM_PLAYERS = 6
+ONLINE_CLIENT_STALE_TIMEOUT_SECONDS = 45.0
+ONLINE_HANDSHAKE_TIMEOUT_SECONDS = 5.0
+ONLINE_PRELOGIN_TIMEOUT_SECONDS = 10.0
+ONLINE_ROOM_OPEN_TIMEOUT_SECONDS = 15.0 * 60.0
 DEFAULT_SPRITE_BY_TEAM = {
     "A": "skeleton_fighter_ember",
     "B": "skeleton_fighter_aether",
@@ -33,6 +38,9 @@ SERVER_CONFIG = {
 SERVER_CAPABILITIES = {
     "ready_state": True,
 }
+ONLINE_DIAGNOSTIC_LIST_ROOMS = str(
+    os.getenv("ARENA_ONLINE_DIAGNOSTIC_LIST_ROOMS", "")
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _default_input_state() -> dict[str, bool]:
@@ -69,6 +77,7 @@ class ClientSession:
     sprite_id: str = ""
     input_state: dict[str, bool] = field(default_factory=_default_input_state)
     connected_at: float = field(default_factory=time.time)
+    last_activity_at: float = field(default_factory=time.monotonic)
 
 
 @dataclass(slots=True)
@@ -178,6 +187,227 @@ def default_sprite_id_for_team(team_code: str) -> str:
         str(team_code or "A").strip().upper(),
         DEFAULT_SPRITE_BY_TEAM["A"],
     )
+
+
+def touch_client_activity_unlocked(
+    client_id: str,
+    *,
+    now: float | None = None,
+) -> None:
+    client = clients.get(client_id)
+    if client is None:
+        return
+    client.last_activity_at = time.monotonic() if now is None else now
+
+
+def reset_client_room_membership_unlocked(client: ClientSession) -> None:
+    client.room_id = None
+    client.ready_to_start = False
+    client.slot = None
+    client.team = None
+    client.input_state = _default_input_state()
+
+
+def room_has_expired_unlocked(
+    room: RoomState,
+    *,
+    now: float | None = None,
+) -> bool:
+    current_time = time.time() if now is None else now
+    return (current_time - room.created_at) >= ONLINE_ROOM_OPEN_TIMEOUT_SECONDS
+
+
+def _close_room_unlocked(
+    room_id: str,
+) -> tuple[RoomState | None, list[asyncio.StreamWriter], asyncio.Task | None]:
+    room = rooms.pop(room_id, None)
+    if room is None:
+        return None, [], None
+
+    writers = []
+    for client_id in room.client_ids:
+        client = clients.pop(client_id, None)
+        if client is None:
+            continue
+        reset_client_room_membership_unlocked(client)
+        writers.append(client.writer)
+
+    game_task = room.game_task
+    room.game_task = None
+    room.game_state = None
+    return room, writers, game_task
+
+
+def _detach_client_from_room_unlocked(
+    client_id: str,
+) -> tuple[str | None, str | None, bool, asyncio.Task | None]:
+    client = clients.get(client_id)
+    if client is None or client.room_id is None:
+        return None, None, False, None
+
+    room_id = client.room_id
+    reset_client_room_membership_unlocked(client)
+
+    room = rooms.get(room_id)
+    if room is None:
+        return room_id, None, False, None
+
+    room_state = room.state
+    previous_host = room.host_client_id
+    room.client_ids = [
+        existing_client_id
+        for existing_client_id in room.client_ids
+        if existing_client_id != client_id and existing_client_id in clients
+    ]
+
+    if not room.client_ids:
+        game_task = room.game_task
+        rooms.pop(room_id, None)
+        return room_id, room_state, False, game_task
+
+    host_changed = False
+    if previous_host == client_id or previous_host not in room.client_ids:
+        room.host_client_id = room.client_ids[0]
+        host_changed = room.host_client_id != previous_host
+
+    if room.state == "lobby":
+        rebalance_room_assignments_unlocked(room)
+
+    return room_id, room_state, host_changed, None
+
+
+async def prune_stale_clients() -> None:
+    now = time.monotonic()
+    stale_writers = []
+    affected_room_ids: set[str] = set()
+    host_changed_room_ids: set[str] = set()
+    lobby_room_ids: set[str] = set()
+    cancelled_game_tasks = []
+    rooms_to_close: dict[str, tuple[str, str]] = {}
+
+    async with registry_lock:
+        stale_client_ids = [
+            client_id
+            for client_id, client in clients.items()
+            if (now - client.last_activity_at) >= ONLINE_CLIENT_STALE_TIMEOUT_SECONDS
+        ]
+
+        for client_id in stale_client_ids:
+            client = clients.get(client_id)
+            if client is None:
+                continue
+
+            room = None if client.room_id is None else rooms.get(client.room_id)
+            if room is not None and room.state != "lobby":
+                rooms_to_close.setdefault(
+                    room.room_id,
+                    (room.name, client.pseudo),
+                )
+                continue
+
+            room_id, room_state, host_changed, game_task = (
+                _detach_client_from_room_unlocked(client_id)
+            )
+            stale_writers.append(client.writer)
+            clients.pop(client_id, None)
+
+            if room_id is not None:
+                affected_room_ids.add(room_id)
+                if host_changed:
+                    host_changed_room_ids.add(room_id)
+                if room_state == "lobby":
+                    lobby_room_ids.add(room_id)
+            if game_task is not None:
+                cancelled_game_tasks.append(game_task)
+
+    if not stale_writers:
+        if not rooms_to_close:
+            return
+
+    for room_id, (room_name, pseudo) in sorted(rooms_to_close.items()):
+        await close_room(
+            room_id,
+            code="ROOM_CLOSED",
+            message=(f"La session {room_name} a été fermée : {pseudo} ne répond plus."),
+        )
+
+    if stale_writers:
+        print(f"[ONLINE] Purge de {len(stale_writers)} client(s) inactif(s)")
+
+    for game_task in cancelled_game_tasks:
+        game_task.cancel()
+
+    for room_id in sorted(host_changed_room_ids):
+        await broadcast_host_changed(room_id)
+    for room_id in sorted(affected_room_ids):
+        await broadcast_room_update(room_id)
+    for room_id in sorted(lobby_room_ids):
+        await broadcast_room_assignments(room_id)
+
+    for writer in stale_writers:
+        with contextlib.suppress(Exception):
+            writer.close()
+
+        wait_closed = getattr(writer, "wait_closed", None)
+        if callable(wait_closed):
+            with contextlib.suppress(Exception):
+                await wait_closed()
+
+
+async def close_room(
+    room_id: str,
+    *,
+    code: str,
+    message: str,
+) -> bool:
+    async with registry_lock:
+        room, writers, game_task = _close_room_unlocked(room_id)
+
+    if room is None:
+        return False
+
+    if game_task is not None and game_task is not asyncio.current_task():
+        game_task.cancel()
+
+    payload = {
+        "type": DISCONNECTED,
+        "code": code,
+        "room_id": room.room_id,
+        "message": message,
+        "error": message,
+    }
+    for writer in writers:
+        with contextlib.suppress(Exception):
+            await send(writer, payload)
+        with contextlib.suppress(Exception):
+            writer.close()
+
+        wait_closed = getattr(writer, "wait_closed", None)
+        if callable(wait_closed):
+            with contextlib.suppress(Exception):
+                await wait_closed()
+
+    print(f"[ONLINE] Session fermée {room.room_id}: {message}")
+    return True
+
+
+async def prune_expired_rooms() -> None:
+    async with registry_lock:
+        now = time.time()
+        expired_rooms = [
+            (room.room_id, room.name)
+            for room in rooms.values()
+            if room_has_expired_unlocked(room, now=now)
+        ]
+
+    for room_id, room_name in expired_rooms:
+        await close_room(
+            room_id,
+            code="ROOM_EXPIRED",
+            message=(
+                f"La session {room_name} a été fermée après 15 minutes d'ouverture."
+            ),
+        )
 
 
 def prune_room_clients_unlocked(room: RoomState) -> None:
@@ -294,6 +524,50 @@ def room_host_unlocked(room: RoomState) -> tuple[str | None, str | None]:
     return None, None
 
 
+def build_room_directory_diagnostics_unlocked(
+    room: RoomState,
+    *,
+    summary: dict | None = None,
+) -> dict:
+    now_wall = time.time()
+    now_mono = time.monotonic()
+    room_summary = (
+        serialize_room_summary_unlocked(room) if summary is None else dict(summary)
+    )
+    client_snapshots = []
+    for client_id in room.client_ids:
+        client = clients.get(client_id)
+        if client is None:
+            client_snapshots.append(
+                {
+                    "client_id": client_id,
+                    "missing": True,
+                }
+            )
+            continue
+
+        client_snapshots.append(
+            {
+                "client_id": client_id,
+                "pseudo": client.pseudo,
+                "idle_s": round(max(0.0, now_mono - client.last_activity_at), 3),
+                "connected_s": round(max(0.0, now_wall - client.connected_at), 3),
+                "ready": client.ready_to_start,
+                "room_id": client.room_id,
+            }
+        )
+
+    return {
+        "room_id": room.room_id,
+        "name": room.name,
+        "state": room.state,
+        "age_s": round(max(0.0, now_wall - room.created_at), 3),
+        "client_ids": list(room.client_ids),
+        "summary": room_summary,
+        "clients": client_snapshots,
+    }
+
+
 def serialize_room_summary_unlocked(room: RoomState) -> dict:
     host_client_id, host_pseudo = room_host_unlocked(room)
     return {
@@ -326,10 +600,29 @@ def serialize_room_state_unlocked(room: RoomState) -> dict:
 async def read_login_or_prelogin_request(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
+    client_id: str | None = None,
+    timeout_seconds: float = ONLINE_PRELOGIN_TIMEOUT_SECONDS,
 ) -> dict:
+    started_at = time.monotonic()
+
     while True:
-        message = await read_msg(reader)
+        remaining_timeout_seconds = timeout_seconds - (time.monotonic() - started_at)
+        if remaining_timeout_seconds <= 0:
+            raise TimeoutError("LOGIN_TIMEOUT")
+
+        try:
+            message = await asyncio.wait_for(
+                read_msg(reader),
+                timeout=remaining_timeout_seconds,
+            )
+        except asyncio.TimeoutError as error:
+            raise TimeoutError("LOGIN_TIMEOUT") from error
+
         message_type = str(message.get("type") or "").strip().upper()
+
+        if client_id is not None:
+            async with registry_lock:
+                touch_client_activity_unlocked(client_id)
 
         if message_type == "PING":
             await send(writer, {"type": "PONG", "ts": time.time()})
@@ -349,6 +642,9 @@ async def read_login_or_prelogin_request(
 
 
 async def list_rooms() -> list[dict]:
+    await prune_expired_rooms()
+    await prune_stale_clients()
+
     async with registry_lock:
         ordered_rooms = sorted(
             rooms.values(),
@@ -358,7 +654,28 @@ async def list_rooms() -> list[dict]:
                 room.room_id,
             ),
         )
-        return [serialize_room_summary_unlocked(room) for room in ordered_rooms]
+        room_summaries = []
+        for room in ordered_rooms:
+            summary = serialize_room_summary_unlocked(room)
+            room_summaries.append(summary)
+            if ONLINE_DIAGNOSTIC_LIST_ROOMS:
+                diagnostics = build_room_directory_diagnostics_unlocked(
+                    room,
+                    summary=summary,
+                )
+                print(
+                    "[ONLINE][LIST_ROOMS] "
+                    + json.dumps(
+                        diagnostics,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+
+        if ONLINE_DIAGNOSTIC_LIST_ROOMS and not room_summaries:
+            print("[ONLINE][LIST_ROOMS] Aucune room après purge")
+
+        return room_summaries
 
 
 async def send_error(client_id: str, code: str, **extra_fields) -> None:
@@ -456,41 +773,31 @@ async def leave_room(client_id: str) -> None:
     host_changed = False
     room_state = None
     game_task = None
+    close_active_room = None
 
     async with registry_lock:
         client = clients.get(client_id)
         if client is None or client.room_id is None:
             return
 
-        room_id = client.room_id
-        client.room_id = None
-        room = rooms.get(room_id)
-        if room is None:
-            return
+        room = rooms.get(client.room_id)
+        if room is not None and room.state != "lobby":
+            close_active_room = (room.room_id, room.name, client.pseudo)
+        else:
+            room_id, room_state, host_changed, game_task = (
+                _detach_client_from_room_unlocked(client_id)
+            )
 
-        room_state = room.state
-        previous_host = room.host_client_id
-        room.client_ids = [
-            existing_client_id
-            for existing_client_id in room.client_ids
-            if (existing_client_id != client_id and existing_client_id in clients)
-        ]
-        client.ready_to_start = False
-        client.slot = None
-        client.team = None
-        client.input_state = _default_input_state()
-
-        if not room.client_ids:
-            game_task = room.game_task
-            rooms.pop(room_id, None)
-            return
-
-        if previous_host == client_id or previous_host not in room.client_ids:
-            room.host_client_id = room.client_ids[0]
-            host_changed = room.host_client_id != previous_host
-
-        if room.state == "lobby":
-            rebalance_room_assignments_unlocked(room)
+    if close_active_room is not None:
+        active_room_id, room_name, pseudo = close_active_room
+        await close_room(
+            active_room_id,
+            code="ROOM_CLOSED",
+            message=(
+                f"La session {room_name} a été fermée : {pseudo} a quitté la partie."
+            ),
+        )
+        return
 
     if room_id is None:
         return
@@ -807,7 +1114,15 @@ async def handle(
         clients[client_id] = ClientSession(client_id=client_id, writer=writer)
 
     try:
-        hello = await read_msg(reader)
+        try:
+            hello = await asyncio.wait_for(
+                read_msg(reader),
+                timeout=ONLINE_HANDSHAKE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await send(writer, {"type": "ERROR", "code": "HANDSHAKE_TIMEOUT"})
+            return
+
         if str(hello.get("type") or "").strip().upper() != "HELLO":
             await send(writer, {"type": "ERROR", "code": "BAD_HANDSHAKE"})
             return
@@ -825,7 +1140,17 @@ async def handle(
 
         await send(writer, build_welcome_payload())
 
-        login = await read_login_or_prelogin_request(reader, writer)
+        try:
+            login = await read_login_or_prelogin_request(
+                reader,
+                writer,
+                client_id,
+                timeout_seconds=ONLINE_PRELOGIN_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            await send(writer, {"type": "ERROR", "code": "LOGIN_TIMEOUT"})
+            return
+
         if str(login.get("type") or "").strip().upper() != "LOGIN":
             await send(writer, {"type": "ERROR", "code": "LOGIN_REQUIRED"})
             return
@@ -835,6 +1160,7 @@ async def handle(
             client = clients.get(client_id)
             if client is not None:
                 client.pseudo = pseudo
+                touch_client_activity_unlocked(client_id)
 
         await send(writer, {"type": "LOGIN_OK", "pseudo": pseudo})
         print(f"[ONLINE] {peer} connecte en tant que {pseudo}")
@@ -842,6 +1168,12 @@ async def handle(
         while True:
             message = await read_msg(reader)
             message_type = str(message.get("type") or "").strip().upper()
+
+            async with registry_lock:
+                touch_client_activity_unlocked(client_id)
+
+            await prune_expired_rooms()
+            await prune_stale_clients()
 
             if message_type == "PING":
                 await send(writer, {"type": "PONG", "ts": time.time()})

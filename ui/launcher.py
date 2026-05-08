@@ -35,12 +35,15 @@ from ui.online_lobby import (
 from ui.shutdown import (
     build_graceful_shutdown,
     close_window_gracefully,
+    destroy_root_window_gracefully,
     install_signal_shutdown,
     open_window_gracefully,
+    prepare_hidden_root_window,
 )
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
+    _schedule_window_after,
     apply_window_icon,
     apply_theme_settings,
     create_badge,
@@ -62,6 +65,9 @@ from ui.theme import (
 
 
 apply_theme_settings()
+
+
+ACTIVE_COMPACT_MENU_STATE = {"window": None}
 
 
 @lru_cache(maxsize=1)
@@ -127,10 +133,7 @@ def _schedule_window_sound(
             return
         play_transition()
 
-    try:
-        window.after(delay_ms, _play_sound)
-    except TclError:
-        pass
+    _schedule_window_after(window, delay_ms, _play_sound)
 
 
 def _schedule_menu_audio_boot(window, *, delay_ms: int = 100) -> None:
@@ -150,10 +153,7 @@ def _schedule_menu_audio_boot(window, *, delay_ms: int = 100) -> None:
         init_audio()
         start_menu_music()
 
-    try:
-        window.after(delay_ms, _start_menu_audio)
-    except TclError:
-        pass
+    _schedule_window_after(window, delay_ms, _start_menu_audio)
 
 
 def test_connection():
@@ -280,14 +280,16 @@ def _center_fixed_window(window, *, width: int, height: int) -> None:
 
 
 class ModeSelectionMenuApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, *, play_open_sound: bool = True):
         super().__init__()
         self.selection: str | None = None
+        self._play_open_sound = bool(play_open_sound)
         self._configure_window()
         self._build_ui()
         present_window(self)
         bind_auto_update_window(self)
-        _schedule_window_sound(self)
+        if self._play_open_sound:
+            _schedule_window_sound(self)
         _schedule_menu_audio_boot(self)
 
     def _menu_title(self) -> str:
@@ -377,7 +379,7 @@ class ModeSelectionMenuApp(ctk.CTk):
         else:
             play_transition()
         self.selection = value
-        self.destroy()
+        destroy_root_window_gracefully(self)
 
     def _build_ui(self) -> None:
         self._build_menu_shell(
@@ -419,7 +421,7 @@ class ModeSelectionMenuApp(ctk.CTk):
     def _handle_close(self) -> None:
         play_click()
         self.selection = None
-        self.destroy()
+        destroy_root_window_gracefully(self)
 
 
 class LocalModeMenuApp(ModeSelectionMenuApp):
@@ -720,7 +722,7 @@ class StartupModeApp(ctk.CTk):
         )
         _warm_launcher_visual_cache(background_size)
         self.selection = self._pending_selection
-        self.destroy()
+        destroy_root_window_gracefully(self)
 
     def _handle_launch_with_db(self):
         if self._db_probe_in_progress:
@@ -830,7 +832,7 @@ class StartupModeApp(ctk.CTk):
         play_click()
         self.selection = None
         self._pending_selection = None
-        self.destroy()
+        destroy_root_window_gracefully(self)
 
 
 def _parse_int_value(
@@ -2683,7 +2685,7 @@ class LauncherApp(ctk.CTk):
 
 def run_local_forge() -> None:
     app = ctk.CTk()
-    app.withdraw()
+    prepare_hidden_root_window(app)
 
     window = _build_player_select_view(
         app,
@@ -2704,18 +2706,39 @@ def run_local_forge() -> None:
         restore_signal_handlers()
 
 
-def _run_menu(menu_factory) -> str | None:
-    menu = menu_factory()
-    menu.mainloop()
+def _clear_active_compact_menu(*, except_window=None) -> None:
+    active_menu = ACTIVE_COMPACT_MENU_STATE["window"]
+    if active_menu is None or active_menu is except_window:
+        return
+
+    ACTIVE_COMPACT_MENU_STATE["window"] = None
+    destroy_root_window_gracefully(active_menu)
+
+
+def _register_active_compact_menu(menu) -> None:
+    _clear_active_compact_menu(except_window=menu)
+    ACTIVE_COMPACT_MENU_STATE["window"] = menu
+
+
+def _run_menu(menu_factory, *, play_open_sound: bool = True) -> str | None:
+    _clear_active_compact_menu()
+    menu = menu_factory(play_open_sound=play_open_sound)
+    _register_active_compact_menu(menu)
+    try:
+        menu.mainloop()
+    finally:
+        if ACTIVE_COMPACT_MENU_STATE["window"] is menu:
+            ACTIVE_COMPACT_MENU_STATE["window"] = None
+        destroy_root_window_gracefully(menu)
     return menu.selection
 
 
-def run_local_mode_menu() -> str | None:
-    return _run_menu(LocalModeMenuApp)
+def run_local_mode_menu(*, play_open_sound: bool = True) -> str | None:
+    return _run_menu(LocalModeMenuApp, play_open_sound=play_open_sound)
 
 
-def run_online_mode_menu() -> str | None:
-    return _run_menu(OnlineModeMenuApp)
+def run_online_mode_menu(*, play_open_sound: bool = True) -> str | None:
+    return _run_menu(OnlineModeMenuApp, play_open_sound=play_open_sound)
 
 
 def _run_online_session_mode(mode: str) -> None:
@@ -2723,7 +2746,7 @@ def _run_online_session_mode(mode: str) -> None:
         return
 
     app = ctk.CTk()
-    app.withdraw()
+    prepare_hidden_root_window(app)
 
     window = _build_online_session_window(
         app,
@@ -2780,7 +2803,7 @@ def _bind_lan_lobby_close(
 
 def _run_lan_lobby(*, host_mode: bool) -> None:
     app = ctk.CTk()
-    app.withdraw()
+    prepare_hidden_root_window(app)
 
     network_config = load_lan_runtime_config()
     tcp_port = int(network_config.port)
@@ -2877,7 +2900,7 @@ def run_main_mode_menu() -> None:
 
         if main_selection == "local":
             while True:
-                local_selection = run_local_mode_menu()
+                local_selection = run_local_mode_menu(play_open_sound=False)
                 if local_selection == "back":
                     break
                 if local_selection == "lan_host":
@@ -2897,7 +2920,7 @@ def run_main_mode_menu() -> None:
                 continue
 
             while True:
-                online_selection = run_online_mode_menu()
+                online_selection = run_online_mode_menu(play_open_sound=False)
                 if online_selection == "back":
                     break
                 if online_selection == "host":

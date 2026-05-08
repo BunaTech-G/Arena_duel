@@ -95,6 +95,43 @@ class OnlineClientTests(unittest.TestCase):
         self.assertEqual(status.tone, "success")
         self.assertEqual(status.signal_bars, 4)
         self.assertTrue(status.online_available)
+        self.assertTrue(status.service_available)
+
+    def test_get_online_network_status_prefers_wifi_when_windows_metric_is_lower(self):
+        ipv4_listing = (
+            "Idx     Met         MTU          État                Nom\n"
+            "---  ----------  ----------  ------------  ---------------------------\n"
+            " 12          25        1500  connected     Ethernet\n"
+            " 14          10        1500  connected     Wi-Fi\n"
+        )
+        completed_process = subprocess.CompletedProcess(
+            args=["netsh"],
+            returncode=0,
+            stdout=ipv4_listing,
+            stderr="",
+        )
+
+        with (
+            mock.patch.object(
+                online_client_module,
+                "_run_netsh_ipv4_interface_listing",
+                return_value=completed_process.stdout,
+            ),
+            mock.patch.object(
+                online_client_module,
+                "probe_online_service",
+                return_value=True,
+            ),
+            mock.patch.object(
+                online_client_module.time,
+                "perf_counter",
+                side_effect=[1.0, 1.06],
+            ),
+        ):
+            status = online_client_module.get_online_network_status()
+
+        self.assertEqual(status.transport_kind, "wifi")
+        self.assertEqual(status.transport_label, "Wi-Fi")
 
     def test_get_online_network_status_returns_offline_without_link(self):
         interface_listing = (
@@ -169,6 +206,7 @@ class OnlineClientTests(unittest.TestCase):
         self.assertEqual(status.tone, "warning")
         self.assertEqual(status.signal_bars, 3)
         self.assertEqual(status.quality_label, "Moyen")
+        self.assertTrue(status.service_available)
 
     def test_get_online_network_status_accepts_garbled_windows_output(self):
         interface_listing = (
@@ -202,6 +240,86 @@ class OnlineClientTests(unittest.TestCase):
 
         self.assertEqual(status.transport_kind, "ethernet")
         self.assertEqual(status.transport_label, "Ethernet")
+        self.assertTrue(status.online_available)
+        self.assertEqual(status.quality_label, "Connecté")
+        self.assertFalse(status.service_available)
+
+    def test_get_online_network_status_ignores_virtual_ethernet_when_wifi_is_real_link(
+        self,
+    ):
+        interface_listing = (
+            "État admin    État          Type            Nom de l’interface\n"
+            "---------------------------------------------------------\n"
+            "Activé         Connecté       Dédié            vEthernet (Default Switch)\n"
+            "Activé         Connecté       Dédié            Wi-Fi\n"
+        )
+        completed_process = subprocess.CompletedProcess(
+            args=["netsh"],
+            returncode=0,
+            stdout=interface_listing,
+            stderr="",
+        )
+
+        with (
+            mock.patch.object(
+                online_client_module.subprocess,
+                "run",
+                return_value=completed_process,
+            ),
+            mock.patch.object(
+                online_client_module,
+                "probe_online_service",
+                return_value=True,
+            ),
+            mock.patch.object(
+                online_client_module.time,
+                "perf_counter",
+                side_effect=[3.0, 3.05],
+            ),
+        ):
+            status = online_client_module.get_online_network_status()
+
+        self.assertEqual(status.transport_kind, "wifi")
+        self.assertEqual(status.transport_label, "Wi-Fi")
+
+    def test_get_online_network_status_keeps_transport_when_service_is_down(self):
+        interface_listing = (
+            "État admin    État          Type            Nom de l’interface\n"
+            "---------------------------------------------------------\n"
+            "Activé         Connecté       Dédié            Ethernet\n"
+        )
+        completed_process = subprocess.CompletedProcess(
+            args=["netsh"],
+            returncode=0,
+            stdout=interface_listing,
+            stderr="",
+        )
+
+        with (
+            mock.patch.object(
+                online_client_module.subprocess,
+                "run",
+                return_value=completed_process,
+            ),
+            mock.patch.object(
+                online_client_module,
+                "probe_online_service",
+                return_value=False,
+            ),
+            mock.patch.object(
+                online_client_module.time,
+                "perf_counter",
+                side_effect=[4.0, 4.06],
+            ),
+        ):
+            status = online_client_module.get_online_network_status()
+
+        self.assertEqual(status.transport_kind, "ethernet")
+        self.assertTrue(status.online_available)
+        self.assertTrue(status.is_connected)
+        self.assertEqual(status.quality_label, "Connecté")
+        self.assertFalse(status.service_available)
+        self.assertEqual(status.tone, "warning")
 
 
 if __name__ == "__main__":

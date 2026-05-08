@@ -9,6 +9,7 @@ User=arena
 Group=arena
 WorkingDirectory=/opt/arena_duel_clean
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/default/arena-duel-online
 ExecStart=/opt/arena_duel_clean/.venv/bin/python -m network.online_server --host 0.0.0.0 --port 27015
 Restart=always
 RestartSec=3

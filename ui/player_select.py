@@ -59,6 +59,7 @@ from ui.theme import (
     style_image_label,
     update_badge,
 )
+from ui.shutdown import close_embedded_root_gracefully
 
 
 TEAM_DISPLAY_BY_CODE = {
@@ -404,6 +405,7 @@ class ForgeGuideWindow(ctk.CTkToplevel):
 
         self.geometry("760x560")
         enable_large_window(self, 680, 480, start_zoomed=True)
+        self.protocol("WM_DELETE_WINDOW", self._handle_close)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
@@ -529,7 +531,7 @@ class ForgeGuideWindow(ctk.CTkToplevel):
         create_button(
             footer,
             "Fermer",
-            self.destroy,
+            self._handle_close,
             variant="ghost",
             height=40,
             width=120,
@@ -537,6 +539,16 @@ class ForgeGuideWindow(ctk.CTkToplevel):
 
         self.refresh_content()
         present_window(self)
+
+    def _handle_close(self):
+        play_click()
+        parent = self.parent_view
+        self.destroy()
+        try:
+            if parent.winfo_exists():
+                present_window(parent)
+        except TclError:
+            return
 
     def refresh_content(self):
         selected_mode = self.parent_view._get_selected_match_mode()
@@ -2448,12 +2460,16 @@ class PlayerSelectView(ctk.CTkToplevel):
         parent = self.parent
         restore_parent_on_close = self.restore_parent_on_close
         destroy_parent_on_close = self.destroy_parent_on_close
+        try:
+            if destroy_parent_on_close and parent.winfo_exists():
+                close_embedded_root_gracefully(parent)
+                return
+        except TclError:
+            return
+
         self.destroy()
         try:
             if not parent.winfo_exists():
-                return
-            if destroy_parent_on_close:
-                parent.destroy()
                 return
             if restore_parent_on_close:
                 present_window(parent)

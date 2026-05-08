@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import signal
+import sys
 import threading
 from collections.abc import Callable, Iterable
 from tkinter import TclError
@@ -61,6 +62,150 @@ def close_window_gracefully(
         window.destroy()
     except TclError:
         pass
+    return True
+
+
+def _iter_pending_after_callback_ids(root):
+    if not window_exists(root):
+        return ()
+
+    try:
+        callback_ids = root.tk.call("after", "info")
+    except TclError:
+        return ()
+
+    if not callback_ids:
+        return ()
+    if isinstance(callback_ids, str):
+        return (callback_ids,)
+    if isinstance(callback_ids, (tuple, list)):
+        return tuple(callback_ids)
+    return ()
+
+
+def _iter_window_tree(root):
+    if not window_exists(root):
+        return ()
+
+    windows = [root]
+
+    try:
+        child_windows = list(root.winfo_children())
+    except TclError:
+        child_windows = []
+
+    for child in child_windows:
+        windows.extend(_iter_window_tree(child))
+
+    return tuple(windows)
+
+
+def _cancel_owned_after_callbacks(window) -> None:
+    callback_ids = getattr(window, "_arena_after_callback_ids", None)
+    if not callback_ids:
+        return
+
+    for callback_id in tuple(callback_ids):
+        try:
+            window.after_cancel(callback_id)
+        except TclError:
+            pass
+        callback_ids.discard(callback_id)
+
+
+def _cancel_customtkinter_after_callbacks(root) -> None:
+    callback_name_suffixes = (
+        "update",
+        "check_dpi_scaling",
+        "click_animation",
+        "_windows_set_titlebar_icon",
+        "_set_scaled_min_max",
+        "_revert_withdraw_after_windows_set_titlebar_color",
+    )
+
+    for callback_id in _iter_pending_after_callback_ids(root):
+        try:
+            callback_info = root.tk.call("after", "info", callback_id)
+        except TclError:
+            continue
+
+        if not callback_info:
+            continue
+
+        callback_name = str(callback_info[0])
+        if not callback_name.endswith(callback_name_suffixes):
+            continue
+
+        try:
+            root.after_cancel(callback_id)
+        except TclError:
+            continue
+
+
+def destroy_root_window_gracefully(window) -> bool:
+    if not window_exists(window):
+        return True
+
+    _cancel_owned_after_callbacks(window)
+    _cancel_customtkinter_after_callbacks(window)
+
+    try:
+        window.quit()
+    except (AttributeError, TclError):
+        pass
+
+    try:
+        window.destroy()
+    except TclError:
+        pass
+    return True
+
+
+def close_embedded_root_gracefully(root) -> bool:
+    if not window_exists(root):
+        return True
+
+    for window in reversed(_iter_window_tree(root)):
+        _cancel_owned_after_callbacks(window)
+        _cancel_customtkinter_after_callbacks(window)
+        _cancel_pending_after_callbacks(window)
+
+    try:
+        root.quit()
+    except (AttributeError, TclError):
+        pass
+
+    try:
+        root.destroy()
+    except TclError:
+        pass
+    return True
+
+
+def prepare_hidden_root_window(root) -> bool:
+    if root is None:
+        return False
+
+    if sys.platform.startswith("win"):
+        for attr_name, value in (
+            ("_deactivate_windows_window_header_manipulation", True),
+            ("_window_exists", True),
+        ):
+            try:
+                setattr(root, attr_name, value)
+            except AttributeError:
+                pass
+
+        for args in (("-toolwindow", True), ("-alpha", 0)):
+            try:
+                root.attributes(*args)
+            except (AttributeError, TclError):
+                pass
+
+    try:
+        root.withdraw()
+    except (AttributeError, TclError):
+        return False
     return True
 
 
@@ -145,12 +290,7 @@ def build_graceful_shutdown(
                     pass
 
             if destroy_root and window_exists(root):
-                _cancel_pending_after_callbacks(root)
-
-                try:
-                    root.destroy()
-                except TclError:
-                    pass
+                destroy_root_window_gracefully(root)
 
             shutdown_completed = True
         finally:

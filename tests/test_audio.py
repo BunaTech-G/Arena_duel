@@ -7,6 +7,9 @@ audio_module = importlib.import_module("game.audio")
 
 
 class AudioRoutingTests(unittest.TestCase):
+    def setUp(self):
+        setattr(audio_module, "_last_click_played_at", None)
+
     def test_play_pickup_uses_default_sound_without_combo(self):
         with (
             mock.patch.object(
@@ -125,6 +128,48 @@ class AudioRoutingTests(unittest.TestCase):
             audio_module.play_trap(trap_kind="rune_trap")
 
         safe_play.assert_called_once_with("ember-snd", "trap_b", 700)
+
+    def test_play_click_ignores_duplicate_calls_inside_debounce_window(self):
+        with (
+            mock.patch.object(
+                audio_module.time,
+                "monotonic",
+                side_effect=[10.0, 10.03],
+            ),
+            mock.patch.object(
+                audio_module, "_get_role_sound", return_value="click-snd"
+            ),
+            mock.patch.object(audio_module, "_role_maxtime", return_value=220),
+            mock.patch.object(audio_module, "_safe_play") as safe_play,
+        ):
+            audio_module.play_click()
+            audio_module.play_click()
+
+        safe_play.assert_called_once_with("click-snd", "clic", 220)
+
+    def test_play_click_allows_calls_after_debounce_window(self):
+        with (
+            mock.patch.object(
+                audio_module.time,
+                "monotonic",
+                side_effect=[10.0, 10.2],
+            ),
+            mock.patch.object(
+                audio_module, "_get_role_sound", return_value="click-snd"
+            ),
+            mock.patch.object(audio_module, "_role_maxtime", return_value=220),
+            mock.patch.object(audio_module, "_safe_play") as safe_play,
+        ):
+            audio_module.play_click()
+            audio_module.play_click()
+
+        self.assertEqual(
+            safe_play.call_args_list,
+            [
+                mock.call("click-snd", "clic", 220),
+                mock.call("click-snd", "clic", 220),
+            ],
+        )
 
 
 if __name__ == "__main__":

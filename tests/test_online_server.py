@@ -10,6 +10,16 @@ online_server = importlib.import_module("network.online_server")
 class _DummyWriter:
     def __init__(self):
         self.messages = []
+        self.closed = False
+
+    def get_extra_info(self, _name):
+        return ("127.0.0.1", 27015)
+
+    def close(self):
+        self.closed = True
+
+    async def wait_closed(self):
+        return None
 
 
 class _FinishedGameState:
@@ -155,6 +165,88 @@ class OnlineServerReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rooms_message["rooms"]), 1)
         self.assertEqual(rooms_message["rooms"][0]["name"], "Preview Room")
         self.assertEqual(rooms_message["rooms"][0]["match_duration_seconds"], 45)
+
+    async def test_prelogin_times_out_even_if_client_keeps_listing_rooms(self):
+        writer = _DummyWriter()
+        reader = mock.AsyncMock()
+
+        async def _wait_for_passthrough(awaitable, timeout):
+            del timeout
+            return await awaitable
+
+        async def _list_rooms_stub():
+            return [
+                {
+                    "room_id": "preview-room",
+                    "name": "Preview Room",
+                    "players": 1,
+                    "max_players": 2,
+                    "match_duration_seconds": 45,
+                    "state": "lobby",
+                    "host_pseudo": "HostPlayer",
+                }
+            ]
+
+        with (
+            mock.patch.object(
+                online_server,
+                "read_msg",
+                side_effect=[{"type": "LIST_ROOMS"}],
+            ),
+            mock.patch.object(
+                online_server,
+                "list_rooms",
+                new=_list_rooms_stub,
+            ),
+            mock.patch.object(
+                online_server.asyncio,
+                "wait_for",
+                new=_wait_for_passthrough,
+            ),
+            mock.patch.object(
+                online_server.time,
+                "monotonic",
+                side_effect=[100.0, 100.0, 111.0],
+            ),
+        ):
+            with self.assertRaises(TimeoutError):
+                await online_server.read_login_or_prelogin_request(
+                    reader,
+                    writer,
+                    timeout_seconds=10.0,
+                )
+
+        rooms_message = self._last_message_of_type(writer, "ROOMS")
+        self.assertEqual(len(rooms_message["rooms"]), 1)
+
+    async def test_handle_rejects_client_when_handshake_times_out(self):
+        reader = mock.Mock()
+        writer = _DummyWriter()
+
+        async def _slow_read_msg(_reader):
+            await asyncio.sleep(0.02)
+            return {"type": "HELLO", "proto": online_server.PROTO_VERSION}
+
+        with (
+            mock.patch.object(
+                online_server,
+                "read_msg",
+                new=_slow_read_msg,
+            ),
+            mock.patch.object(
+                online_server,
+                "ONLINE_HANDSHAKE_TIMEOUT_SECONDS",
+                0.001,
+            ),
+        ):
+            await online_server.handle(reader, writer)
+
+        self.assertIn(
+            {"type": "ERROR", "code": "HANDSHAKE_TIMEOUT"},
+            writer.messages,
+        )
+        self.assertTrue(writer.closed)
+        self.assertEqual(online_server.clients, {})
 
     async def test_start_match_uses_selected_room_duration(self):
         room_id, host_writer, guest_writer = await self._create_room_with_two_players()
@@ -338,6 +430,128 @@ class OnlineServerReadyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(guest_room_update["room"]["host_client_id"], "guest")
         self.assertEqual(guest_assign_slot["client_id"], "guest")
         self.assertEqual(guest_assign_slot["slot"], 1)
+
+    async def test_leave_room_closes_active_match_for_everyone(self):
+        room_id, host_writer, guest_writer = await self._create_room_with_two_players()
+
+        game_task = mock.Mock()
+        async with online_server.registry_lock:
+            room = online_server.rooms[room_id]
+            room.state = "in_game"
+            room.game_state = mock.Mock()
+            room.game_task = game_task
+
+        self._clear_messages(host_writer, guest_writer)
+        await online_server.leave_room("guest")
+
+        self.assertEqual(online_server.rooms, {})
+        self.assertEqual(online_server.clients, {})
+        self.assertTrue(host_writer.closed)
+        self.assertTrue(guest_writer.closed)
+        game_task.cancel.assert_called_once_with()
+
+        self.assertEqual(host_writer.messages[0]["type"], "DISCONNECTED")
+        self.assertEqual(host_writer.messages[0]["code"], "ROOM_CLOSED")
+        self.assertIn(
+            "GuestPlayer a quitté la partie", host_writer.messages[0]["message"]
+        )
+        self.assertEqual(guest_writer.messages[0]["type"], "DISCONNECTED")
+        self.assertEqual(guest_writer.messages[0]["code"], "ROOM_CLOSED")
+
+    async def test_list_rooms_closes_room_after_fifteen_minutes(self):
+        host_writer = await self._register_client("host", "HostPlayer")
+        await online_server.create_room("host", "Session longue", 2)
+        self._clear_messages(host_writer)
+
+        room_id = next(iter(online_server.rooms))
+        async with online_server.registry_lock:
+            online_server.rooms[room_id].created_at = (
+                online_server.time.time()
+                - online_server.ONLINE_ROOM_OPEN_TIMEOUT_SECONDS
+                - 1.0
+            )
+
+        rooms = await online_server.list_rooms()
+
+        self.assertEqual(rooms, [])
+        self.assertEqual(online_server.rooms, {})
+        self.assertEqual(online_server.clients, {})
+        self.assertTrue(host_writer.closed)
+        self.assertEqual(host_writer.messages[0]["type"], "DISCONNECTED")
+        self.assertEqual(host_writer.messages[0]["code"], "ROOM_EXPIRED")
+        self.assertIn("15 minutes", host_writer.messages[0]["message"])
+
+    async def test_list_rooms_prunes_room_with_only_stale_client(self):
+        await self._register_client("host", "HostPlayer")
+        await online_server.create_room("host", "Ghost Room", 2)
+
+        stale_at = (
+            online_server.time.monotonic()
+            - online_server.ONLINE_CLIENT_STALE_TIMEOUT_SECONDS
+            - 1.0
+        )
+        async with online_server.registry_lock:
+            online_server.clients["host"].last_activity_at = stale_at
+
+        rooms = await online_server.list_rooms()
+
+        self.assertEqual(rooms, [])
+        self.assertEqual(online_server.rooms, {})
+        self.assertEqual(online_server.clients, {})
+
+    async def test_list_rooms_prunes_stale_guest_from_room_counts(self):
+        room_id, host_writer, guest_writer = await self._create_room_with_two_players()
+        self._clear_messages(host_writer, guest_writer)
+
+        stale_at = (
+            online_server.time.monotonic()
+            - online_server.ONLINE_CLIENT_STALE_TIMEOUT_SECONDS
+            - 1.0
+        )
+        async with online_server.registry_lock:
+            online_server.clients["guest"].last_activity_at = stale_at
+
+        rooms = await online_server.list_rooms()
+
+        self.assertEqual(len(rooms), 1)
+        self.assertEqual(rooms[0]["room_id"], room_id)
+        self.assertEqual(rooms[0]["players"], 1)
+        self.assertEqual(host_writer.messages[-2]["type"], "ROOM_UPDATE")
+        self.assertEqual(host_writer.messages[-1]["type"], "ASSIGN_SLOT")
+        async with online_server.registry_lock:
+            room = online_server.rooms[room_id]
+            self.assertEqual(room.client_ids, ["host"])
+            self.assertNotIn("guest", online_server.clients)
+
+    async def test_list_rooms_logs_diagnostics_when_enabled(self):
+        await self._register_client("host", "HostPlayer")
+        await online_server.create_room("host", "Diag Room", 2)
+
+        with (
+            mock.patch.object(
+                online_server,
+                "ONLINE_DIAGNOSTIC_LIST_ROOMS",
+                True,
+            ),
+            mock.patch("builtins.print") as mocked_print,
+        ):
+            rooms = await online_server.list_rooms()
+
+        self.assertEqual(len(rooms), 1)
+        printed_lines = [
+            " ".join(str(arg) for arg in call.args)
+            for call in mocked_print.call_args_list
+        ]
+        self.assertTrue(
+            any(
+                "[ONLINE][LIST_ROOMS]" in line
+                and '"room_id"' in line
+                and '"name":"Diag Room"' in line
+                and '"client_id":"host"' in line
+                for line in printed_lines
+            ),
+            printed_lines,
+        )
 
     def test_build_start_server_kwargs_enables_keep_alive_when_supported(self):
         with mock.patch.object(

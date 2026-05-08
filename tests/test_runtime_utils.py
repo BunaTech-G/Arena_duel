@@ -171,6 +171,49 @@ class RuntimeUtilsTests(unittest.TestCase):
 
         self.assertFalse(override_path.exists())
 
+    def test_terminate_previous_arena_duel_instances_kills_other_window_pids(self):
+        with (
+            mock.patch.object(sys, "platform", "win32"),
+            mock.patch.object(
+                runtime_utils,
+                "_iter_visible_arena_window_pids",
+                return_value={111, 222, 333},
+            ),
+            mock.patch.object(
+                runtime_utils,
+                "_taskkill_process_tree",
+                side_effect=lambda pid: pid == 222,
+            ) as taskkill,
+            mock.patch.object(runtime_utils.time, "sleep") as sleep,
+        ):
+            terminated = runtime_utils.terminate_previous_arena_duel_instances(
+                current_pid=111,
+            )
+
+        self.assertEqual(terminated, [222])
+        self.assertEqual(taskkill.call_args_list, [mock.call(222), mock.call(333)])
+        sleep.assert_called_once_with(0.25)
+
+    def test_terminate_previous_arena_duel_instances_is_noop_off_windows(self):
+        with (
+            mock.patch.object(sys, "platform", "linux"),
+            mock.patch.object(
+                runtime_utils,
+                "_iter_visible_arena_window_pids",
+            ) as iter_pids,
+            mock.patch.object(
+                runtime_utils,
+                "_taskkill_process_tree",
+            ) as taskkill,
+        ):
+            terminated = runtime_utils.terminate_previous_arena_duel_instances(
+                current_pid=111,
+            )
+
+        self.assertEqual(terminated, [])
+        iter_pids.assert_not_called()
+        taskkill.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

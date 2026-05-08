@@ -48,7 +48,7 @@ from ui.player_select import (
     FIGHTER_SPRITE_ID_BY_DISPLAY,
     get_default_fighter_id,
 )
-from ui.shutdown import close_window_gracefully
+from ui.shutdown import close_embedded_root_gracefully, close_window_gracefully
 from ui.theme import (
     PALETTE,
     TYPOGRAPHY,
@@ -89,6 +89,7 @@ class HallGuideWindow(ctk.CTkToplevel):
 
         self.geometry("760x560")
         enable_large_window(self, 680, 480, start_zoomed=True)
+        self.protocol("WM_DELETE_WINDOW", self._handle_close)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
@@ -213,7 +214,7 @@ class HallGuideWindow(ctk.CTkToplevel):
         create_button(
             footer,
             "Fermer",
-            self.destroy,
+            self._handle_close,
             variant="ghost",
             height=40,
             width=120,
@@ -221,6 +222,16 @@ class HallGuideWindow(ctk.CTkToplevel):
 
         self.refresh_content()
         present_window(self)
+
+    def _handle_close(self):
+        play_click()
+        parent = self.parent_view
+        self.destroy()
+        try:
+            if parent.winfo_exists():
+                present_window(parent)
+        except TclError:
+            return
 
     def refresh_content(self):
         mode_label = "Hôte" if self.parent_view.host_mode else "Client"
@@ -2055,17 +2066,18 @@ class NetworkLobbyView(ctk.CTkToplevel):
                 setattr(self, attr_name, None)
 
         parent = self.master
-        self.destroy()
-
-        if not restore_parent and not destroy_parent:
-            return
 
         if destroy_parent:
             try:
                 if parent.winfo_exists():
-                    parent.destroy()
+                    close_embedded_root_gracefully(parent)
             except TclError:
                 return
+            return
+
+        self.destroy()
+
+        if not restore_parent:
             return
 
         try:
