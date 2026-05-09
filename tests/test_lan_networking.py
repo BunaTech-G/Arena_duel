@@ -244,6 +244,52 @@ class LanNetworkingTests(unittest.TestCase):
             "skeleton_fighter_aether",
         )
 
+    def test_history_request_returns_soft_error_when_history_lookup_fails(self):
+        port = _reserve_free_port()
+        with patch(
+            "network.server.get_serializable_match_history",
+            side_effect=RuntimeError("base hors ligne"),
+        ):
+            server, _thread, _address_info = start_server_in_background(
+                "127.0.0.1",
+                port,
+            )
+            self.servers.append(server)
+
+            client = NetworkClient()
+            self.clients.append(client)
+            client.connect(
+                "127.0.0.1",
+                port,
+                "Gardien",
+                is_host=True,
+                timeout_seconds=1,
+            )
+
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if any(
+                    message.get("type") == ASSIGN_SLOT
+                    for message in client.poll_messages()
+                ):
+                    break
+                time.sleep(0.05)
+
+            client.send_request_history()
+
+            deadline = time.time() + 2
+            history_error = None
+            while time.time() < deadline and history_error is None:
+                for message in client.poll_messages():
+                    if message.get("type") == "HISTORY_DATA" and not message.get("ok"):
+                        history_error = message
+                        break
+                if history_error is None:
+                    time.sleep(0.05)
+
+        self.assertIsNotNone(history_error)
+        self.assertIn("base hors ligne", history_error.get("message", ""))
+
     def test_game_state_exports_rare_orb_value_and_variant(self):
         lobby_snapshot = {
             "host": {
@@ -418,6 +464,68 @@ class LanNetworkingTests(unittest.TestCase):
         self.assertGreaterEqual(
             len({trap["kind"] for trap in exported_state["traps"]}), 3
         )
+
+    def test_game_state_removes_players_missing_from_lobby_snapshot(self):
+        lobby_snapshot = {
+            "host": {
+                "slot": 1,
+                "name": "Gardien",
+                "team": "A",
+                "ready": True,
+                "input": {},
+            },
+            "guest": {
+                "slot": 2,
+                "name": "Invite",
+                "team": "B",
+                "ready": True,
+                "input": {},
+            },
+        }
+
+        game_state = GameState(lobby_snapshot, match_duration_seconds=60)
+
+        game_state.update(
+            1.0 / 20.0,
+            {
+                "host": dict(lobby_snapshot["host"]),
+            },
+        )
+        exported_state = game_state.export_state()
+        end_message = game_state.build_end_message()
+
+        self.assertEqual(list(game_state.players.keys()), ["host"])
+        self.assertEqual(
+            [player["client_id"] for player in exported_state["players"]],
+            ["host"],
+        )
+        self.assertEqual(
+            [player["name"] for player in end_message["players"]],
+            ["Gardien"],
+        )
+
+    def test_game_state_uses_monotonic_clock_for_match_duration(self):
+        lobby_snapshot = {
+            "host": {
+                "slot": 1,
+                "name": "Gardien",
+                "team": "A",
+                "ready": True,
+                "input": {},
+            }
+        }
+
+        with patch("network.server.time.time", return_value=1000.0):
+            with patch("network.server.time.monotonic", return_value=500.0):
+                game_state = GameState(lobby_snapshot, match_duration_seconds=60)
+
+        with patch("network.server.time.time", return_value=1300.0):
+            with patch("network.server.time.monotonic", return_value=501.0):
+                exported_state = game_state.export_state()
+                is_finished = game_state.is_finished()
+
+        self.assertEqual(exported_state["remaining_time"], 59)
+        self.assertFalse(is_finished)
         self.assertTrue(all("presence" in trap for trap in exported_state["traps"]))
 
     def test_game_state_exports_sprite_direction_and_end_payload(self):

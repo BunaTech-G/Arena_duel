@@ -315,7 +315,8 @@ class GameState:
         self.lobby_session_id = lobby_session_id
         self.match_duration_seconds = coerce_match_duration(match_duration_seconds)
         self.started_at = time.time()
-        self.ends_at = self.started_at + self.match_duration_seconds
+        self.started_at_monotonic = time.monotonic()
+        self.ends_at_monotonic = self.started_at_monotonic + self.match_duration_seconds
         self.match_elapsed_ms = 0.0
         self.team_a_score = 0
         self.team_b_score = 0
@@ -475,10 +476,18 @@ class GameState:
                     )
                     break
 
+    def _prune_missing_players(self, lobby_snapshot: dict) -> None:
+        missing_client_ids = [
+            client_id for client_id in self.players if client_id not in lobby_snapshot
+        ]
+        for client_id in missing_client_ids:
+            self.players.pop(client_id, None)
+
     def update(self, dt: float, lobby_snapshot: dict):
         current_time_ms = time.monotonic() * 1000.0
         self.match_elapsed_ms += dt * 1000.0
         update_match_traps(self.traps, self.match_elapsed_ms)
+        self._prune_missing_players(lobby_snapshot)
         for client_id, player in self.players.items():
             if client_id not in lobby_snapshot:
                 continue
@@ -562,7 +571,7 @@ class GameState:
                     self._respawn_orb(orb)
 
     def export_state(self):
-        remaining = max(0, int(self.ends_at - time.time()))
+        remaining = max(0, int(self.ends_at_monotonic - time.monotonic()))
         current_combo_time_ms = time.monotonic() * 1000.0
         players = []
         for p in self.players.values():
@@ -616,7 +625,7 @@ class GameState:
         }
 
     def is_finished(self):
-        return time.time() >= self.ends_at
+        return time.monotonic() >= self.ends_at_monotonic
 
     def build_end_message(self):
         winner_team = get_winner_team(self.team_a_score, self.team_b_score)
@@ -788,7 +797,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
     def game_loop(self):
         dt = 1.0 / TICK_RATE
-        next_tick = time.time()
+        next_tick = time.monotonic()
 
         while self.match_running:
             snapshot = self.lobby.get_snapshot()
@@ -844,11 +853,11 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 break
 
             next_tick += dt
-            sleep_time = next_tick - time.time()
+            sleep_time = next_tick - time.monotonic()
             if sleep_time > 0:
                 time.sleep(sleep_time)
             else:
-                next_tick = time.time()
+                next_tick = time.monotonic()
 
 
 class ArenaRequestHandler(socketserver.StreamRequestHandler):
@@ -1011,8 +1020,24 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                     "Chroniques LAN demandees par %s",
                     self.client_info["name"],
                 )
-                rows = get_serializable_match_history()
-                self.safe_send({"type": HISTORY_DATA, "ok": True, "rows": rows})
+                try:
+                    rows = get_serializable_match_history()
+                except RuntimeError as error:
+                    self.server.network_logger.error(
+                        "Lecture des chroniques LAN impossible pour %s: %s",
+                        self.client_info["name"],
+                        error,
+                    )
+                    self.safe_send(
+                        {
+                            "type": HISTORY_DATA,
+                            "ok": False,
+                            "message": str(error),
+                            "rows": [],
+                        }
+                    )
+                else:
+                    self.safe_send({"type": HISTORY_DATA, "ok": True, "rows": rows})
 
             elif msg_type == SET_MATCH_DURATION:
                 requested_duration = message.get(

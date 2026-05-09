@@ -492,8 +492,8 @@ class LocalModeMenuTests(_CompactMenuTestCase):
         )
 
         button_texts = _collect_button_texts(self.app)
-        self.assertIn("LAN Admin", button_texts)
-        self.assertIn("LAN Rejoindre", button_texts)
+        self.assertIn("Heberger en LAN", button_texts)
+        self.assertIn("Rejoindre en LAN", button_texts)
         self.assertIn("Local", button_texts)
         self.assertIn("Retour", button_texts)
         self.assertTrue(self.app.geometry().startswith("440x520+"))
@@ -2245,6 +2245,132 @@ class LauncherOnlineFlowTests(unittest.TestCase):
             if not _window_is_destroyed(standalone_app):
                 _cancel_pending_after_callbacks(standalone_app)
                 standalone_app.destroy()
+
+    def test_lan_lobby_connect_runs_in_background_thread(self):
+        standalone_app = ctk.CTk()
+        standalone_app.withdraw()
+        lobby_window = None
+        thread_instances = []
+
+        class _ImmediateThread:
+            def __init__(
+                self,
+                group=None,
+                target=None,
+                name=None,
+                args=(),
+                kwargs=None,
+                daemon=None,
+            ):
+                self._target = target
+                self._args = args
+                self._kwargs = kwargs or {}
+                self.daemon = daemon
+                self.started = False
+                thread_instances.append(self)
+
+            def start(self):
+                self.started = True
+
+            def run(self):
+                if self._target is not None:
+                    self._target(*self._args, **self._kwargs)
+
+        fake_client = mock.Mock()
+        fake_client.running = True
+        fake_client.send_match_duration.return_value = True
+
+        try:
+            with (
+                mock.patch.object(network_lobby_module, "apply_window_icon"),
+                mock.patch.object(network_lobby_module, "enable_large_window"),
+                mock.patch.object(network_lobby_module, "start_menu_music"),
+                mock.patch.object(network_lobby_module, "play_transition"),
+                mock.patch.object(network_lobby_module, "play_alert"),
+                mock.patch.object(network_lobby_module, "present_window"),
+                mock.patch.object(
+                    network_lobby_module,
+                    "load_lan_runtime_config",
+                    return_value=mock.Mock(
+                        port=5000,
+                        connect_timeout_seconds=0.25,
+                        client_state_path="lan-state.json",
+                    ),
+                ),
+                mock.patch.object(
+                    network_lobby_module,
+                    "get_lan_address_info",
+                    return_value=mock.Mock(primary_ip="192.168.1.20"),
+                ),
+                mock.patch.object(
+                    network_lobby_module,
+                    "NetworkClient",
+                    return_value=fake_client,
+                ) as network_client_cls,
+                mock.patch.object(
+                    network_lobby_module.threading,
+                    "Thread",
+                    side_effect=_ImmediateThread,
+                ) as thread_ctor,
+            ):
+                lobby_window = network_lobby_module.NetworkLobbyView(
+                    standalone_app,
+                    restore_parent_on_close=False,
+                    destroy_parent_on_close=True,
+                )
+                lobby_window.ip_entry.delete(0, "end")
+                lobby_window.ip_entry.insert(0, "127.0.0.1:5000")
+                lobby_window.name_entry.delete(0, "end")
+                lobby_window.name_entry.insert(0, "Gardien")
+
+                with (
+                    mock.patch.object(
+                        lobby_window,
+                        "_start_network_thread",
+                    ) as start_network_thread,
+                    mock.patch.object(
+                        lobby_window,
+                        "_save_server_invitation",
+                    ) as save_invitation,
+                ):
+                    getattr(lobby_window, "_connect")()
+
+                    self.assertTrue(getattr(lobby_window, "_connect_in_progress"))
+                    self.assertIsNone(lobby_window.client)
+                    thread_ctor.assert_called_once()
+                    self.assertEqual(len(thread_instances), 1)
+                    self.assertTrue(thread_instances[0].started)
+
+                    thread_instances[0].run()
+                    network_client_cls.assert_called_once_with()
+
+                    getattr(lobby_window, "_drain_connect_results")()
+
+                fake_client.connect.assert_called_once_with(
+                    "127.0.0.1",
+                    5000,
+                    "Gardien",
+                    is_host=False,
+                    timeout_seconds=0.25,
+                    sprite_id=lobby_window._get_selected_fighter_id(),
+                )
+                start_network_thread.assert_called_once_with()
+                save_invitation.assert_called_once_with("127.0.0.1:5000", "local")
+                self.assertFalse(getattr(lobby_window, "_connect_in_progress"))
+                self.assertIs(lobby_window.client, fake_client)
+        finally:
+            if lobby_window is not None and not _window_is_destroyed(lobby_window):
+                _cancel_pending_after_callbacks(lobby_window)
+                try:
+                    lobby_window.destroy()
+                except TclError:
+                    pass
+            if not _window_is_destroyed(standalone_app):
+                _cancel_pending_after_callbacks(standalone_app)
+                try:
+                    standalone_app.destroy()
+                except TclError:
+                    pass
 
     def test_player_select_hides_launcher_and_restores_it_on_close(self):
         with (

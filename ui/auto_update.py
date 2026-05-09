@@ -31,8 +31,8 @@ from ui.theme import (
     create_badge,
     create_button,
     present_window,
+    style_checkbox,
     style_frame,
-    style_scrollable_frame,
     style_window,
 )
 
@@ -48,21 +48,37 @@ AUTO_UPDATE_CHECK_TIMEOUT_SECONDS = 2.5
 AUTO_UPDATE_POLL_MS = 80
 AUTO_UPDATE_REMIND_LATER_SECONDS = 24 * 60 * 60
 AUTO_UPDATE_REPROMPT_AFTER_LAUNCHES = 2
+AUTO_UPDATE_BADGE_TEXT = "Nouvelle version"
 AUTO_UPDATE_NOTICE_TEXT = "Une mise à jour est disponible"
-AUTO_UPDATE_NOTICE_DETAIL = (
-    "Installe-la maintenant, repousse-la à dans deux lancements, "
-    "ou masque cette version."
+AUTO_UPDATE_NOTICE_DETAIL_TEXT = (
+    "Installe-la maintenant ou plus tard. Tu peux aussi masquer cette "
+    "version jusqu'à la prochaine mise à jour."
 )
 AUTO_UPDATE_NOTICE_MIN_WIDTH = 380
 AUTO_UPDATE_NOTICE_MAX_WIDTH = 560
 AUTO_UPDATE_NOTICE_SIDE_MARGIN = 18
 AUTO_UPDATE_PROMPT_TITLE = "Arena Duel - Mise à jour"
-AUTO_UPDATE_PROMPT_DETAIL = (
-    "Installe cette version maintenant, repousse-la à dans deux lancements, "
-    "ou masque cette version tant qu'une nouvelle release n'arrive pas."
+AUTO_UPDATE_PROMPT_HEADING_TEMPLATE = "Version {version} prête à installer"
+AUTO_UPDATE_PROMPT_SUBTITLE = (
+    "Téléchargement vérifié. Vous pouvez installer la mise à jour maintenant "
+    "ou la faire plus tard."
 )
-AUTO_UPDATE_PROMPT_WIDTH = 760
-AUTO_UPDATE_PROMPT_HEIGHT = 620
+AUTO_UPDATE_CURRENT_VERSION_LABEL = "Version actuelle"
+AUTO_UPDATE_AVAILABLE_VERSION_LABEL = "Version disponible"
+AUTO_UPDATE_CHANGELOG_TITLE = "Nouveautés de cette version"
+AUTO_UPDATE_ACTIONS_TITLE = "Choisir une action"
+AUTO_UPDATE_ACTIONS_DETAIL = "Installe maintenant ou reviens au menu."
+AUTO_UPDATE_PRIMARY_ACTION_TEXT = "Installer maintenant"
+AUTO_UPDATE_SECONDARY_ACTION_TEXT = "Plus tard"
+AUTO_UPDATE_NOTICE_DISMISS_ACTION_TEXT = "Ne plus afficher cette version"
+AUTO_UPDATE_DISMISS_CHECKBOX_TEMPLATE = (
+    "Ne plus afficher ce message pour la version {version}"
+)
+AUTO_UPDATE_DISMISS_HINT_TEXT = (
+    "La notification reviendra uniquement si une version plus récente est détectée."
+)
+AUTO_UPDATE_PROMPT_WIDTH = 680
+AUTO_UPDATE_PROMPT_HEIGHT = 560
 AUTO_UPDATE_PROMPT_CLOSE_DELAY_MS = 140
 AUTO_UPDATE_DOWNLOAD_POLL_MS = 80
 AUTO_UPDATE_MANIFEST_URL_ENV = "ARENA_DUEL_UPDATE_MANIFEST_URL"
@@ -74,6 +90,10 @@ AUTO_UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 30.0
 AUTO_UPDATE_DOWNLOAD_CHUNK_SIZE = 64 * 1024
 AUTO_UPDATE_DOWNLOAD_TITLE = "Téléchargement en cours"
 AUTO_UPDATE_DOWNLOAD_DETAIL = "Préparation de l'installateur Windows..."
+AUTO_UPDATE_DOWNLOAD_BROWSER_FALLBACK_TEXT = "Page de mise à jour ouverte"
+AUTO_UPDATE_DOWNLOAD_BROWSER_FALLBACK_DETAIL = (
+    "Le téléchargement direct a laissé place à la page de mise à jour GitHub."
+)
 LOCAL_INSTALLER_SUFFIXES = {".exe", ".msi", ".bat", ".cmd"}
 WINDOW_BOUND_ATTR = "_arena_auto_update_bound"
 WINDOW_AFTER_ATTR = "_arena_auto_update_after_id"
@@ -189,18 +209,45 @@ def current_game_version(version_path: str | None = None) -> str:
     return version_text or DEFAULT_GAME_VERSION
 
 
+def _defer_action_text() -> str:
+    return AUTO_UPDATE_SECONDARY_ACTION_TEXT
+
+
+def _notice_action_text() -> str:
+    return AUTO_UPDATE_NOTICE_DETAIL_TEXT
+
+
+def _prompt_heading_text(update: AvailableUpdate) -> str:
+    return AUTO_UPDATE_PROMPT_HEADING_TEMPLATE.format(version=update.version)
+
+
+def _prompt_action_text() -> str:
+    return AUTO_UPDATE_ACTIONS_DETAIL
+
+
+def _dismiss_checkbox_text(update: AvailableUpdate) -> str:
+    return AUTO_UPDATE_DISMISS_CHECKBOX_TEMPLATE.format(version=update.version)
+
+
 def _update_user_agent(current_version: str | None = None) -> str:
     normalized_version = str(current_version or current_game_version()).strip()
     return f"ArenaDuel/{normalized_version or DEFAULT_GAME_VERSION}"
 
 
-def _parse_version_parts(version_text: str) -> tuple[int, ...]:
+def _try_parse_version_parts(version_text: str) -> tuple[int, ...] | None:
     normalized_text = str(version_text or "").strip()
-    if not normalized_text:
-        return (0,)
+    if not normalized_text or re.search(r"\d", normalized_text) is None:
+        return None
 
     parts = [int(token) for token in re.split(r"[^0-9]+", normalized_text) if token]
-    return tuple(parts or [0])
+    if not parts:
+        return None
+
+    return tuple(parts)
+
+
+def _parse_version_parts(version_text: str) -> tuple[int, ...]:
+    return _try_parse_version_parts(version_text) or (0,)
 
 
 def _normalized_version_parts(version_text: str) -> tuple[int, ...]:
@@ -210,18 +257,39 @@ def _normalized_version_parts(version_text: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def is_newer_version(remote_version: str, local_version: str) -> bool:
-    remote_parts = list(_parse_version_parts(remote_version))
-    local_parts = list(_parse_version_parts(local_version))
-    max_length = max(len(remote_parts), len(local_parts))
+def compare_semver(version_a: str, version_b: str) -> int | None:
+    parts_a = _try_parse_version_parts(version_a)
+    parts_b = _try_parse_version_parts(version_b)
+    if parts_a is None or parts_b is None:
+        return None
 
-    remote_parts.extend([0] * (max_length - len(remote_parts)))
-    local_parts.extend([0] * (max_length - len(local_parts)))
-    return tuple(remote_parts) > tuple(local_parts)
+    normalized_a = list(parts_a)
+    normalized_b = list(parts_b)
+    max_length = max(len(normalized_a), len(normalized_b))
+    normalized_a.extend([0] * (max_length - len(normalized_a)))
+    normalized_b.extend([0] * (max_length - len(normalized_b)))
+
+    tuple_a = tuple(normalized_a)
+    tuple_b = tuple(normalized_b)
+    if tuple_a < tuple_b:
+        return -1
+    if tuple_a > tuple_b:
+        return 1
+    return 0
+
+
+def _is_valid_semver_text(version_text: str) -> bool:
+    return compare_semver(version_text, version_text) is not None
+
+
+def is_newer_version(remote_version: str, local_version: str) -> bool:
+    comparison = compare_semver(remote_version, local_version)
+    return comparison is not None and comparison > 0
 
 
 def is_same_version(version_a: str, version_b: str) -> bool:
-    return _normalized_version_parts(version_a) == _normalized_version_parts(version_b)
+    comparison = compare_semver(version_a, version_b)
+    return comparison is not None and comparison == 0
 
 
 def _normalize_optional_url(raw_value: object) -> str:
@@ -645,6 +713,53 @@ def load_auto_update_state(path: str | None = None) -> AutoUpdateState:
     )
 
 
+def normalize_auto_update_state(state: AutoUpdateState) -> AutoUpdateState:
+    dismissed_version = str(state.dismissed_version or "").strip()
+    if dismissed_version and not _is_valid_semver_text(dismissed_version):
+        dismissed_version = ""
+
+    if (
+        state.remind_after_epoch > 0
+        and state.launches_until_prompt <= 0
+        and state.snoozed_version
+        and not dismissed_version
+    ):
+        return AutoUpdateState(
+            snoozed_version=state.snoozed_version,
+            remind_after_epoch=0,
+            launches_until_prompt=0,
+            dismissed_version=dismissed_version,
+        )
+
+    if dismissed_version != str(state.dismissed_version or "").strip():
+        return AutoUpdateState(
+            snoozed_version=state.snoozed_version,
+            remind_after_epoch=state.remind_after_epoch,
+            launches_until_prompt=state.launches_until_prompt,
+            dismissed_version=dismissed_version,
+        )
+
+    return state
+
+
+def get_dismissed_version(path: str | None = None) -> str:
+    raw_state = load_auto_update_state(path)
+    normalized_state = normalize_auto_update_state(raw_state)
+    if normalized_state != raw_state:
+        save_auto_update_state(normalized_state, path)
+    return str(normalized_state.dismissed_version or "").strip()
+
+
+def set_dismissed_version(version: str, path: str | None = None) -> str:
+    normalized_version = str(version or "").strip()
+    if normalized_version and not _is_valid_semver_text(normalized_version):
+        normalized_version = ""
+
+    state = AutoUpdateState(dismissed_version=normalized_version)
+    save_auto_update_state(state, path)
+    return normalized_version
+
+
 def save_auto_update_state(
     state: AutoUpdateState,
     path: str | None = None,
@@ -771,13 +886,13 @@ def check_for_available_update(
 
 def _notice_detail_text(update: AvailableUpdate) -> str:
     if not update.release_notes:
-        return AUTO_UPDATE_NOTICE_DETAIL
+        return _notice_action_text()
 
     first_note = update.release_notes[0]
     if len(update.release_notes) == 1:
-        return f"Nouveau : {first_note}"
+        return f"Nouveauté : {first_note}"
 
-    return f"{len(update.release_notes)} changements disponibles, dont : {first_note}"
+    return f"{len(update.release_notes)} nouveautés, dont : {first_note}"
 
 
 def _service_current_version_text(service) -> str:
@@ -858,6 +973,45 @@ def cancel_pending_after_callbacks(widget) -> None:
             continue
 
 
+def _enable_accessible_focus_ring(
+    widget, *, focus_color: str = PALETTE["gold_hover"]
+) -> None:
+    try:
+        normal_border_color = widget.cget("border_color")
+        normal_border_width = int(widget.cget("border_width") or 0)
+    except (AttributeError, TclError, TypeError, ValueError):
+        return
+
+    try:
+        widget.configure(takefocus=True)
+    except (AttributeError, TclError, ValueError):
+        pass
+
+    def _handle_focus_in(_event=None) -> None:
+        try:
+            widget.configure(
+                border_color=focus_color,
+                border_width=max(2, normal_border_width),
+            )
+        except TclError:
+            pass
+
+    def _handle_focus_out(_event=None) -> None:
+        try:
+            widget.configure(
+                border_color=normal_border_color,
+                border_width=normal_border_width,
+            )
+        except TclError:
+            pass
+
+    try:
+        widget.bind("<FocusIn>", _handle_focus_in, add="+")
+        widget.bind("<FocusOut>", _handle_focus_out, add="+")
+    except TclError:
+        return
+
+
 class AutoUpdateNotice(ctk.CTkFrame):
     def __init__(
         self,
@@ -883,14 +1037,14 @@ class AutoUpdateNotice(ctk.CTkFrame):
         self._update = update
         self.update_button = None
         self.later_button = None
-        self.never_button = None
+        self.dismiss_button = None
         self.detail_label = None
 
         self.grid_columnconfigure(0, weight=1)
         self._build_ui()
 
     def _build_ui(self) -> None:
-        create_badge(self, "Nouvelle version", tone="gold").grid(
+        create_badge(self, AUTO_UPDATE_BADGE_TEXT, tone="gold").grid(
             row=0,
             column=0,
             padx=22,
@@ -909,7 +1063,7 @@ class AutoUpdateNotice(ctk.CTkFrame):
 
         ctk.CTkLabel(
             self,
-            text=f"Version {self._update.version} prête à être installée",
+            text=_prompt_heading_text(self._update),
             font=TYPOGRAPHY["small_bold"],
             text_color=PALETTE["gold"],
             justify="left",
@@ -945,7 +1099,7 @@ class AutoUpdateNotice(ctk.CTkFrame):
 
         self.update_button = create_button(
             button_row,
-            "Mettre à jour",
+            AUTO_UPDATE_PRIMARY_ACTION_TEXT,
             self._handle_update,
             variant="primary",
             height=44,
@@ -956,12 +1110,13 @@ class AutoUpdateNotice(ctk.CTkFrame):
             padx=(0, 8),
             sticky="ew",
         )
+        _enable_accessible_focus_ring(self.update_button)
 
         self.later_button = create_button(
             button_row,
-            "Plus tard",
+            _defer_action_text(),
             self._handle_later,
-            variant="ghost",
+            variant="secondary",
             height=44,
         )
         self.later_button.grid(
@@ -970,15 +1125,16 @@ class AutoUpdateNotice(ctk.CTkFrame):
             padx=(8, 0),
             sticky="ew",
         )
+        _enable_accessible_focus_ring(self.later_button)
 
-        self.never_button = create_button(
+        self.dismiss_button = create_button(
             button_row,
-            "Ne plus me demander",
+            AUTO_UPDATE_NOTICE_DISMISS_ACTION_TEXT,
             self._handle_never,
             variant="subtle",
             height=40,
         )
-        self.never_button.grid(
+        self.dismiss_button.grid(
             row=1,
             column=0,
             columnspan=2,
@@ -986,6 +1142,7 @@ class AutoUpdateNotice(ctk.CTkFrame):
             pady=(10, 0),
             sticky="ew",
         )
+        _enable_accessible_focus_ring(self.dismiss_button)
 
     def _handle_update(self) -> None:
         play_transition()
@@ -1025,9 +1182,13 @@ class AutoUpdatePromptApp(ctk.CTk):
         self._download_queue: "queue.SimpleQueue[tuple]" = queue.SimpleQueue()
         self.update_button = None
         self.later_button = None
-        self.never_button = None
+        self.dismiss_checkbox = None
+        self.dismiss_hint_label = None
+        self.dismiss_shell = None
+        self._dismiss_current_version_var = ctk.BooleanVar(value=False)
         self.shell = None
         self.hero_shell = None
+        self.actions_shell = None
         self.title_label = None
         self.version_label = None
         self.detail_label = None
@@ -1054,6 +1215,11 @@ class AutoUpdatePromptApp(ctk.CTk):
 
         self._build_ui()
         present_window(self)
+        try:
+            if self.update_button is not None:
+                self.update_button.focus_set()
+        except TclError:
+            pass
         _schedule_window_sound(self, tone="alert")
 
     def _build_ui(self) -> None:
@@ -1067,11 +1233,11 @@ class AutoUpdatePromptApp(ctk.CTk):
             border_color=PALETTE["gold_dim"],
             border_width=1,
         )
-        shell.grid(row=0, column=0, padx=28, pady=28, sticky="nsew")
+        shell.grid(row=0, column=0, padx=22, pady=22, sticky="nsew")
         shell.grid_columnconfigure(0, weight=1)
         self.shell = shell
 
-        create_badge(shell, "Nouvelle release", tone="gold").grid(
+        create_badge(shell, AUTO_UPDATE_BADGE_TEXT, tone="gold").grid(
             row=0,
             column=0,
             padx=26,
@@ -1093,11 +1259,11 @@ class AutoUpdatePromptApp(ctk.CTk):
 
         self.title_label = ctk.CTkLabel(
             hero_shell,
-            text=f"Version {self._update.version} prête pour l'arène",
+            text=_prompt_heading_text(self._update),
             font=TYPOGRAPHY["section"],
             text_color=PALETTE["text"],
             justify="left",
-            wraplength=620,
+            wraplength=520,
         )
         self.title_label.grid(
             row=0, column=0, columnspan=2, padx=22, pady=(18, 10), sticky="w"
@@ -1105,14 +1271,11 @@ class AutoUpdatePromptApp(ctk.CTk):
 
         self.version_label = ctk.CTkLabel(
             hero_shell,
-            text=(
-                "Mise à jour vérifiée et prête à être téléchargée "
-                "depuis l'écran de lancement."
-            ),
+            text=AUTO_UPDATE_PROMPT_SUBTITLE,
             font=TYPOGRAPHY["body_bold"],
             text_color=PALETTE["gold"],
             justify="left",
-            wraplength=620,
+            wraplength=520,
         )
         self.version_label.grid(
             row=1, column=0, columnspan=2, padx=22, pady=(0, 16), sticky="w"
@@ -1122,38 +1285,58 @@ class AutoUpdatePromptApp(ctk.CTk):
             hero_shell,
             row=2,
             column=0,
-            label_text="Version actuelle",
+            label_text=AUTO_UPDATE_CURRENT_VERSION_LABEL,
             value_text=_service_current_version_text(self._service),
         )
         self.available_version_card = self._build_version_card(
             hero_shell,
             row=2,
             column=1,
-            label_text="Version disponible",
+            label_text=AUTO_UPDATE_AVAILABLE_VERSION_LABEL,
             value_text=self._update.version,
         )
 
-        self.detail_label = ctk.CTkLabel(
-            shell,
-            text=AUTO_UPDATE_PROMPT_DETAIL,
-            font=TYPOGRAPHY["body"],
-            text_color=PALETTE["text_soft"],
-            justify="left",
-            wraplength=620,
+        actions_shell = ctk.CTkFrame(shell, corner_radius=18)
+        style_frame(
+            actions_shell,
+            tone="panel",
+            border_color=PALETTE["divider"],
+            border_width=1,
         )
-        self.detail_label.grid(row=2, column=0, padx=26, pady=(0, 22), sticky="w")
-
-        button_row_grid_row = 3
-        if self._update.release_notes:
-            self._build_release_notes_ui(shell, row=3)
-            button_row_grid_row = 4
-
-        button_row = ctk.CTkFrame(shell, fg_color="transparent")
-        button_row.grid(
-            row=button_row_grid_row,
+        actions_shell.grid(
+            row=2,
             column=0,
             padx=26,
             pady=(0, 26),
+            sticky="ew",
+        )
+        actions_shell.grid_columnconfigure(0, weight=1)
+        self.actions_shell = actions_shell
+
+        ctk.CTkLabel(
+            actions_shell,
+            text=AUTO_UPDATE_ACTIONS_TITLE,
+            font=TYPOGRAPHY["small_bold"],
+            text_color=PALETTE["gold"],
+            justify="left",
+        ).grid(row=0, column=0, padx=18, pady=(16, 8), sticky="w")
+
+        self.detail_label = ctk.CTkLabel(
+            actions_shell,
+            text=_prompt_action_text(),
+            font=TYPOGRAPHY["small"],
+            text_color=PALETTE["text_soft"],
+            justify="left",
+            wraplength=500,
+        )
+        self.detail_label.grid(row=1, column=0, padx=18, pady=(0, 14), sticky="w")
+
+        button_row = ctk.CTkFrame(actions_shell, fg_color="transparent")
+        button_row.grid(
+            row=2,
+            column=0,
+            padx=18,
+            pady=(0, 18),
             sticky="ew",
         )
         button_row.grid_columnconfigure(0, weight=1)
@@ -1162,37 +1345,63 @@ class AutoUpdatePromptApp(ctk.CTk):
 
         self.update_button = create_button(
             button_row,
-            "Mettre à jour",
+            AUTO_UPDATE_PRIMARY_ACTION_TEXT,
             self._handle_update,
             variant="primary",
             height=50,
         )
         self.update_button.grid(row=0, column=0, padx=(0, 10), sticky="ew")
+        _enable_accessible_focus_ring(self.update_button)
 
         self.later_button = create_button(
             button_row,
-            "Plus tard",
+            _defer_action_text(),
             self._handle_later,
-            variant="ghost",
+            variant="secondary",
             height=50,
         )
         self.later_button.grid(row=0, column=1, padx=(10, 0), sticky="ew")
+        _enable_accessible_focus_ring(self.later_button)
 
-        self.never_button = create_button(
-            button_row,
-            f"Ne plus me demander pour {self._update.version}",
-            self._handle_never,
-            variant="subtle",
-            height=42,
-        )
-        self.never_button.grid(
-            row=1,
+        dismiss_shell = ctk.CTkFrame(actions_shell, fg_color="transparent")
+        dismiss_shell.grid(
+            row=3,
             column=0,
-            columnspan=2,
-            padx=0,
-            pady=(12, 0),
+            padx=18,
+            pady=(0, 18),
             sticky="ew",
         )
+        dismiss_shell.grid_columnconfigure(0, weight=1)
+        self.dismiss_shell = dismiss_shell
+
+        self.dismiss_checkbox = ctk.CTkCheckBox(
+            dismiss_shell,
+            text=_dismiss_checkbox_text(self._update),
+            variable=self._dismiss_current_version_var,
+            onvalue=True,
+            offvalue=False,
+            fg_color=PALETTE["gold"],
+            hover_color=PALETTE["gold_hover"],
+            border_color=PALETTE["border_strong"],
+            text_color=PALETTE["text"],
+            font=TYPOGRAPHY["small_bold"],
+        )
+        style_checkbox(self.dismiss_checkbox)
+        self.dismiss_checkbox.grid(row=0, column=0, sticky="w")
+        _enable_accessible_focus_ring(self.dismiss_checkbox)
+
+        self.dismiss_hint_label = ctk.CTkLabel(
+            dismiss_shell,
+            text=AUTO_UPDATE_DISMISS_HINT_TEXT,
+            font=TYPOGRAPHY["small"],
+            text_color=PALETTE["text_soft"],
+            justify="left",
+            wraplength=500,
+        )
+        self.dismiss_hint_label.grid(row=1, column=0, pady=(6, 0), sticky="w")
+
+        if self._update.release_notes:
+            self._build_release_notes_ui(shell, row=3)
 
     def _build_version_card(
         self,
@@ -1233,7 +1442,7 @@ class AutoUpdatePromptApp(ctk.CTk):
             font=TYPOGRAPHY["subtitle"],
             text_color=PALETTE["text"],
             justify="left",
-            wraplength=220,
+            wraplength=180,
         ).grid(row=1, column=0, padx=16, pady=(0, 14), sticky="w")
         return card
 
@@ -1251,47 +1460,75 @@ class AutoUpdatePromptApp(ctk.CTk):
 
         ctk.CTkLabel(
             notes_shell,
-            text="Nouveautés",
+            text=AUTO_UPDATE_CHANGELOG_TITLE,
             font=TYPOGRAPHY["small_bold"],
             text_color=PALETTE["gold"],
             justify="left",
         ).grid(row=0, column=0, padx=18, pady=(16, 10), sticky="w")
 
-        notes_scroll = ctk.CTkScrollableFrame(
-            notes_shell,
-            height=132,
-            corner_radius=14,
-            fg_color=PALETTE["panel_soft"],
-            border_width=0,
-            border_color=PALETTE["divider"],
-        )
-        style_scrollable_frame(
-            notes_scroll,
+        notes_body = ctk.CTkFrame(notes_shell, corner_radius=14)
+        style_frame(
+            notes_body,
             tone="panel_soft",
             border_color=PALETTE["divider"],
-            border_width=0,
+            border_width=1,
         )
-        notes_scroll.grid(row=1, column=0, padx=18, pady=(0, 16), sticky="ew")
-        notes_scroll.grid_columnconfigure(0, weight=1)
+        notes_body.grid(row=1, column=0, padx=18, pady=(0, 16), sticky="ew")
+        notes_body.grid_columnconfigure(0, weight=1)
 
-        for row_index, note in enumerate(self._update.release_notes):
+        displayed_notes = tuple(self._update.release_notes[:3])
+        hidden_notes_count = max(
+            0, len(self._update.release_notes) - len(displayed_notes)
+        )
+
+        for row_index, note in enumerate(displayed_notes):
+            note_row = ctk.CTkFrame(notes_body, fg_color="transparent")
+            note_row.grid(row=row_index, column=0, padx=12, pady=(0, 6), sticky="ew")
+            note_row.grid_columnconfigure(1, weight=1)
+
             ctk.CTkLabel(
-                notes_scroll,
-                text=f"- {note}",
+                note_row,
+                text="•",
+                font=TYPOGRAPHY["small_bold"],
+                text_color=PALETTE["gold"],
+                justify="left",
+            ).grid(row=0, column=0, padx=(0, 8), sticky="nw")
+
+            ctk.CTkLabel(
+                note_row,
+                text=note,
                 font=TYPOGRAPHY["small"],
                 text_color=PALETTE["text_soft"],
                 justify="left",
-                wraplength=500,
-            ).grid(row=row_index, column=0, padx=12, pady=(0, 10), sticky="ew")
+                wraplength=390,
+            ).grid(row=0, column=1, sticky="ew")
+
+        if hidden_notes_count > 0:
+            ctk.CTkLabel(
+                notes_body,
+                text=(
+                    f"+ {hidden_notes_count} autre{'s' if hidden_notes_count > 1 else ''} "
+                    f"nouveauté{'s' if hidden_notes_count > 1 else ''}"
+                ),
+                font=TYPOGRAPHY["small_bold"],
+                text_color=PALETTE["gold"],
+                justify="left",
+            ).grid(
+                row=len(displayed_notes),
+                column=0,
+                padx=16,
+                pady=(2, 12),
+                sticky="w",
+            )
 
     def _set_actions_enabled(self, enabled: bool) -> None:
         new_state = "normal" if enabled else "disabled"
-        for button in (self.update_button, self.later_button, self.never_button):
-            if button is None:
+        for widget in (self.update_button, self.later_button, self.dismiss_checkbox):
+            if widget is None:
                 continue
             try:
-                if button.winfo_exists():
-                    button.configure(state=new_state)
+                if widget.winfo_exists():
+                    widget.configure(state=new_state)
             except TclError:
                 continue
 
@@ -1317,15 +1554,15 @@ class AutoUpdatePromptApp(ctk.CTk):
                 pass
             return
 
-        if self.shell is None:
+        if self.actions_shell is None:
             return
 
-        progress_shell = ctk.CTkFrame(self.shell, fg_color="transparent")
+        progress_shell = ctk.CTkFrame(self.actions_shell, fg_color="transparent")
         progress_shell.grid(
-            row=4,
+            row=2,
             column=0,
-            padx=26,
-            pady=(0, 26),
+            padx=18,
+            pady=(0, 18),
             sticky="ew",
         )
         progress_shell.grid_columnconfigure(0, weight=1)
@@ -1355,7 +1592,7 @@ class AutoUpdatePromptApp(ctk.CTk):
             font=TYPOGRAPHY["small"],
             text_color=PALETTE["text_soft"],
             justify="left",
-            wraplength=560,
+            wraplength=500,
         )
         self.progress_status_label.grid(row=2, column=0, sticky="w")
 
@@ -1370,6 +1607,8 @@ class AutoUpdatePromptApp(ctk.CTk):
             self.detail_label.configure(text=detail_text)
         if self.button_row is not None:
             self.button_row.grid_remove()
+        if self.dismiss_shell is not None:
+            self.dismiss_shell.grid_remove()
         self._ensure_progress_ui()
 
     def _cancel_download_poll(self) -> None:
@@ -1473,7 +1712,7 @@ class AutoUpdatePromptApp(ctk.CTk):
             if self.progress_value_label is not None:
                 self.progress_value_label.configure(
                     text=(
-                        "Fallback navigateur lancé"
+                        AUTO_UPDATE_DOWNLOAD_BROWSER_FALLBACK_TEXT
                         if used_browser
                         else (
                             Path(installer_path).name
@@ -1485,7 +1724,7 @@ class AutoUpdatePromptApp(ctk.CTk):
             if self.detail_label is not None:
                 self.detail_label.configure(
                     text=(
-                        "Le téléchargement direct a laissé place à la release GitHub."
+                        AUTO_UPDATE_DOWNLOAD_BROWSER_FALLBACK_DETAIL
                         if used_browser
                         else "Téléchargement terminé. Arena Duel passe maintenant la main à l'installateur."
                     )
@@ -1497,6 +1736,8 @@ class AutoUpdatePromptApp(ctk.CTk):
             self.progress_shell.grid_remove()
         if self.button_row is not None:
             self.button_row.grid()
+        if self.dismiss_shell is not None:
+            self.dismiss_shell.grid()
         self.selection = None
         self._set_actions_enabled(True)
         if self.title_label is not None:
@@ -1508,7 +1749,7 @@ class AutoUpdatePromptApp(ctk.CTk):
         if self.detail_label is not None:
             self.detail_label.configure(
                 text=(
-                    "Impossible d'ouvrir la mise à jour. Réessaie ou choisis Plus tard pour continuer vers le menu."
+                    "Impossible d'ouvrir la mise à jour. Réessaie ou reporte cette mise à jour pour continuer vers le menu."
                 )
             )
         play_alert()
@@ -1583,17 +1824,17 @@ class AutoUpdatePromptApp(ctk.CTk):
         play_click()
         self.selection = "later"
         self._set_actions_enabled(False)
-        self._service.defer_update(self._update)
-        self._schedule_close_prompt()
+        dismiss_current_version = False
+        if self._dismiss_current_version_var is not None:
+            try:
+                dismiss_current_version = bool(self._dismiss_current_version_var.get())
+            except TclError:
+                dismiss_current_version = False
 
-    def _handle_never(self) -> None:
-        if self.selection is not None:
-            return
-
-        play_click()
-        self.selection = "never"
-        self._set_actions_enabled(False)
-        self._service.dismiss_update_offer(self._update)
+        if dismiss_current_version:
+            self._service.dismiss_update_offer(self._update)
+        else:
+            self._service.defer_update(self._update)
         self._schedule_close_prompt()
 
     def _close_prompt(self) -> None:
@@ -1658,7 +1899,10 @@ class AutoUpdateService:
         self._available_update: AvailableUpdate | None = None
         self._offer_resolved = False
         self._notice_window = None
-        self._snoozed_state = load_auto_update_state(self._state_path)
+        self._snoozed_state = normalize_auto_update_state(
+            load_auto_update_state(self._state_path)
+        )
+        self._persist_state()
         self._consume_launch_reprompt()
 
     @property
@@ -1776,10 +2020,33 @@ class AutoUpdateService:
         self._persist_state()
 
     def _is_update_dismissed(self, update: AvailableUpdate) -> bool:
-        dismissed_version = str(self._snoozed_state.dismissed_version or "").strip()
+        dismissed_version = get_dismissed_version(self._state_path)
+        if (
+            dismissed_version
+            != str(self._snoozed_state.dismissed_version or "").strip()
+        ):
+            self._snoozed_state = AutoUpdateState(
+                snoozed_version=self._snoozed_state.snoozed_version,
+                remind_after_epoch=self._snoozed_state.remind_after_epoch,
+                launches_until_prompt=self._snoozed_state.launches_until_prompt,
+                dismissed_version=dismissed_version,
+            )
+
         if not dismissed_version:
             return False
-        return is_same_version(update.version, dismissed_version)
+
+        comparison = compare_semver(update.version, dismissed_version)
+        if comparison is None:
+            set_dismissed_version("", self._state_path)
+            self._snoozed_state = AutoUpdateState(
+                snoozed_version=self._snoozed_state.snoozed_version,
+                remind_after_epoch=self._snoozed_state.remind_after_epoch,
+                launches_until_prompt=self._snoozed_state.launches_until_prompt,
+                dismissed_version="",
+            )
+            return False
+
+        return comparison <= 0
 
     def _is_update_snoozed(self, update: AvailableUpdate) -> bool:
         if self._is_update_dismissed(update):
@@ -1941,10 +2208,8 @@ class AutoUpdateService:
 
     def dismiss_update_offer(self, update: AvailableUpdate) -> None:
         self._offer_resolved = True
-        self._snoozed_state = AutoUpdateState(
-            dismissed_version=update.version,
-        )
-        self._persist_state()
+        dismissed_version = set_dismissed_version(update.version, self._state_path)
+        self._snoozed_state = AutoUpdateState(dismissed_version=dismissed_version)
 
     def launch_update(self, update: AvailableUpdate) -> None:
         self._offer_resolved = True

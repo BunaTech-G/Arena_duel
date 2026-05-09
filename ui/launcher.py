@@ -442,13 +442,13 @@ class LocalModeMenuApp(ModeSelectionMenuApp):
             wraplength=340,
             actions=[
                 {
-                    "text": "LAN Admin",
+                    "text": "Heberger en LAN",
                     "command": self._handle_lan_host,
                     "variant": "primary",
                     "height": 48,
                 },
                 {
-                    "text": "LAN Rejoindre",
+                    "text": "Rejoindre en LAN",
                     "command": self._handle_lan_join,
                     "variant": "accent",
                     "height": 48,

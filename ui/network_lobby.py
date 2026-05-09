@@ -1,4 +1,5 @@
 import json
+import queue
 import threading
 import time
 from tkinter import TclError, messagebox
@@ -294,6 +295,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.client = None
         self.running = False
         self._connect_in_progress = False
+        self._connect_request_token = 0
+        self._connect_result_after_id = None
+        self._connect_result_queue: "queue.SimpleQueue[tuple]" = queue.SimpleQueue()
         self._ready_request_pending = False
         self.history_request_pending = False
         self.server_port = int(server_port or self.network_config.port)
@@ -1249,6 +1253,8 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self.running = False
         self._connect_in_progress = False
+        self._connect_request_token += 1
+        self._cancel_connect_result_drain()
         self._ready_request_pending = False
         self.history_request_pending = False
 
@@ -1403,6 +1409,187 @@ class NetworkLobbyView(ctk.CTkToplevel):
     # =========================
     # Connexion réseau
     # =========================
+    def _cancel_connect_result_drain(self) -> None:
+        if self._connect_result_after_id is None:
+            return
+
+        try:
+            self.after_cancel(self._connect_result_after_id)
+        except TclError:
+            pass
+        self._connect_result_after_id = None
+
+    def _schedule_connect_result_drain(self, *, delay_ms: int = 25) -> None:
+        self._cancel_connect_result_drain()
+        try:
+            self._connect_result_after_id = self.after(
+                delay_ms,
+                self._drain_connect_results,
+            )
+        except TclError:
+            self._connect_result_after_id = None
+
+    def _connect_worker(
+        self,
+        request_token: int,
+        host: str,
+        port: int,
+        name: str,
+        sprite_id: str,
+    ) -> None:
+        client = NetworkClient()
+        try:
+            client.connect(
+                host,
+                port,
+                name,
+                is_host=self.host_mode,
+                timeout_seconds=self.network_config.connect_timeout_seconds,
+                sprite_id=sprite_id,
+            )
+        except (ConnectionError, OSError) as error:
+            self._connect_result_queue.put(
+                (
+                    request_token,
+                    "error",
+                    None,
+                    host,
+                    port,
+                    name,
+                    sprite_id,
+                    str(error),
+                )
+            )
+            return
+
+        if self._shutdown_requested or request_token != self._connect_request_token:
+            client.close()
+            return
+
+        self._connect_result_queue.put(
+            (
+                request_token,
+                "connected",
+                client,
+                host,
+                port,
+                name,
+                sprite_id,
+                None,
+            )
+        )
+
+    def _apply_connect_success(
+        self,
+        client,
+        host: str,
+        port: int,
+        name: str,
+        sprite_id: str,
+    ) -> None:
+        self.client = client
+        self._connect_in_progress = False
+
+        normalized_invitation = format_endpoint(host, port)
+        self.server_port = port
+        self.local_test_invitation = format_endpoint("127.0.0.1", port)
+        self.ip_entry.delete(0, "end")
+        self.ip_entry.insert(0, normalized_invitation)
+        self._sync_controls_state()
+
+        self.info_label.configure(text=f"Lien scellé pour {name}. Entrée dans le hall.")
+
+        self.my_name = name
+        self.my_sprite_id = sprite_id
+        self._save_server_invitation(
+            normalized_invitation,
+            "local" if is_loopback_host(host) else "lan",
+        )
+
+        self._start_network_thread()
+        if self.host_mode:
+            if not self.client.send_match_duration(self._get_selected_match_duration()):
+                play_error()
+                self.info_label.configure(
+                    text=("Hall rejoint, mais la durée n'a pas pu être transmise.")
+                )
+        self._refresh_mode_label()
+
+        if self.host_mode:
+            if is_loopback_host(host):
+                self.info_label.configure(
+                    text=f"{name} tient le hall en local sur ce PC."
+                )
+            else:
+                self.info_label.configure(
+                    text=f"{name} tient le hall {normalized_invitation}."
+                )
+        else:
+            if is_loopback_host(host):
+                self.info_label.configure(
+                    text=f"{name} a rejoint un hall local sur ce PC."
+                )
+            else:
+                self.info_label.configure(
+                    text=f"{name} a rejoint le hall {normalized_invitation}."
+                )
+
+    def _drain_connect_results(self) -> None:
+        self._connect_result_after_id = None
+
+        try:
+            if not self.winfo_exists():
+                return
+        except TclError:
+            return
+
+        received_current_result = False
+        while True:
+            try:
+                result = self._connect_result_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            (
+                request_token,
+                status,
+                client,
+                host,
+                port,
+                name,
+                sprite_id,
+                error_message,
+            ) = result
+
+            if request_token != self._connect_request_token:
+                if client is not None:
+                    client.close()
+                continue
+
+            received_current_result = True
+
+            if self._shutdown_requested:
+                if client is not None:
+                    client.close()
+                self._connect_in_progress = False
+                self.client = None
+                continue
+
+            if status == "error":
+                self._connect_in_progress = False
+                self.client = None
+                self._sync_controls_state()
+                play_alert()
+                self.info_label.configure(
+                    text=f"Impossible de rejoindre le hall : {error_message}"
+                )
+                continue
+
+            self._apply_connect_success(client, host, port, name, sprite_id)
+
+        if self._connect_in_progress and not received_current_result:
+            self._schedule_connect_result_drain(delay_ms=40)
+
     def _connect(self):
         if self._connect_in_progress or (self.client and self.client.running):
             return
@@ -1433,74 +1620,17 @@ class NetworkLobbyView(ctk.CTkToplevel):
         self.info_label.configure(text="Connexion au hall en cours...")
         self._sync_controls_state()
         self.update_idletasks()
+        self._connect_request_token += 1
+        request_token = self._connect_request_token
 
-        self.client = NetworkClient()
-
-        try:
-            self.client.connect(
-                host,
-                port,
-                name,
-                is_host=self.host_mode,
-                timeout_seconds=self.network_config.connect_timeout_seconds,
-                sprite_id=self._get_selected_fighter_id(),
-            )
-        except (ConnectionError, OSError) as error:
-            self._connect_in_progress = False
-            self.client = None
-            self._sync_controls_state()
-            play_alert()
-            self.info_label.configure(text=f"Impossible de rejoindre le hall : {error}")
-            return
-
-        self._connect_in_progress = False
-
-        normalized_invitation = format_endpoint(host, port)
-        self.server_port = port
-        self.local_test_invitation = format_endpoint("127.0.0.1", port)
-        self.ip_entry.delete(0, "end")
-        self.ip_entry.insert(0, normalized_invitation)
-        self._sync_controls_state()
-
-        self.info_label.configure(text=f"Lien scellé pour {name}. Entrée dans le hall.")
-
-        self.my_name = name
-        self.my_sprite_id = self._get_selected_fighter_id()
-        self._save_server_invitation(
-            normalized_invitation,
-            "local" if is_loopback_host(host) else "lan",
+        selected_fighter_id = self._get_selected_fighter_id()
+        worker = threading.Thread(
+            target=self._connect_worker,
+            args=(request_token, host, port, name, selected_fighter_id),
+            daemon=True,
         )
-
-        self._start_network_thread()
-        if self.host_mode:
-            if not self.client.send_match_duration(self._get_selected_match_duration()):
-                play_error()
-                self.info_label.configure(
-                    text=("Hall rejoint, mais la durée n'a pas pu être transmise.")
-                )
-        self._refresh_mode_label()
-
-        if self.host_mode:
-            if is_loopback_host(host):
-                self.info_label.configure(
-                    text=f"{name} tient le hall en local sur ce PC."
-                )
-            else:
-                self.info_label.configure(
-                    text=(
-                        f"{name} tient le hall. Invitation active : "
-                        f"{normalized_invitation}."
-                    )
-                )
-        else:
-            if is_loopback_host(host):
-                self.info_label.configure(
-                    text=f"{name} a rejoint un hall local sur ce PC."
-                )
-            else:
-                self.info_label.configure(
-                    text=f"{name} a rejoint le hall {normalized_invitation}."
-                )
+        worker.start()
+        self._schedule_connect_result_drain()
 
     # =========================
     # Réception réseau
@@ -2045,6 +2175,9 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self._shutdown_requested = True
         self.running = False
+        self._connect_in_progress = False
+        self._connect_request_token += 1
+        self._cancel_connect_result_drain()
         if restore_parent is None:
             restore_parent = self._restore_parent_on_close
         if destroy_parent is None:

@@ -64,6 +64,17 @@ def _collect_button_texts(widget) -> list[str]:
     return texts
 
 
+def _collect_checkbox_texts(widget) -> list[str]:
+    texts = []
+    for child in _walk_widgets(widget):
+        try:
+            if isinstance(child, ctk.CTkCheckBox):
+                texts.append(child.cget("text"))
+        except TclError:
+            continue
+    return texts
+
+
 def _collect_label_texts(widget) -> list[str]:
     texts = []
     for child in _walk_widgets(widget):
@@ -79,6 +90,16 @@ def _find_button(widget, text: str):
     for child in _walk_widgets(widget):
         try:
             if isinstance(child, ctk.CTkButton) and child.cget("text") == text:
+                return child
+        except TclError:
+            continue
+    return None
+
+
+def _find_checkbox(widget, text: str):
+    for child in _walk_widgets(widget):
+        try:
+            if isinstance(child, ctk.CTkCheckBox) and child.cget("text") == text:
                 return child
         except TclError:
             continue
@@ -723,6 +744,60 @@ class AutoUpdateLogicTests(unittest.TestCase):
             )
         )
 
+    def test_service_clears_legacy_time_based_snooze_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "auto_update_state.json")
+            auto_update_module.save_auto_update_state(
+                auto_update_module.AutoUpdateState(
+                    snoozed_version="1.2.0",
+                    remind_after_epoch=9_999_999_999,
+                ),
+                state_path,
+            )
+
+            service = auto_update_module.AutoUpdateService(state_path=state_path)
+            state = auto_update_module.load_auto_update_state(state_path)
+
+        self.assertEqual(state.snoozed_version, "1.2.0")
+        self.assertEqual(state.remind_after_epoch, 0)
+        self.assertEqual(state.launches_until_prompt, 0)
+        self.assertFalse(
+            getattr(service, "_is_update_snoozed")(
+                auto_update_module.AvailableUpdate(
+                    version="1.2.0",
+                    update_url="https://example.com/update",
+                )
+            )
+        )
+
+    def test_compare_semver_handles_equal_newer_and_invalid_versions(self):
+        self.assertEqual(auto_update_module.compare_semver("1.1.1", "1.1.1"), 0)
+        self.assertEqual(auto_update_module.compare_semver("1.1.2", "1.1.1"), 1)
+        self.assertEqual(auto_update_module.compare_semver("1.1.1", "1.1.2"), -1)
+        self.assertIsNone(auto_update_module.compare_semver("invalid", "1.1.2"))
+
+    def test_get_dismissed_version_returns_empty_when_absent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "auto_update_state.json")
+
+            dismissed_version = auto_update_module.get_dismissed_version(state_path)
+
+        self.assertEqual(dismissed_version, "")
+
+    def test_get_dismissed_version_clears_invalid_saved_value(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "auto_update_state.json")
+            auto_update_module.save_auto_update_state(
+                auto_update_module.AutoUpdateState(dismissed_version="invalid"),
+                state_path,
+            )
+
+            dismissed_version = auto_update_module.get_dismissed_version(state_path)
+            state = auto_update_module.load_auto_update_state(state_path)
+
+        self.assertEqual(dismissed_version, "")
+        self.assertEqual(state.dismissed_version, "")
+
     def test_dismiss_choice_masks_same_version_until_new_release(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "auto_update_state.json")
@@ -739,23 +814,22 @@ class AutoUpdateLogicTests(unittest.TestCase):
 
             state = auto_update_module.load_auto_update_state(state_path)
 
-        self.assertEqual(state.dismissed_version, "1.2.0")
-        self.assertTrue(
-            getattr(service, "_is_update_snoozed")(
+            same_version_is_dismissed = getattr(service, "_is_update_dismissed")(
                 auto_update_module.AvailableUpdate(
                     version="1.2.0",
                     update_url="https://example.com/update",
                 )
             )
-        )
-        self.assertFalse(
-            getattr(service, "_is_update_snoozed")(
+            newer_version_is_dismissed = getattr(service, "_is_update_dismissed")(
                 auto_update_module.AvailableUpdate(
                     version="1.3.0",
                     update_url="https://example.com/update",
                 )
             )
-        )
+
+        self.assertEqual(state.dismissed_version, "1.2.0")
+        self.assertTrue(same_version_is_dismissed)
+        self.assertFalse(newer_version_is_dismissed)
 
     def test_service_stays_silent_for_snoozed_version(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1014,16 +1088,25 @@ class AutoUpdateNoticeTests(unittest.TestCase):
 
     def test_notice_uses_player_facing_text_and_actions(self):
         self.assertIn(
-            "Une mise à jour est disponible",
+            auto_update_module.AUTO_UPDATE_NOTICE_TEXT,
             _collect_label_texts(self.notice),
         )
         self.assertIn(
-            "Installe-la maintenant, repousse-la à dans deux lancements, ou masque cette version.",
+            auto_update_module._notice_action_text(),
             _collect_label_texts(self.notice),
         )
-        self.assertIn("Mettre à jour", _collect_button_texts(self.notice))
-        self.assertIn("Plus tard", _collect_button_texts(self.notice))
-        self.assertIn("Ne plus me demander", _collect_button_texts(self.notice))
+        self.assertIn(
+            auto_update_module.AUTO_UPDATE_PRIMARY_ACTION_TEXT,
+            _collect_button_texts(self.notice),
+        )
+        self.assertIn(
+            auto_update_module._defer_action_text(),
+            _collect_button_texts(self.notice),
+        )
+        self.assertIn(
+            auto_update_module.AUTO_UPDATE_NOTICE_DISMISS_ACTION_TEXT,
+            _collect_button_texts(self.notice),
+        )
 
     def test_notice_summarizes_release_notes_when_present(self):
         detail_text = auto_update_module._notice_detail_text(
@@ -1037,7 +1120,7 @@ class AutoUpdateNoticeTests(unittest.TestCase):
             )
         )
 
-        self.assertIn("2 changements disponibles", detail_text)
+        self.assertIn("2 nouveautés", detail_text)
 
 
 class AutoUpdatePromptTests(unittest.TestCase):
@@ -1117,11 +1200,23 @@ class AutoUpdatePromptTests(unittest.TestCase):
     def test_prompt_uses_reserved_window_text_and_actions(self):
         self.assertEqual(self.app.title(), "Arena Duel - Mise à jour")
         self.assertIn(
-            "Version 1.2.0 prête pour l'arène",
+            auto_update_module._prompt_heading_text(
+                auto_update_module.AvailableUpdate(
+                    version="1.2.0",
+                    update_url="https://example.com/update",
+                )
+            ),
             _collect_label_texts(self.app),
         )
         self.assertIn(
-            "Version actuelle",
+            auto_update_module.AUTO_UPDATE_BADGE_TEXT, _collect_label_texts(self.app)
+        )
+        self.assertIn(
+            auto_update_module.AUTO_UPDATE_PROMPT_SUBTITLE,
+            _collect_label_texts(self.app),
+        )
+        self.assertIn(
+            auto_update_module.AUTO_UPDATE_CURRENT_VERSION_LABEL,
             _collect_label_texts(self.app),
         )
         self.assertIn(
@@ -1129,22 +1224,32 @@ class AutoUpdatePromptTests(unittest.TestCase):
             _collect_label_texts(self.app),
         )
         self.assertIn(
-            "Version disponible",
+            auto_update_module.AUTO_UPDATE_AVAILABLE_VERSION_LABEL,
             _collect_label_texts(self.app),
         )
         self.assertIn(
-            (
-                "Installe cette version maintenant, repousse-la à dans deux "
-                "lancements, ou masque cette version tant qu'une nouvelle "
-                "release n'arrive pas."
-            ),
+            auto_update_module.AUTO_UPDATE_ACTIONS_TITLE,
             _collect_label_texts(self.app),
         )
-        self.assertIn("Mettre à jour", _collect_button_texts(self.app))
-        self.assertIn("Plus tard", _collect_button_texts(self.app))
         self.assertIn(
-            "Ne plus me demander pour 1.2.0",
+            auto_update_module._prompt_action_text(),
+            _collect_label_texts(self.app),
+        )
+        self.assertIn(
+            auto_update_module.AUTO_UPDATE_PRIMARY_ACTION_TEXT,
             _collect_button_texts(self.app),
+        )
+        self.assertIn(
+            auto_update_module._defer_action_text(),
+            _collect_button_texts(self.app),
+        )
+        self.assertIn(
+            auto_update_module._dismiss_checkbox_text(self.app._update),
+            _collect_checkbox_texts(self.app),
+        )
+        self.assertIn(
+            auto_update_module.AUTO_UPDATE_DISMISS_HINT_TEXT,
+            _collect_label_texts(self.app),
         )
 
     def test_prompt_shows_release_notes_when_manifest_provides_them(self):
@@ -1162,7 +1267,7 @@ class AutoUpdatePromptTests(unittest.TestCase):
         self.app.update()
 
         label_texts = _collect_label_texts(self.app)
-        self.assertIn("Nouveautés", label_texts)
+        self.assertIn(auto_update_module.AUTO_UPDATE_CHANGELOG_TITLE, label_texts)
         self.assertTrue(
             any(
                 "Détection Wi-Fi et Ethernet fiabilisée" in text for text in label_texts
@@ -1172,8 +1277,24 @@ class AutoUpdatePromptTests(unittest.TestCase):
             any("Fermeture propre des sessions online" in text for text in label_texts)
         )
 
+    def test_prompt_keeps_actions_above_release_notes(self):
+        self.app._update = auto_update_module.AvailableUpdate(
+            version="1.2.0",
+            update_url="https://example.com/update",
+            release_notes=(
+                "Détection Wi-Fi et Ethernet fiabilisée",
+                "Fermeture propre des sessions online",
+            ),
+        )
+        self.app._build_release_notes_ui(self.app.shell, row=3)
+        self.app.update_idletasks()
+        self.app.update()
+
+        self.assertEqual(int(self.app.actions_shell.grid_info()["row"]), 2)
+        self.assertEqual(int(self.app.notes_shell.grid_info()["row"]), 3)
+
     def test_prompt_later_button_disables_actions_and_schedules_close(self):
-        later_button = _find_button(self.app, "Plus tard")
+        later_button = _find_button(self.app, auto_update_module._defer_action_text())
         self.assertIsNotNone(later_button)
 
         later_button.invoke()
@@ -1183,12 +1304,15 @@ class AutoUpdatePromptTests(unittest.TestCase):
         self.service.defer_update.assert_called_once()
         self.assertEqual(self.app.update_button.cget("state"), "disabled")
         self.assertEqual(self.app.later_button.cget("state"), "disabled")
-        self.assertEqual(self.app.never_button.cget("state"), "disabled")
+        self.assertEqual(self.app.dismiss_checkbox.cget("state"), "disabled")
         self.assertIsNotNone(self.app._close_after_id)
         self.assertFalse(_is_destroyed(self.app))
 
     def test_prompt_update_button_disables_actions_and_schedules_close(self):
-        update_button = _find_button(self.app, "Mettre à jour")
+        update_button = _find_button(
+            self.app,
+            auto_update_module.AUTO_UPDATE_PRIMARY_ACTION_TEXT,
+        )
         self.assertIsNotNone(update_button)
 
         update_button.invoke()
@@ -1198,26 +1322,33 @@ class AutoUpdatePromptTests(unittest.TestCase):
         self.service.launch_update.assert_called_once()
         self.assertEqual(self.app.update_button.cget("state"), "disabled")
         self.assertEqual(self.app.later_button.cget("state"), "disabled")
-        self.assertEqual(self.app.never_button.cget("state"), "disabled")
+        self.assertEqual(self.app.dismiss_checkbox.cget("state"), "disabled")
         self.assertIsNotNone(self.app._close_after_id)
         self.assertFalse(_is_destroyed(self.app))
 
-    def test_prompt_never_button_disables_actions_and_schedules_close(self):
-        never_button = _find_button(self.app, "Ne plus me demander pour 1.2.0")
-        self.assertIsNotNone(never_button)
+    def test_prompt_checked_dismiss_checkbox_uses_dismiss_state(self):
+        dismiss_checkbox = _find_checkbox(
+            self.app,
+            auto_update_module._dismiss_checkbox_text(self.app._update),
+        )
+        later_button = _find_button(self.app, auto_update_module._defer_action_text())
+        self.assertIsNotNone(dismiss_checkbox)
+        self.assertIsNotNone(later_button)
 
-        never_button.invoke()
+        dismiss_checkbox.select()
+        later_button.invoke()
 
-        self.assertEqual(self.app.selection, "never")
+        self.assertEqual(self.app.selection, "later")
         auto_update_module.play_click.assert_called_once_with()
         self.service.dismiss_update_offer.assert_called_once()
+        self.service.defer_update.assert_not_called()
         self.assertEqual(self.app.update_button.cget("state"), "disabled")
         self.assertEqual(self.app.later_button.cget("state"), "disabled")
-        self.assertEqual(self.app.never_button.cget("state"), "disabled")
+        self.assertEqual(self.app.dismiss_checkbox.cget("state"), "disabled")
         self.assertIsNotNone(self.app._close_after_id)
 
     def test_prompt_later_mouse_click_path_closes_under_mainloop(self):
-        later_button = _find_button(self.app, "Plus tard")
+        later_button = _find_button(self.app, auto_update_module._defer_action_text())
         self.assertIsNotNone(later_button)
         forced_close = {"called": False}
 
@@ -1236,7 +1367,10 @@ class AutoUpdatePromptTests(unittest.TestCase):
         self.service.defer_update.assert_called_once()
 
     def test_prompt_update_mouse_click_path_closes_under_mainloop(self):
-        update_button = _find_button(self.app, "Mettre à jour")
+        update_button = _find_button(
+            self.app,
+            auto_update_module.AUTO_UPDATE_PRIMARY_ACTION_TEXT,
+        )
         self.assertIsNotNone(update_button)
         forced_close = {"called": False}
 
@@ -1255,7 +1389,10 @@ class AutoUpdatePromptTests(unittest.TestCase):
         self.service.launch_update.assert_called_once()
 
     def test_prompt_remote_installer_switches_to_progress_flow(self):
-        update_button = _find_button(self.app, "Mettre à jour")
+        update_button = _find_button(
+            self.app,
+            auto_update_module.AUTO_UPDATE_PRIMARY_ACTION_TEXT,
+        )
         self.assertIsNotNone(update_button)
 
         self.app._update = auto_update_module.AvailableUpdate(
@@ -1303,7 +1440,10 @@ class AutoUpdatePromptTests(unittest.TestCase):
         self.assertIsNotNone(self.app._close_after_id)
 
     def test_prompt_remote_installer_passes_hash_to_download_flow(self):
-        update_button = _find_button(self.app, "Mettre à jour")
+        update_button = _find_button(
+            self.app,
+            auto_update_module.AUTO_UPDATE_PRIMARY_ACTION_TEXT,
+        )
         self.assertIsNotNone(update_button)
 
         self.app._update = auto_update_module.AvailableUpdate(
