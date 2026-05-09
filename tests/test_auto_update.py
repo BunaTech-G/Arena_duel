@@ -666,7 +666,7 @@ class AutoUpdateLogicTests(unittest.TestCase):
             service = auto_update_module.AutoUpdateService(
                 state_path=state_path,
                 now_provider=lambda: 100,
-                remind_later_seconds=300,
+                reprompt_after_launches=2,
             )
 
             getattr(service, "_handle_later_choice")(
@@ -680,30 +680,82 @@ class AutoUpdateLogicTests(unittest.TestCase):
             state = auto_update_module.load_auto_update_state(state_path)
 
         self.assertEqual(state.snoozed_version, "1.2.0")
-        self.assertEqual(state.remind_after_epoch, 400)
+        self.assertEqual(state.remind_after_epoch, 0)
+        self.assertEqual(state.launches_until_prompt, 2)
 
-    def test_later_choice_uses_release_specific_snooze_duration(self):
+    def test_service_consumes_launch_counter_before_reprompt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = os.path.join(temp_dir, "auto_update_state.json")
+            auto_update_module.save_auto_update_state(
+                auto_update_module.AutoUpdateState(
+                    snoozed_version="1.2.0",
+                    launches_until_prompt=2,
+                ),
+                state_path,
+            )
+
+            first_launch_service = auto_update_module.AutoUpdateService(
+                state_path=state_path,
+            )
+            first_launch_state = auto_update_module.load_auto_update_state(state_path)
+
+            second_launch_service = auto_update_module.AutoUpdateService(
+                state_path=state_path,
+            )
+            second_launch_state = auto_update_module.load_auto_update_state(state_path)
+
+        self.assertEqual(first_launch_state.launches_until_prompt, 1)
+        self.assertEqual(second_launch_state.launches_until_prompt, 0)
+        self.assertTrue(
+            getattr(first_launch_service, "_is_update_snoozed")(
+                auto_update_module.AvailableUpdate(
+                    version="1.2.0",
+                    update_url="https://example.com/update",
+                )
+            )
+        )
+        self.assertFalse(
+            getattr(second_launch_service, "_is_update_snoozed")(
+                auto_update_module.AvailableUpdate(
+                    version="1.2.0",
+                    update_url="https://example.com/update",
+                )
+            )
+        )
+
+    def test_dismiss_choice_masks_same_version_until_new_release(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = os.path.join(temp_dir, "auto_update_state.json")
             service = auto_update_module.AutoUpdateService(
                 state_path=state_path,
-                now_provider=lambda: 100,
-                remind_later_seconds=300,
             )
 
-            getattr(service, "_handle_later_choice")(
-                _FakeWindow(),
+            service.dismiss_update_offer(
                 auto_update_module.AvailableUpdate(
                     version="1.2.0",
                     update_url="https://example.com/update",
-                    remind_later_seconds=900,
-                ),
+                )
             )
 
             state = auto_update_module.load_auto_update_state(state_path)
 
-        self.assertEqual(state.snoozed_version, "1.2.0")
-        self.assertEqual(state.remind_after_epoch, 1_000)
+        self.assertEqual(state.dismissed_version, "1.2.0")
+        self.assertTrue(
+            getattr(service, "_is_update_snoozed")(
+                auto_update_module.AvailableUpdate(
+                    version="1.2.0",
+                    update_url="https://example.com/update",
+                )
+            )
+        )
+        self.assertFalse(
+            getattr(service, "_is_update_snoozed")(
+                auto_update_module.AvailableUpdate(
+                    version="1.3.0",
+                    update_url="https://example.com/update",
+                )
+            )
+        )
 
     def test_service_stays_silent_for_snoozed_version(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -936,6 +988,7 @@ class AutoUpdateNoticeTests(unittest.TestCase):
             ),
             on_update=lambda: None,
             on_later=lambda: None,
+            on_never=lambda: None,
         )
         self.notice.pack()
         self.app.update_idletasks()
@@ -965,11 +1018,12 @@ class AutoUpdateNoticeTests(unittest.TestCase):
             _collect_label_texts(self.notice),
         )
         self.assertIn(
-            "Tu peux lancer l'installation maintenant ou la reporter.",
+            "Installe-la maintenant, repousse-la à dans deux lancements, ou masque cette version.",
             _collect_label_texts(self.notice),
         )
         self.assertIn("Mettre à jour", _collect_button_texts(self.notice))
         self.assertIn("Plus tard", _collect_button_texts(self.notice))
+        self.assertIn("Ne plus me demander", _collect_button_texts(self.notice))
 
     def test_notice_summarizes_release_notes_when_present(self):
         detail_text = auto_update_module._notice_detail_text(
@@ -1063,22 +1117,35 @@ class AutoUpdatePromptTests(unittest.TestCase):
     def test_prompt_uses_reserved_window_text_and_actions(self):
         self.assertEqual(self.app.title(), "Arena Duel - Mise à jour")
         self.assertIn(
-            "Une mise à jour est disponible",
+            "Version 1.2.0 prête pour l'arène",
             _collect_label_texts(self.app),
         )
         self.assertIn(
-            "Version 1.2.0 disponible (actuel : 1.0.0).",
+            "Version actuelle",
+            _collect_label_texts(self.app),
+        )
+        self.assertIn(
+            auto_update_module.current_game_version(),
+            _collect_label_texts(self.app),
+        )
+        self.assertIn(
+            "Version disponible",
             _collect_label_texts(self.app),
         )
         self.assertIn(
             (
-                "Choisis Mettre à jour pour ouvrir l'installation, ou Plus "
-                "tard pour continuer vers le menu."
+                "Installe cette version maintenant, repousse-la à dans deux "
+                "lancements, ou masque cette version tant qu'une nouvelle "
+                "release n'arrive pas."
             ),
             _collect_label_texts(self.app),
         )
         self.assertIn("Mettre à jour", _collect_button_texts(self.app))
         self.assertIn("Plus tard", _collect_button_texts(self.app))
+        self.assertIn(
+            "Ne plus me demander pour 1.2.0",
+            _collect_button_texts(self.app),
+        )
 
     def test_prompt_shows_release_notes_when_manifest_provides_them(self):
         self.app._update = auto_update_module.AvailableUpdate(
@@ -1116,6 +1183,7 @@ class AutoUpdatePromptTests(unittest.TestCase):
         self.service.defer_update.assert_called_once()
         self.assertEqual(self.app.update_button.cget("state"), "disabled")
         self.assertEqual(self.app.later_button.cget("state"), "disabled")
+        self.assertEqual(self.app.never_button.cget("state"), "disabled")
         self.assertIsNotNone(self.app._close_after_id)
         self.assertFalse(_is_destroyed(self.app))
 
@@ -1130,8 +1198,23 @@ class AutoUpdatePromptTests(unittest.TestCase):
         self.service.launch_update.assert_called_once()
         self.assertEqual(self.app.update_button.cget("state"), "disabled")
         self.assertEqual(self.app.later_button.cget("state"), "disabled")
+        self.assertEqual(self.app.never_button.cget("state"), "disabled")
         self.assertIsNotNone(self.app._close_after_id)
         self.assertFalse(_is_destroyed(self.app))
+
+    def test_prompt_never_button_disables_actions_and_schedules_close(self):
+        never_button = _find_button(self.app, "Ne plus me demander pour 1.2.0")
+        self.assertIsNotNone(never_button)
+
+        never_button.invoke()
+
+        self.assertEqual(self.app.selection, "never")
+        auto_update_module.play_click.assert_called_once_with()
+        self.service.dismiss_update_offer.assert_called_once()
+        self.assertEqual(self.app.update_button.cget("state"), "disabled")
+        self.assertEqual(self.app.later_button.cget("state"), "disabled")
+        self.assertEqual(self.app.never_button.cget("state"), "disabled")
+        self.assertIsNotNone(self.app._close_after_id)
 
     def test_prompt_later_mouse_click_path_closes_under_mainloop(self):
         later_button = _find_button(self.app, "Plus tard")
