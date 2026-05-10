@@ -57,6 +57,7 @@ from network.messages import (
     REQUEST_HISTORY,
     HISTORY_DATA,
     SET_MATCH_DURATION,
+    MATCH_DURATION_ACK,
 )
 from network.protocol import send_message_binary, receive_message_binary
 from db.lobby_repository import (
@@ -86,6 +87,8 @@ ORB_COUNT = ORB_SPAWN_COUNT
 
 TICK_RATE = 20
 HEARTBEAT_TIMEOUT_SECONDS = 10.0  # Disconnect client if no message for 10s
+LOBBY_BROADCAST_MIN_INTERVAL = 0.1  # Throttle lobby broadcasts (max 10/sec)
+GAME_LOOP_DRIFT_WARN_MS = 50.0  # Log warning when tick drifts more than 50ms
 LOGGER = get_network_logger()
 
 
@@ -351,6 +354,10 @@ class GameState:
         self._spawn_players(lobby_snapshot)
         self._spawn_orbs()
 
+        # Pre-compute static layout data (sent once per STATE, unchanged each frame)
+        self._static_arena_rect = list(self.layout.playable_rect)
+        self._static_obstacles = [list(rect) for rect in self.obstacle_rects]
+
     def _spawn_players(self, lobby_snapshot: dict):
         sorted_players = sorted(
             lobby_snapshot.items(),
@@ -397,6 +404,7 @@ class GameState:
                     "last_pickup_combo_count": 0,
                     "last_pickup_combo_bonus": 0,
                     "disconnected": False,
+                    "active": True,
                 }
 
     def _spawn_orbs(self):
@@ -500,11 +508,10 @@ class GameState:
                     break
 
     def _prune_missing_players(self, lobby_snapshot: dict) -> None:
-        missing_client_ids = [
-            client_id for client_id in self.players if client_id not in lobby_snapshot
-        ]
-        for client_id in missing_client_ids:
-            self.players.pop(client_id, None)
+        for client_id in list(self.players.keys()):
+            if client_id not in lobby_snapshot:
+                # Mark inactive instead of deleting so the client can still display the slot
+                self.players[client_id]["active"] = False
 
     def update(self, dt: float, lobby_snapshot: dict):
         current_time_ms = time.monotonic() * 1000.0
@@ -513,6 +520,8 @@ class GameState:
         self._prune_missing_players(lobby_snapshot)
         for client_id, player in self.players.items():
             if client_id not in lobby_snapshot:
+                continue
+            if not player.get("active", True):
                 continue
 
             inp = lobby_snapshot[client_id].get("input", {})
@@ -609,6 +618,7 @@ class GameState:
                     "name": p["name"],
                     "team": p["team"],
                     "sprite_id": p.get("sprite_id"),
+                    "active": bool(p.get("active", True)),  # For ghost player filtering
                     "x": round(p["x"], 1),
                     "y": round(p["y"], 1),
                     "direction": str(p.get("direction") or "right"),
@@ -636,8 +646,8 @@ class GameState:
             "map_id": self.map_id,
             "arena_w": self.layout.width,
             "arena_h": self.layout.height,
-            "arena_rect": list(self.layout.playable_rect),
-            "obstacles": [list(rect) for rect in self.obstacle_rects],
+            "arena_rect": self._static_arena_rect,
+            "obstacles": self._static_obstacles,
             "duration_seconds": self.match_duration_seconds,
             "remaining_time": remaining,
             "team_a_score": self.team_a_score,
@@ -732,6 +742,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.game_lock = threading.Lock()
         self.game_thread = None
         self.network_logger = LOGGER
+        self._last_lobby_broadcast = 0.0  # monotonic timestamp of last LOBBY_STATE send
         self.hardware_service = create_match_hardware_service()
         self.hardware_service.emit_state("LOBBY")
         self.hardware_service.emit_score(0, 0)
@@ -788,7 +799,11 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         for handler in handlers:
             handler.safe_send(payload)
 
-    def broadcast_lobby_state(self):
+    def broadcast_lobby_state(self, *, force: bool = False):
+        now = time.monotonic()
+        if not force and (now - self._last_lobby_broadcast) < LOBBY_BROADCAST_MIN_INTERVAL:
+            return  # Throttle: avoid flooding during rapid connect/disconnect
+        self._last_lobby_broadcast = now
         self.cleanup_timed_out_clients()  # Remove inactive clients
         payload = {
             "type": LOBBY_STATE,
@@ -883,7 +898,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                     self.lobby.set_ready(cid, False)
 
                 self.sync_lobby_persistence(status_code="OPEN")
-                self.broadcast_lobby_state()
+                self.broadcast_lobby_state(force=True)  # Force immediate post-match broadcast
                 break
 
             next_tick += dt
@@ -891,6 +906,13 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             if sleep_time > 0:
                 time.sleep(sleep_time)
             else:
+                drift_ms = abs(sleep_time) * 1000.0
+                if drift_ms > GAME_LOOP_DRIFT_WARN_MS:
+                    self.network_logger.warning(
+                        "Game loop drift: %.1fms (cible=%.1fms)",
+                        drift_ms,
+                        dt * 1000.0,
+                    )
                 next_tick = time.monotonic()
 
 
@@ -1099,6 +1121,12 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                         self.client_info["name"],
                     )
                 else:
+                    self.safe_send(
+                        {
+                            "type": MATCH_DURATION_ACK,
+                            "duration_seconds": self.server.lobby.get_match_duration(),
+                        }
+                    )
                     self.server.sync_lobby_persistence(status_code="OPEN")
                     self.server.broadcast_lobby_state()
                     self.server.network_logger.info(

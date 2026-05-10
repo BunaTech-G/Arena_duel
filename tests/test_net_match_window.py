@@ -935,6 +935,48 @@ class RunNetworkMatchTests(unittest.TestCase):
         self.assertEqual(first_card_kwargs["score_slot_width"], 77)
         self.assertEqual(second_card_kwargs["score_slot_width"], 77)
 
+    def test_hud_payload_excludes_inactive_players(self):
+        """Les joueurs avec active=False ne doivent pas apparaître dans le HUD"""
+        state = {
+            "team_a_score": 5,
+            "team_b_score": 2,
+            "remaining_time": 30,
+            "players": [
+                {"slot": 1, "name": "ActifA", "team": "A", "score": 5, "active": True},
+                {"slot": 2, "name": "DecoB", "team": "B", "score": 2, "active": False},
+                {
+                    "slot": 3,
+                    "name": "ActifB",
+                    "team": "B",
+                    "score": 1,
+                },  # active absent → True par défaut
+            ],
+        }
+        payload = net_match_window._build_network_hud_payload(state, my_slot=1)
+
+        names_a = [row["name"] for row in payload["team_a_rows"]]
+        names_b = [row["name"] for row in payload["team_b_rows"]]
+
+        self.assertIn("ActifA", names_a)
+        self.assertNotIn("DecoB", names_b)  # active=False → exclu
+        self.assertIn("ActifB", names_b)  # active absent → inclus
+
+    def test_hud_payload_includes_all_players_when_no_active_field(self):
+        """Sans champ active, tous les joueurs sont affichés (rétrocompat)"""
+        state = {
+            "team_a_score": 0,
+            "team_b_score": 0,
+            "remaining_time": 60,
+            "players": [
+                {"slot": 1, "name": "JoueurA", "team": "A", "score": 0},
+                {"slot": 2, "name": "JoueurB", "team": "B", "score": 0},
+            ],
+        }
+        payload = net_match_window._build_network_hud_payload(state, my_slot=1)
+
+        self.assertEqual(len(payload["team_a_rows"]), 1)
+        self.assertEqual(len(payload["team_b_rows"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

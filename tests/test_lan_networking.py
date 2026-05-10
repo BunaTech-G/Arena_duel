@@ -570,5 +570,207 @@ class LanNetworkingTests(unittest.TestCase):
         )
 
 
+class ProtocolTests(unittest.TestCase):
+    """Tests pour le protocole length-prefixed v1"""
+
+    def setUp(self):
+        self.encode_message = importlib.import_module("network.protocol").encode_message
+        self.receive_message_binary = importlib.import_module(
+            "network.protocol"
+        ).receive_message_binary
+
+    def test_encode_message_produces_4byte_header_plus_json(self):
+        msg = {"type": "TEST", "value": 42}
+        raw = self.encode_message(msg)
+
+        import struct
+
+        length = struct.unpack("!I", raw[:4])[0]
+
+        self.assertEqual(length, len(raw) - 4)
+        self.assertGreater(length, 0)
+
+    def test_encode_decode_roundtrip(self):
+        import io
+
+        msg = {"type": "HELLO", "name": "Joueur_Test", "host": True}
+        raw = self.encode_message(msg)
+
+        rfile = io.BytesIO(raw)
+        decoded = self.receive_message_binary(rfile)
+
+        self.assertEqual(decoded["type"], "HELLO")
+        self.assertEqual(decoded["name"], "Joueur_Test")
+        self.assertTrue(decoded["host"])
+
+    def test_encode_message_handles_french_accents(self):
+        import io
+
+        msg = {"type": "HELLO", "name": "Héros_Général_éèàü"}
+        raw = self.encode_message(msg)
+
+        rfile = io.BytesIO(raw)
+        decoded = self.receive_message_binary(rfile)
+
+        self.assertEqual(decoded["name"], "Héros_Général_éèàü")
+
+    def test_encode_message_handles_embedded_newlines(self):
+        import io
+
+        msg = {"type": "TEST", "text": "ligne1\nligne2\nligne3"}
+        raw = self.encode_message(msg)
+
+        rfile = io.BytesIO(raw)
+        decoded = self.receive_message_binary(rfile)
+
+        self.assertEqual(decoded["text"], "ligne1\nligne2\nligne3")
+
+    def test_receive_returns_none_on_empty_stream(self):
+        import io
+
+        rfile = io.BytesIO(b"")
+        result = self.receive_message_binary(rfile)
+
+        self.assertIsNone(result)
+
+    def test_multiple_messages_in_sequence(self):
+        import io
+
+        messages = [
+            {"type": "HELLO", "name": "A"},
+            {"type": "READY", "ready": True},
+            {"type": "INPUT", "up": True, "down": False, "left": False, "right": False},
+        ]
+        stream = b"".join(self.encode_message(m) for m in messages)
+        rfile = io.BytesIO(stream)
+
+        decoded = []
+        for _ in range(3):
+            msg = self.receive_message_binary(rfile)
+            if msg:
+                decoded.append(msg)
+
+        self.assertEqual(len(decoded), 3)
+        self.assertEqual(decoded[0]["type"], "HELLO")
+        self.assertEqual(decoded[1]["type"], "READY")
+        self.assertEqual(decoded[2]["type"], "INPUT")
+        self.assertTrue(decoded[2]["up"])
+
+
+class LobbyStateHeartbeatTests(unittest.TestCase):
+    """Tests pour le heartbeat timeout de LobbyState"""
+
+    def setUp(self):
+        LobbyState = importlib.import_module("network.server").LobbyState
+        self.lobby = LobbyState()
+
+    def _add_fake_client(self, name="TestJoueur"):
+        """Ajoute un client factice avec un handler mock"""
+        import unittest.mock as mock
+
+        handler = mock.MagicMock()
+        info = self.lobby.add_client(name=name, handler=handler, is_host=False)
+        return info
+
+    def test_new_client_has_last_message_time(self):
+        info = self._add_fake_client()
+        self.assertIsNotNone(info)
+        self.assertIn("last_message_time", info)
+
+    def test_update_heartbeat_refreshes_timestamp(self):
+        info = self._add_fake_client()
+        client_id = info["client_id"]
+
+        old_time = info["last_message_time"]
+        time.sleep(0.01)
+        self.lobby.update_heartbeat(client_id)
+
+        with self.lobby.lock:
+            new_time = self.lobby.clients[client_id]["last_message_time"]
+
+        self.assertGreater(new_time, old_time)
+
+    def test_get_timed_out_clients_returns_stale_client(self):
+        import network.server as srv_module
+
+        original_timeout = srv_module.HEARTBEAT_TIMEOUT_SECONDS
+        srv_module.HEARTBEAT_TIMEOUT_SECONDS = 0.01  # 10ms pour le test
+
+        try:
+            info = self._add_fake_client()
+            client_id = info["client_id"]
+            time.sleep(0.05)  # Attendre le timeout
+            timed_out = self.lobby.get_timed_out_clients()
+            self.assertIn(client_id, timed_out)
+        finally:
+            srv_module.HEARTBEAT_TIMEOUT_SECONDS = original_timeout
+
+    def test_fresh_client_not_in_timed_out_list(self):
+        info = self._add_fake_client()
+        client_id = info["client_id"]
+
+        timed_out = self.lobby.get_timed_out_clients()
+
+        self.assertNotIn(client_id, timed_out)
+
+
+class InputValidationTests(unittest.TestCase):
+    """Tests pour la validation des inputs réseau"""
+
+    def setUp(self):
+        LobbyState = importlib.import_module("network.server").LobbyState
+        self.lobby = LobbyState()
+
+    def _add_fake_client(self):
+        import unittest.mock as mock
+
+        handler = mock.MagicMock()
+        return self.lobby.add_client(name="TestJoueur", handler=handler, is_host=False)
+
+    def test_set_input_rejects_non_dict(self):
+        info = self._add_fake_client()
+        client_id = info["client_id"]
+
+        # Should NOT raise, just ignore
+        self.lobby.set_input(client_id, "invalid_string")
+        self.lobby.set_input(client_id, 42)
+        self.lobby.set_input(client_id, None)
+
+        # Input should remain the default (all False)
+        with self.lobby.lock:
+            inp = self.lobby.clients[client_id]["input"]
+        self.assertFalse(inp["up"])
+        self.assertFalse(inp["down"])
+
+    def test_set_input_accepts_valid_dict(self):
+        info = self._add_fake_client()
+        client_id = info["client_id"]
+
+        self.lobby.set_input(
+            client_id, {"up": True, "down": False, "left": True, "right": False}
+        )
+
+        with self.lobby.lock:
+            inp = self.lobby.clients[client_id]["input"]
+        self.assertTrue(inp["up"])
+        self.assertTrue(inp["left"])
+        self.assertFalse(inp["down"])
+
+    def test_set_input_coerces_truthy_values_to_bool(self):
+        info = self._add_fake_client()
+        client_id = info["client_id"]
+
+        self.lobby.set_input(
+            client_id, {"up": 1, "down": 0, "left": "yes", "right": ""}
+        )
+
+        with self.lobby.lock:
+            inp = self.lobby.clients[client_id]["input"]
+        self.assertIsInstance(inp["up"], bool)
+        self.assertIsInstance(inp["down"], bool)
+        self.assertTrue(inp["up"])
+        self.assertFalse(inp["down"])
+
+
 if __name__ == "__main__":
     unittest.main()
