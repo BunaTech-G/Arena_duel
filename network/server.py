@@ -403,7 +403,6 @@ class GameState:
                     "last_pickup_combo_count": 0,
                     "last_pickup_combo_bonus": 0,
                     "disconnected": False,
-                    "active": True,
                 }
 
     def _spawn_orbs(self):
@@ -507,10 +506,9 @@ class GameState:
                     break
 
     def _prune_missing_players(self, lobby_snapshot: dict) -> None:
-        for client_id in list(self.players.keys()):
-            if client_id not in lobby_snapshot:
-                # Mark inactive instead of deleting so the client can still display the slot
-                self.players[client_id]["active"] = False
+        missing = [cid for cid in self.players if cid not in lobby_snapshot]
+        for client_id in missing:
+            self.players.pop(client_id, None)
 
     def update(self, dt: float, lobby_snapshot: dict):
         current_time_ms = time.monotonic() * 1000.0
@@ -519,8 +517,6 @@ class GameState:
         self._prune_missing_players(lobby_snapshot)
         for client_id, player in self.players.items():
             if client_id not in lobby_snapshot:
-                continue
-            if not player.get("active", True):
                 continue
 
             inp = lobby_snapshot[client_id].get("input", {})
@@ -606,6 +602,8 @@ class GameState:
         current_combo_time_ms = time.monotonic() * 1000.0
         players = []
         for p in self.players.values():
+            if not p.get("active", True):
+                continue  # Skip inactive (disconnected) players
             combo_remaining_ms = int(
                 p.get("combo_expires_at_ms", 0.0) - current_combo_time_ms
             )
@@ -617,7 +615,6 @@ class GameState:
                     "name": p["name"],
                     "team": p["team"],
                     "sprite_id": p.get("sprite_id"),
-                    "active": bool(p.get("active", True)),  # For ghost player filtering
                     "x": round(p["x"], 1),
                     "y": round(p["y"], 1),
                     "direction": str(p.get("direction") or "right"),
