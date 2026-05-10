@@ -87,7 +87,6 @@ ORB_COUNT = ORB_SPAWN_COUNT
 
 TICK_RATE = 20
 HEARTBEAT_TIMEOUT_SECONDS = 10.0  # Disconnect client if no message for 10s
-LOBBY_BROADCAST_MIN_INTERVAL = 0.1  # Throttle lobby broadcasts (max 10/sec)
 GAME_LOOP_DRIFT_WARN_MS = 50.0  # Log warning when tick drifts more than 50ms
 LOGGER = get_network_logger()
 
@@ -742,7 +741,6 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.game_lock = threading.Lock()
         self.game_thread = None
         self.network_logger = LOGGER
-        self._last_lobby_broadcast = 0.0  # monotonic timestamp of last LOBBY_STATE send
         self.hardware_service = create_match_hardware_service()
         self.hardware_service.emit_state("LOBBY")
         self.hardware_service.emit_score(0, 0)
@@ -799,11 +797,8 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         for handler in handlers:
             handler.safe_send(payload)
 
-    def broadcast_lobby_state(self, *, force: bool = False):
-        now = time.monotonic()
-        if not force and (now - self._last_lobby_broadcast) < LOBBY_BROADCAST_MIN_INTERVAL:
-            return  # Throttle: avoid flooding during rapid connect/disconnect
-        self._last_lobby_broadcast = now
+    def broadcast_lobby_state(self):
+        # Note: LOBBY_STATE is event-driven (not high frequency) — no throttle needed
         self.cleanup_timed_out_clients()  # Remove inactive clients
         payload = {
             "type": LOBBY_STATE,
@@ -898,7 +893,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                     self.lobby.set_ready(cid, False)
 
                 self.sync_lobby_persistence(status_code="OPEN")
-                self.broadcast_lobby_state(force=True)  # Force immediate post-match broadcast
+                self.broadcast_lobby_state()  # Post-match broadcast
                 break
 
             next_tick += dt
