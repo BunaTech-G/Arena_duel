@@ -56,10 +56,12 @@ from network.messages import (
     END,
     REQUEST_HISTORY,
     HISTORY_DATA,
+    REQUEST_TELEMETRY,
+    TELEMETRY_DATA,
     SET_MATCH_DURATION,
     MATCH_DURATION_ACK,
 )
-from network.protocol import send_message_binary, receive_message_binary
+from network.protocol import encode_message, receive_message_binary
 from db.lobby_repository import (
     build_lobby_invite_code,
     close_lobby_session,
@@ -136,7 +138,7 @@ def _resolve_next_direction_name(
 
 class LobbyState:
     def __init__(self):
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.clients = {}  # client_id -> info
         self.host_client_id = None
         self.match_duration_seconds = MATCH_DURATION_SECONDS
@@ -176,27 +178,35 @@ class LobbyState:
         name: str,
         handler,
         is_host: bool = False,
+        is_spectator: bool = False,
         sprite_id: str | None = None,
     ):
         with self.lock:
             if len(self.clients) >= MAX_PLAYERS:
                 return None
 
-            slot = self.get_next_free_slot()
-            if slot is None:
-                return None
-
-            assigned_team = self.get_next_balanced_team()
+            if is_spectator:
+                slot = None
+                assigned_team = "S"
+            else:
+                slot = self.get_next_free_slot()
+                if slot is None:
+                    return None
+                assigned_team = self.get_next_balanced_team()
             client_id = str(uuid.uuid4())[:8]
-            normalized_sprite_id = str(
-                sprite_id or ""
-            ).strip() or _default_sprite_id_for_team(assigned_team)
+            if is_spectator:
+                normalized_sprite_id = None
+            else:
+                normalized_sprite_id = str(
+                    sprite_id or ""
+                ).strip() or _default_sprite_id_for_team(assigned_team)
 
             info = {
                 "client_id": client_id,
                 "name": name,
                 "slot": slot,
                 "team": assigned_team,
+                "spectator": bool(is_spectator),
                 "sprite_id": normalized_sprite_id,
                 "host": bool(is_host),
                 "ready": False,
@@ -240,6 +250,8 @@ class LobbyState:
     def set_ready(self, client_id: str, ready: bool):
         with self.lock:
             if client_id in self.clients:
+                if self.clients[client_id].get("spectator", False):
+                    return
                 self.clients[client_id]["ready"] = ready
 
     def update_heartbeat(self, client_id: str):
@@ -262,6 +274,8 @@ class LobbyState:
     def set_input(self, client_id: str, input_state: dict):
         with self.lock:
             if client_id in self.clients:
+                if self.clients[client_id].get("spectator", False):
+                    return
                 # Validate input_state is a dict
                 if not isinstance(input_state, dict):
                     return  # Ignore invalid input silently
@@ -287,6 +301,7 @@ class LobbyState:
                     "handler": info["handler"],
                 }
                 for cid, info in self.clients.items()
+                if not info.get("spectator", False)
             }
 
     def export_public_state(self):
@@ -299,11 +314,17 @@ class LobbyState:
                         "name": info["name"],
                         "slot": info["slot"],
                         "team": info["team"],
+                        "spectator": bool(info.get("spectator", False)),
                         "sprite_id": info.get("sprite_id"),
                         "ready": info["ready"],
                     }
                 )
-            exported.sort(key=lambda x: x["slot"])
+            exported.sort(
+                key=lambda x: (
+                    x["slot"] is None,
+                    x["slot"] if isinstance(x["slot"], int) else MAX_PLAYERS + 1,
+                )
+            )
             return exported
 
     def get_handlers(self):
@@ -321,9 +342,14 @@ class LobbyState:
 
     def can_start_match(self):
         with self.lock:
-            if len(self.clients) < 2:
+            active_players = [
+                info
+                for info in self.clients.values()
+                if not info.get("spectator", False)
+            ]
+            if len(active_players) < 2:
                 return False
-            return all(info["ready"] for info in self.clients.values())
+            return all(info["ready"] for info in active_players)
 
 
 class GameState:
@@ -738,9 +764,44 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.game_lock = threading.Lock()
         self.game_thread = None
         self.network_logger = LOGGER
+        self.server_started_at = time.monotonic()
+        self.metrics_lock = threading.Lock()
+        self.telemetry = {
+            "messages_received": 0,
+            "messages_sent": 0,
+            "bytes_sent": 0,
+            "clients_connected": 0,
+            "clients_timed_out": 0,
+            "matches_started": 0,
+            "matches_finished": 0,
+        }
         self.hardware_service = create_match_hardware_service()
         self.hardware_service.emit_state("LOBBY")
         self.hardware_service.emit_score(0, 0)
+
+    def record_inbound(self):
+        with self.metrics_lock:
+            self.telemetry["messages_received"] += 1
+
+    def record_outbound(self, bytes_sent: int):
+        with self.metrics_lock:
+            self.telemetry["messages_sent"] += 1
+            self.telemetry["bytes_sent"] += max(0, int(bytes_sent))
+
+    def increment_metric(self, name: str):
+        with self.metrics_lock:
+            self.telemetry[name] = int(self.telemetry.get(name, 0)) + 1
+
+    def build_telemetry_payload(self) -> dict:
+        with self.metrics_lock:
+            counters = dict(self.telemetry)
+        counters["uptime_seconds"] = max(
+            0, int(time.monotonic() - self.server_started_at)
+        )
+        counters["connected_clients"] = len(self.lobby.export_public_state())
+        counters["match_running"] = bool(self.match_running)
+        counters["match_duration_seconds"] = self.lobby.get_match_duration()
+        return counters
 
     def server_close(self):
         try:
@@ -759,6 +820,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 HEARTBEAT_TIMEOUT_SECONDS,
             )
             self.lobby.remove_client(client_id)
+            self.increment_metric("clients_timed_out")
 
     def sync_lobby_persistence(self, status_code: str = "OPEN"):
         players = self.lobby.export_public_state()
@@ -790,9 +852,10 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         )
 
     def broadcast(self, payload: dict):
+        encoded_payload = encode_message(payload)
         handlers = self.lobby.get_handlers()
         for handler in handlers:
-            handler.safe_send(payload)
+            handler.safe_send_raw(encoded_payload)
 
     def broadcast_lobby_state(self):
         # Note: LOBBY_STATE is event-driven (not high frequency) — no throttle needed
@@ -819,6 +882,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 lobby_session_id=self.lobby_session_id,
             )
             self.match_running = True
+            self.increment_metric("matches_started")
             self.network_logger.info(
                 "Demarrage du match LAN (%s joueur(s), duree=%ss)",
                 len(snapshot),
@@ -881,6 +945,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
                 self.hardware_service.emit_winner(end_message.get("winner_team"))
 
                 self.broadcast(end_message)
+                self.increment_metric("matches_finished")
 
                 with self.game_lock:
                     self.match_running = False
@@ -917,23 +982,45 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
         self.send_lock = threading.Lock()
 
     def safe_send(self, message: dict):
+        encoded_message = encode_message(message)
         try:
             with self.send_lock:
-                send_message_binary(self.wfile, message)
+                self.wfile.write(encoded_message)
+                self.wfile.flush()
+            self.server.record_outbound(len(encoded_message))
         except (BrokenPipeError, ConnectionError, OSError, ValueError):
+            pass
+
+    def safe_send_raw(self, encoded_message: bytes):
+        try:
+            with self.send_lock:
+                self.wfile.write(encoded_message)
+                self.wfile.flush()
+            self.server.record_outbound(len(encoded_message))
+        except (BrokenPipeError, OSError):
             pass
 
     def handle_hello(self, message: dict):
         name = str(message.get("name", "")).strip()
         is_host = bool(message.get("host", False))
+        is_spectator = bool(message.get("spectator", False))
         if not name:
             self.safe_send({"type": ERROR, "message": "Nom vide refusé."})
+            return False
+        if is_spectator and is_host:
+            self.safe_send(
+                {
+                    "type": ERROR,
+                    "message": "Un spectateur ne peut pas etre gardien du hall.",
+                }
+            )
             return False
 
         info = self.server.lobby.add_client(
             name=name,
             handler=self,
             is_host=is_host,
+            is_spectator=is_spectator,
             sprite_id=message.get("sprite_id"),
         )
         if info is None:
@@ -941,15 +1028,17 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
             return False
 
         self.client_info = info
+        self.server.increment_metric("clients_connected")
         remote_ip, remote_port = self.client_address
         self.server.network_logger.info(
-            "Client LAN connecte: %s (%s:%s, slot=%s, team=%s, host=%s)",
+            "Client LAN connecte: %s (%s:%s, slot=%s, team=%s, host=%s, spectateur=%s)",
             info["name"],
             remote_ip,
             remote_port,
             info["slot"],
             info["team"],
             is_host,
+            is_spectator,
         )
 
         self.safe_send(
@@ -958,6 +1047,7 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                 "client_id": info["client_id"],
                 "slot": info["slot"],
                 "team": info["team"],
+                "spectator": bool(info.get("spectator", False)),
                 "name": info["name"],
                 "sprite_id": info.get("sprite_id"),
             }
@@ -1008,6 +1098,8 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
         if not self.handle_hello(hello):
             return
 
+        self.server.record_inbound()
+
         while True:
             try:
                 message = receive_message_binary(self.rfile)
@@ -1037,12 +1129,22 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
             if message is None:
                 break
 
+            self.server.record_inbound()
+
             # Update heartbeat timer
             self.server.lobby.update_heartbeat(self.client_info["client_id"])
 
             msg_type = message.get("type")
 
             if msg_type == READY:
+                if self.client_info.get("spectator", False):
+                    self.safe_send(
+                        {
+                            "type": ERROR,
+                            "message": "Un spectateur ne peut pas se declarer pret.",
+                        }
+                    )
+                    continue
                 ready = bool(message.get("ready", False))
                 self.server.lobby.set_ready(
                     self.client_info["client_id"],
@@ -1053,6 +1155,8 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                 self.server.try_start_match()
 
             elif msg_type == INPUT:
+                if self.client_info.get("spectator", False):
+                    continue
                 self.server.lobby.set_input(
                     self.client_info["client_id"],
                     {
@@ -1089,6 +1193,23 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
                     )
                 else:
                     self.safe_send({"type": HISTORY_DATA, "ok": True, "rows": rows})
+
+            elif msg_type == REQUEST_TELEMETRY:
+                if self.client_info["client_id"] != self.server.lobby.host_client_id:
+                    self.safe_send(
+                        {
+                            "type": ERROR,
+                            "message": "Seul le gardien du hall peut lire la telemetrie.",
+                        }
+                    )
+                else:
+                    self.safe_send(
+                        {
+                            "type": TELEMETRY_DATA,
+                            "ok": True,
+                            "telemetry": self.server.build_telemetry_payload(),
+                        }
+                    )
 
             elif msg_type == SET_MATCH_DURATION:
                 requested_duration = message.get(

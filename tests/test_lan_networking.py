@@ -22,6 +22,7 @@ if "mariadb" not in sys.modules:
 NetworkClient = importlib.import_module("network.client").NetworkClient
 ASSIGN_SLOT = importlib.import_module("network.messages").ASSIGN_SLOT
 START = importlib.import_module("network.messages").START
+TELEMETRY_DATA = importlib.import_module("network.messages").TELEMETRY_DATA
 get_lan_address_info = importlib.import_module("network.net_utils").get_lan_address_info
 parse_server_invitation = importlib.import_module(
     "network.net_utils"
@@ -289,6 +290,212 @@ class LanNetworkingTests(unittest.TestCase):
 
         self.assertIsNotNone(history_error)
         self.assertIn("base hors ligne", history_error.get("message", ""))
+
+    def test_host_can_request_server_telemetry(self):
+        port = _reserve_free_port()
+        server, _thread, _address_info = start_server_in_background(
+            "127.0.0.1",
+            port,
+        )
+        self.servers.append(server)
+
+        client = NetworkClient()
+        self.clients.append(client)
+        client.connect(
+            "127.0.0.1",
+            port,
+            "Gardien",
+            is_host=True,
+            timeout_seconds=1,
+        )
+
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            if any(
+                message.get("type") == ASSIGN_SLOT for message in client.poll_messages()
+            ):
+                break
+            time.sleep(0.05)
+
+        self.assertTrue(client.send_request_telemetry())
+
+        deadline = time.time() + 2
+        telemetry_payload = None
+        while time.time() < deadline and telemetry_payload is None:
+            for message in client.poll_messages():
+                if message.get("type") == TELEMETRY_DATA and message.get("ok"):
+                    telemetry_payload = message.get("telemetry", {})
+                    break
+            if telemetry_payload is None:
+                time.sleep(0.05)
+
+        self.assertIsNotNone(telemetry_payload)
+        self.assertIn("uptime_seconds", telemetry_payload)
+        self.assertIn("connected_clients", telemetry_payload)
+        self.assertIn("messages_received", telemetry_payload)
+        self.assertGreaterEqual(telemetry_payload["connected_clients"], 1)
+
+    def test_non_host_cannot_request_server_telemetry(self):
+        port = _reserve_free_port()
+        server, _thread, _address_info = start_server_in_background(
+            "127.0.0.1",
+            port,
+        )
+        self.servers.append(server)
+
+        host_client = NetworkClient()
+        guest_client = NetworkClient()
+        self.clients.extend([host_client, guest_client])
+
+        host_client.connect(
+            "127.0.0.1",
+            port,
+            "Gardien",
+            is_host=True,
+            timeout_seconds=1,
+        )
+        guest_client.connect(
+            "127.0.0.1",
+            port,
+            "Invite",
+            timeout_seconds=1,
+        )
+
+        deadline = time.time() + 2
+        assigned_slots = 0
+        while time.time() < deadline and assigned_slots < 2:
+            messages = host_client.poll_messages() + guest_client.poll_messages()
+            for message in messages:
+                if message.get("type") == ASSIGN_SLOT:
+                    assigned_slots += 1
+            if assigned_slots < 2:
+                time.sleep(0.05)
+
+        self.assertGreaterEqual(assigned_slots, 2)
+        self.assertTrue(guest_client.send_request_telemetry())
+
+        deadline = time.time() + 2
+        error_message = None
+        received_telemetry = False
+        while time.time() < deadline and error_message is None:
+            for message in guest_client.poll_messages():
+                if message.get("type") == "ERROR":
+                    error_message = message.get("message", "")
+                    break
+                if message.get("type") == TELEMETRY_DATA:
+                    received_telemetry = True
+            if error_message is None:
+                time.sleep(0.05)
+
+        self.assertFalse(received_telemetry)
+        self.assertIsNotNone(error_message)
+        self.assertIn("gardien", error_message.lower())
+
+    def test_spectator_connects_and_is_flagged_in_lobby(self):
+        port = _reserve_free_port()
+        server, _thread, _address_info = start_server_in_background(
+            "127.0.0.1",
+            port,
+        )
+        self.servers.append(server)
+
+        host_client = NetworkClient()
+        spectator_client = NetworkClient()
+        self.clients.extend([host_client, spectator_client])
+
+        host_client.connect(
+            "127.0.0.1",
+            port,
+            "Gardien",
+            is_host=True,
+            timeout_seconds=1,
+        )
+        spectator_client.connect(
+            "127.0.0.1",
+            port,
+            "Observateur",
+            spectator=True,
+            timeout_seconds=1,
+        )
+
+        deadline = time.time() + 2
+        spectator_assign = None
+        while time.time() < deadline and spectator_assign is None:
+            for message in spectator_client.poll_messages():
+                if message.get("type") == ASSIGN_SLOT:
+                    spectator_assign = message
+                    break
+            if spectator_assign is None:
+                time.sleep(0.05)
+
+        self.assertIsNotNone(spectator_assign)
+        self.assertTrue(spectator_assign.get("spectator"))
+        self.assertEqual(spectator_assign.get("team"), "S")
+        self.assertIsNone(spectator_assign.get("slot"))
+
+        public_players = server.lobby.export_public_state()
+        spectator_row = next(
+            (
+                p
+                for p in public_players
+                if p.get("name") == "Observateur" and p.get("spectator")
+            ),
+            None,
+        )
+        self.assertIsNotNone(spectator_row)
+
+    def test_spectator_cannot_set_ready(self):
+        port = _reserve_free_port()
+        server, _thread, _address_info = start_server_in_background(
+            "127.0.0.1",
+            port,
+        )
+        self.servers.append(server)
+
+        host_client = NetworkClient()
+        spectator_client = NetworkClient()
+        self.clients.extend([host_client, spectator_client])
+
+        host_client.connect(
+            "127.0.0.1",
+            port,
+            "Gardien",
+            is_host=True,
+            timeout_seconds=1,
+        )
+        spectator_client.connect(
+            "127.0.0.1",
+            port,
+            "Observateur",
+            spectator=True,
+            timeout_seconds=1,
+        )
+
+        deadline = time.time() + 2
+        assigned_slots = 0
+        while time.time() < deadline and assigned_slots < 2:
+            messages = host_client.poll_messages() + spectator_client.poll_messages()
+            for message in messages:
+                if message.get("type") == ASSIGN_SLOT:
+                    assigned_slots += 1
+            if assigned_slots < 2:
+                time.sleep(0.05)
+
+        self.assertGreaterEqual(assigned_slots, 2)
+        self.assertTrue(spectator_client.send_ready(True))
+
+        deadline = time.time() + 2
+        error_message = None
+        while time.time() < deadline and error_message is None:
+            for message in spectator_client.poll_messages():
+                if message.get("type") == "ERROR":
+                    error_message = message.get("message", "")
+                    break
+            if error_message is None:
+                time.sleep(0.05)
+
+        self.assertIsNotNone(error_message)
+        self.assertIn("spectateur", error_message.lower())
 
     def test_game_state_exports_rare_orb_value_and_variant(self):
         lobby_snapshot = {

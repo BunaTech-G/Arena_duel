@@ -14,6 +14,7 @@ from network.messages import (
     PING,
     READY,
     REQUEST_HISTORY,
+    REQUEST_TELEMETRY,
     SET_MATCH_DURATION,
 )
 from network.net_utils import (
@@ -45,6 +46,7 @@ class NetworkClient:
         port: int,
         name: str,
         is_host: bool = False,
+        spectator: bool = False,
         timeout_seconds: float | None = None,
         sprite_id: str | None = None,
         max_retries: int = 5,
@@ -61,6 +63,7 @@ class NetworkClient:
                     port=port,
                     name=name,
                     is_host=is_host,
+                    spectator=spectator,
                     timeout_seconds=timeout_seconds,
                     sprite_id=sprite_id,
                 )
@@ -94,6 +97,7 @@ class NetworkClient:
         port: int,
         name: str,
         is_host: bool = False,
+        spectator: bool = False,
         timeout_seconds: float | None = None,
         sprite_id: str | None = None,
     ):
@@ -137,6 +141,8 @@ class NetworkClient:
             "name": name,
             "host": is_host,
         }
+        if spectator:
+            hello_payload["spectator"] = True
         normalized_sprite_id = str(sprite_id or "").strip()
         if normalized_sprite_id:
             hello_payload["sprite_id"] = normalized_sprite_id
@@ -324,6 +330,9 @@ class NetworkClient:
 
     def send_request_history(self):
         return self.send({"type": REQUEST_HISTORY})
+
+    def send_request_telemetry(self):
+        return self.send({"type": REQUEST_TELEMETRY})
 
     def send_match_duration(self, duration_seconds: int):
         return self.send(
