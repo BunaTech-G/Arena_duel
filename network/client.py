@@ -23,7 +23,7 @@ from network.net_utils import (
     load_lan_runtime_config,
     parse_server_invitation,
 )
-from network.protocol import encode_message, decode_message
+from network.protocol import encode_message
 
 
 class NetworkClient:
@@ -38,6 +38,55 @@ class NetworkClient:
 
         self.last_input_state = None
         self.last_input_send_time = 0.0
+
+    def connect_with_retry(
+        self,
+        host: str,
+        port: int,
+        name: str,
+        is_host: bool = False,
+        timeout_seconds: float | None = None,
+        sprite_id: str | None = None,
+        max_retries: int = 5,
+        initial_delay_seconds: float = 1.0,
+    ):
+        """Connect with exponential backoff retry (1s, 2s, 4s, 8s, 16s)"""
+        delay = initial_delay_seconds
+        last_error = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.connect(
+                    host=host,
+                    port=port,
+                    name=name,
+                    is_host=is_host,
+                    timeout_seconds=timeout_seconds,
+                    sprite_id=sprite_id,
+                )
+                self.logger.info("Reconnexion reussie apres %d tentative(s)", attempt)
+                return  # Success
+            except ConnectionError as error:
+                last_error = error
+                if attempt < max_retries:
+                    self.logger.warning(
+                        "Tentative de connexion %d/%d echouee. "
+                        "Nouvelle tentative dans %fs...",
+                        attempt,
+                        max_retries,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    delay = min(delay * 2, 32.0)  # Cap at 32 seconds
+                else:
+                    self.logger.error(
+                        "Toutes les %d tentatives de connexion ont echoue",
+                        max_retries,
+                    )
+
+        if last_error:
+            raise last_error
+        raise ConnectionError("Impossible de se connecter au serveur LAN")
 
     def connect(
         self,
@@ -139,37 +188,95 @@ class NetworkClient:
         )
 
     def _reader_loop(self):
+        """Read messages using robust length-prefixed protocol"""
+        import struct
+
+        MAX_BUFFER_SIZE = 64 * 1024 * 1024  # 64MB hard limit
         buffer = b""
         try:
             while self.running:
-                chunk = self.sock.recv(4096)
-                if not chunk:
-                    self.logger.info("Le serveur LAN a ferme le flux TCP.")
+                # Check buffer size
+                if len(buffer) > MAX_BUFFER_SIZE:
+                    self.logger.warning(
+                        "Buffer reseau depasse la limite (%d bytes)", len(buffer)
+                    )
+                    self.incoming.put(
+                        {
+                            "type": ERROR,
+                            "message": "Buffer overflow: message too large",
+                        }
+                    )
                     break
 
-                buffer += chunk
+                # Try to read 4-byte header for message length
+                while len(buffer) < 4 and self.running:
+                    chunk = self.sock.recv(4096)
+                    if not chunk:
+                        self.logger.info("Le serveur LAN a ferme le flux TCP.")
+                        self.running = False
+                        break
+                    buffer += chunk
 
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    if line.strip():
-                        try:
-                            message = decode_message(line + b"\n")
-                            if message is not None:
-                                self.incoming.put(message)
-                        except (
-                            json.JSONDecodeError,
-                            UnicodeDecodeError,
-                        ) as error:
-                            self.logger.warning(
-                                "Message LAN illisible recu: %s",
-                                error,
-                            )
-                            self.incoming.put(
-                                {
-                                    "type": "ERROR",
-                                    "message": (f"Décodage impossible: {error}"),
-                                }
-                            )
+                if not self.running or len(buffer) < 4:
+                    break
+
+                # Parse message length
+                try:
+                    message_size = struct.unpack("!I", buffer[:4])[0]
+                except struct.error as error:
+                    self.logger.warning("En-tete de message invalide: %s", error)
+                    self.incoming.put(
+                        {
+                            "type": ERROR,
+                            "message": f"Protocol error: {error}",
+                        }
+                    )
+                    break
+
+                if message_size <= 0 or message_size > 1024 * 1024:
+                    self.logger.warning(
+                        "Taille de message LAN invalide: %d", message_size
+                    )
+                    self.incoming.put(
+                        {
+                            "type": ERROR,
+                            "message": f"Message size invalid: {message_size}",
+                        }
+                    )
+                    break
+
+                # Read full message payload
+                while len(buffer) < 4 + message_size and self.running:
+                    chunk = self.sock.recv(4096)
+                    if not chunk:
+                        self.logger.info("Le serveur LAN a ferme le flux TCP.")
+                        self.running = False
+                        break
+                    buffer += chunk
+
+                if not self.running or len(buffer) < 4 + message_size:
+                    break
+
+                # Extract and parse message
+                payload = buffer[4 : 4 + message_size]
+                buffer = buffer[4 + message_size :]
+
+                try:
+                    message = json.loads(payload.decode("utf-8"))
+                    if message is not None:
+                        self.incoming.put(message)
+                except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                    self.logger.warning(
+                        "Message LAN illisible recu: %s",
+                        error,
+                    )
+                    self.incoming.put(
+                        {
+                            "type": ERROR,
+                            "message": f"Décodage impossible: {error}",
+                        }
+                    )
+
         except OSError as error:
             if self.running:
                 self.logger.warning("Lecture LAN interrompue: %s", error)

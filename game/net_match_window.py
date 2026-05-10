@@ -138,8 +138,15 @@ def _build_network_team_rows(
     team_a_rows = []
     team_b_rows = []
 
+    # Filter out disconnected/inactive players (only show active players)
+    active_players = [
+        player
+        for player in player_states
+        if player.get("active", True)  # Default to True for backward compat
+    ]
+
     for player_state in sorted(
-        player_states,
+        active_players,
         key=lambda item: item.get("slot", 0),
     ):
         row = _build_network_player_row(player_state, my_slot=my_slot)

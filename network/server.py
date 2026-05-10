@@ -85,6 +85,7 @@ PLAYER_SPEED = 260
 ORB_COUNT = ORB_SPAWN_COUNT
 
 TICK_RATE = 20
+HEARTBEAT_TIMEOUT_SECONDS = 10.0  # Disconnect client if no message for 10s
 LOGGER = get_network_logger()
 
 
@@ -139,30 +140,30 @@ class LobbyState:
         self.match_duration_seconds = MATCH_DURATION_SECONDS
 
     def get_used_slots(self):
-        return {info["slot"] for info in self.clients.values()}
+        with self.lock:
+            return {info["slot"] for info in self.clients.values()}
 
     def get_next_free_slot(self):
-        used = self.get_used_slots()
-        for slot in range(1, MAX_PLAYERS + 1):
-            if slot not in used:
-                return slot
+        with self.lock:
+            used = {info["slot"] for info in self.clients.values()}
+            for slot in range(1, MAX_PLAYERS + 1):
+                if slot not in used:
+                    return slot
         return None
 
     def get_team_counts(self):
         counts = {"A": 0, "B": 0}
-
-        for info in self.clients.values():
-            team = info.get("team")
-            if team == "A":
-                counts["A"] += 1
-            elif team == "B":
-                counts["B"] += 1
-
+        with self.lock:
+            for info in self.clients.values():
+                team = info.get("team")
+                if team == "A":
+                    counts["A"] += 1
+                elif team == "B":
+                    counts["B"] += 1
         return counts
 
     def get_next_balanced_team(self) -> str:
         counts = self.get_team_counts()
-
         if counts["A"] <= counts["B"]:
             return "A"
         else:
@@ -204,6 +205,7 @@ class LobbyState:
                     "left": False,
                     "right": False,
                 },
+                "last_message_time": time.monotonic(),  # Track heartbeat
             }
             self.clients[client_id] = info
             if is_host:
@@ -238,9 +240,30 @@ class LobbyState:
             if client_id in self.clients:
                 self.clients[client_id]["ready"] = ready
 
+    def update_heartbeat(self, client_id: str):
+        """Update last message timestamp for a client"""
+        with self.lock:
+            if client_id in self.clients:
+                self.clients[client_id]["last_message_time"] = time.monotonic()
+
+    def get_timed_out_clients(self) -> list[str]:
+        """Return client IDs that haven't sent a message in HEARTBEAT_TIMEOUT_SECONDS"""
+        with self.lock:
+            now = time.monotonic()
+            timed_out = []
+            for client_id, info in self.clients.items():
+                elapsed = now - info["last_message_time"]
+                if elapsed > HEARTBEAT_TIMEOUT_SECONDS:
+                    timed_out.append(client_id)
+            return timed_out
+
     def set_input(self, client_id: str, input_state: dict):
         with self.lock:
             if client_id in self.clients:
+                # Validate input_state is a dict
+                if not isinstance(input_state, dict):
+                    return  # Ignore invalid input silently
+
                 self.clients[client_id]["input"] = {
                     "up": bool(input_state.get("up", False)),
                     "down": bool(input_state.get("down", False)),
@@ -721,6 +744,16 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         finally:
             super().server_close()
 
+    def cleanup_timed_out_clients(self):
+        """Remove clients that haven't sent a message in HEARTBEAT_TIMEOUT_SECONDS"""
+        timed_out = self.lobby.get_timed_out_clients()
+        for client_id in timed_out:
+            self.network_logger.warning(
+                "Client deconnecte pour inactivite (timeout=%ss)",
+                HEARTBEAT_TIMEOUT_SECONDS,
+            )
+            self.lobby.remove_client(client_id)
+
     def sync_lobby_persistence(self, status_code: str = "OPEN"):
         players = self.lobby.export_public_state()
         if not players:
@@ -756,6 +789,7 @@ class ArenaTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             handler.safe_send(payload)
 
     def broadcast_lobby_state(self):
+        self.cleanup_timed_out_clients()  # Remove inactive clients
         payload = {
             "type": LOBBY_STATE,
             "players": self.lobby.export_public_state(),
@@ -988,6 +1022,9 @@ class ArenaRequestHandler(socketserver.StreamRequestHandler):
 
             if message is None:
                 break
+
+            # Update heartbeat timer
+            self.server.lobby.update_heartbeat(self.client_info["client_id"])
 
             msg_type = message.get("type")
 
