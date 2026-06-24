@@ -1,4 +1,0 @@
-pygame-ce
-customtkinter
-mariadb
-Pillow
