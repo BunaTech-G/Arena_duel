@@ -1,0 +1,5 @@
+# Git LFS tracking for release binaries
+releases/*.zip filter=lfs diff=lfs merge=lfs -text
+releases/*.exe filter=lfs diff=lfs merge=lfs -text
+
+# If you prefer not to use LFS, keep release assets in GitHub Releases instead
