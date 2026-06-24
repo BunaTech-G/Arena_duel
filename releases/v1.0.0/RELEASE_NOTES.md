@@ -1,55 +1,65 @@
-# Release v1.0.0
+# Arena Duel — Version 1.0.0 (Première version stable)
 
-Date: 2026-06-24
+Date : 2026-06-24
 
 Résumé
 -------
 
-Première release publique Windows : distribution portable (ZIP) et installateur (EXE).
+Première version stable d'Arena Duel, un jeu desktop Python centré sur le duel local et le jeu en réseau local.
 
-Assets
-------
+Fonctionnalités clés
+--------------------
 
-- ArenaDuel_Windows.zip — archive portable (dossier Portable/ArenaDuel).
-- Setup_ArenaDuel.exe — installateur Windows (Inno Setup).
+- Forge locale (édition et préparation d'équipes localement)
+- Mode LAN avec invitation IP:port (hôte et clients sur le même réseau)
+- Formats de match : 1v1, 2v2 et 3v3
+- Historique des joutes et chroniques des joueurs
+- Version Windows portable (ZIP)
+- Installateur Windows (EXE)
+- Support Arduino optionnel
+
+Livrables
+---------
+
+- `ArenaDuel_Windows.zip` — archive portable contenant le dossier `Portable/ArenaDuel`.
+- `Setup_ArenaDuel.exe` — installateur Windows (généré via Inno Setup si disponible).
+
+Intégrité et vérification
+-------------------------
+
+Vérifiez les checksums SHA256 pour valider l'intégrité des fichiers téléchargés :
+
+- PowerShell (Windows) :
+
+	Get-FileHash .\Setup_ArenaDuel.exe -Algorithm SHA256
+
+- Linux/macOS :
+
+	sha256sum ArenaDuel_Windows.zip
+
+Signature
+---------
+
+Si un certificat de signature est fourni, vous pouvez vérifier la signature Windows :
+
+signtool verify /pa /v Setup_ArenaDuel.exe
+
+Remarques d'utilisation
+-----------------------
+
+- Aucun Python n'est nécessaire pour utiliser la version Windows distribuée (portable ou installée).
+- Si Windows bloque la version portable (SmartScreen), utilisez l'installateur `Setup_ArenaDuel.exe`.
+- Les binaires volumineux sont distribués via GitHub Releases ; le dépôt ne conserve pas les grosses archives dans l'historique Git.
 
 Téléchargement
--------------
+--------------
 
 Release publique : https://github.com/on2-511/Arena_duel/releases/tag/v1.0.0
 
-Installation rapide
--------------------
+Remerciements
+-------------
 
-- Portable : dézipper `ArenaDuel_Windows.zip`, puis exécuter `Portable\ArenaDuel\ArenaDuel.exe`.
-- Installateur : exécuter `Setup_ArenaDuel.exe` en tant qu'administrateur pour une installation standard.
+Merci à toutes les personnes qui soutiennent et testent Arena Duel.
 
-Vérification d'intégrité (optionnel)
------------------------------------
-
-- PowerShell : `Get-FileHash .\Setup_ArenaDuel.exe -Algorithm SHA256`
-- Linux/macOS : `sha256sum ArenaDuel_Windows.zip`
-
-Signature (si disponible)
--------------------------
-
-- Vérifier la signature Windows : `signtool verify /pa /v Setup_ArenaDuel.exe`.
-- Pour signer : utilisez un certificat PFX et `signtool` (exemple dans le README principal).
-
-Notes techniques
----------------
-
-- Les binaires volumineux sont publiés dans GitHub Releases. Ils ont été retirés du suivi Git dans l'arbre du dépôt pour alléger l'historique.
-- Pour construire localement : exécuter `build_windows_release.bat` ou `build_exe_quick.bat`.
-
-Support & Licence
------------------
-
-- Ouvrez une issue : https://github.com/on2-511/Arena_duel/issues
-- Licence : voir le fichier `LICENSE` à la racine du dépôt.
-
-Crédits
--------
-
-- Mainteneur : `on2-511`
+© 2026 O(n²)
 

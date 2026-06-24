@@ -4,40 +4,45 @@ Arena Duel - Livraison Windows
 Contenu de la livraison
 -----------------------
 
-- Portable\ArenaDuel\ArenaDuel.exe : version portable prete a lancer.
-- Installer\Setup_ArenaDuel.exe : installateur Windows (si genere).
+- `Portable\ArenaDuel\ArenaDuel.exe` : version portable prête à lancer.
+- `Installer\Setup_ArenaDuel.exe` : installateur Windows (si généré).
 
-Prerequis
+Prérequis
 ---------
 
 - Windows 10 ou Windows 11 x64.
-- Aucun Python requis pour executer la version portable.
-- app_runtime.json reste editable a cote de l exe portable.
+- Aucun Python requis pour exécuter la version Windows distribuée.
+- `app_runtime.json` peut être placé à côté de l'exécutable portable pour configuration locale.
 
-Comment generer la livraison
-----------------------------
+Génération de la livraison
+--------------------------
 
-1. Lance `build_windows_release.bat` ou `build_exe_quick.bat`.
-2. Localement les artefacts sont produits dans `dist_windows\ArenaDuel_Windows`.
-3. Par défaut, les livraisons binaires finales sont publiées sur GitHub Releases (ex: `v1.0.0`).
-	- Téléchargement public : https://github.com/on2-511/Arena_duel/releases/tag/v1.0.0
+1. Exécutez `build_windows_release.bat` ou `build_exe_quick.bat`.
+2. Les artefacts locaux sont produits dans `dist_windows\ArenaDuel_Windows`.
+3. Les livraisons binaires finales sont publiées via GitHub Releases (ex: `v1.0.0`).
 
-Ce que fait le script build_windows_release.bat
------------------------------------------------
+Vérification d'intégrité (SHA256)
+--------------------------------
 
-- Build PyInstaller du jeu.
-- Preparation d un dossier Portable.
-- Generation d un setup via Inno Setup si disponible.
-- Compression ZIP finale de la livraison.
-- Synchronisation optionnelle du hash installateur dans version.json.
+PowerShell (Windows) :
+
+	Get-FileHash .\Setup_ArenaDuel.exe -Algorithm SHA256
+
+Linux / macOS :
+
+	sha256sum ArenaDuel_Windows.zip
 
 Signature Windows (optionnel)
 -----------------------------
 
-- ARENA_DUEL_SIGN_PFX
-- ARENA_DUEL_SIGN_PFX_PASSWORD
-- ARENA_DUEL_SIGN_CERT_SHA1
-- ARENA_DUEL_SIGNTOOL
-- ARENA_DUEL_SIGN_TIMESTAMP_URL
+Variables d'environnement utilisées pour la signature (CI / local) :
 
-Sans certificat editeur, Windows peut afficher SmartScreen.
+- `ARENA_DUEL_SIGN_PFX`
+- `ARENA_DUEL_SIGN_PFX_PASSWORD`
+- `ARENA_DUEL_SIGN_CERT_SHA1`
+- `ARENA_DUEL_SIGNTOOL`
+- `ARENA_DUEL_SIGN_TIMESTAMP_URL`
+
+Sans certificat éditeur, Windows peut afficher un avertissement SmartScreen ; l'utilisation d'un installateur signé réduit ce risque.
+
+Téléchargement : https://github.com/on2-511/Arena_duel/releases/tag/v1.0.0
