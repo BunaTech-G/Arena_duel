@@ -1,0 +1,43 @@
+{
+  "id": "skeleton_fighter_aether",
+  "label": "Skeleton Fighter Aether",
+  "style": "fantasy arcade skeleton guardian with cool cyan accents",
+  "base_frame_size": [
+    96,
+    96
+  ],
+  "anchor": "center_bottom",
+  "render_mode": "semi_top_down_front_weighted",
+  "source_character": "aether",
+  "source_sheet": "../skeleton_duo_fighters/skeleton_duo_master_sheet.png",
+  "source_classification": "../skeleton_duo_fighters/extracted/perso_auto/classification_manifest.json",
+  "runtime_note": "Front-biased 4-frame cycle derived from visually validated extracted poses because the imported sheet is not directional runtime-ready.",
+  "animations": {
+    "idle": [
+      "idle_0.png",
+      "idle_1.png",
+      "idle_2.png",
+      "idle_3.png"
+    ],
+    "walk": [
+      "walk_0.png",
+      "walk_1.png",
+      "walk_2.png",
+      "walk_3.png"
+    ]
+  },
+  "directional_frames": {
+    "down": "../skeleton_duo_fighters/extracted/perso_auto/classified/aether/front_tunic_a.png",
+    "up": "../skeleton_duo_fighters/extracted/perso_auto/classified/aether/back_idle_a.png",
+    "right": "../skeleton_duo_fighters/extracted/perso_auto/classified/aether/back_hammer_a.png"
+  },
+  "portrait": "../../portraits/skeleton_fighter_aether_portrait.png",
+  "accent_hex": "#64d7ff",
+  "secondary_hex": "#2d758e",
+  "silhouette_rules": [
+    "front-weighted readable silhouette",
+    "compact hammer readable at gameplay distance",
+    "broader grounded torso than ember",
+    "no black background or matte halo"
+  ]
+}
