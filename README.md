@@ -1,98 +1,71 @@
-# Arena Duel
+# Arena Duel — Version 1.0.0
 
-Release: v1.0.0 — téléchargements et installateur disponibles sur GitHub Releases
-: https://github.com/on2-511/Arena_duel/releases/tag/v1.0.0
+Première version stable d'Arena Duel, un jeu desktop centré sur le duel local et le jeu en réseau local.
 
-## Resume
+Résumé
+------
 
-Arena Duel est un jeu desktop Python avec interface CustomTkinter et combats pygame-ce.
-Le projet propose une forge locale, un hall LAN (hote/client) et une base MariaDB
-optionnelle pour l'historique des joutes.
+Arena Duel propose : forge locale, hall LAN (hôte/clients), formats 1v1/2v2/3v3, et un historique des joutes.
 
-## Lancement rapide
+Fonctionnalités principales
+---------------------------
 
-### Recommande
+- Forge locale (création et édition d'équipes)
+- Mode LAN avec invitation IP:port (hôte & clients sur le même réseau)
+- Formats de match : 1v1, 2v2, 3v3
+- Historique des joutes et chroniques des joueurs
+- Version Windows portable (ZIP) et installateur (EXE)
+- Support Arduino optionnel
 
-- Lance `run_local.bat`.
-- Le script prepare automatiquement l'environnement Python si necessaire.
-- Il verifie puis installe les dependances manquantes avant de demarrer le jeu.
+Téléchargements officiels
+------------------------
 
-Option rapide : Télécharger la Release
+Release v1.0.0 disponible sur GitHub Releases : https://github.com/on2-511/Arena_duel/releases/tag/v1.0.0
+
+Usage (Windows)
+---------------
+
+- Portable : dézippez `ArenaDuel_Windows.zip`, puis lancez `Portable\ArenaDuel\ArenaDuel.exe`.
+- Installateur : exécutez `Setup_ArenaDuel.exe` en tant qu'administrateur pour une installation standard.
+- Aucun Python n'est requis pour utiliser les versions Windows distribuées.
+
+Vérification d'intégrité et signature
 ------------------------------------
 
-- Pour obtenir une version précompilée Windows (portable + installateur), téléchargez la release `v1.0.0` sur GitHub : https://github.com/on2-511/Arena_duel/releases/tag/v1.0.0
-- La version portable contient `Portable\ArenaDuel\ArenaDuel.exe` prêt à lancer.
+- Vérifiez les checksums SHA256 :
 
-### Important
+  - PowerShell (Windows) : `Get-FileHash .\Setup_ArenaDuel.exe -Algorithm SHA256`
+  - Linux/macOS : `sha256sum ArenaDuel_Windows.zip`
 
-- Sur un nouveau PC, evite `python main.py` directement.
-- Utilise `run_local.bat` pour eviter les erreurs de dependances
-  (`customtkinter`, `pygame-ce`, `Pillow`, etc.).
+- Vérification de signature (si fournie) : `signtool verify /pa /v Setup_ArenaDuel.exe`
 
-## Modes disponibles
+Conseils si Windows bloque la portable
+-------------------------------------
 
-### Local
+- Si SmartScreen bloque l'exécutable portable, installez via `Setup_ArenaDuel.exe` signé.
 
-- Partie hors reseau.
-- Compatible sans connexion Internet.
+Développement et build
+----------------------
 
-### LAN - Heberger
+- Lancer en mode source : `run_local.bat` (prépare l'environnement Python si nécessaire).
+- Build local (PyInstaller) : `build_exe_quick.bat`, `build_presentation.bat`.
+- Pack release Windows : `build_windows_release.bat` (prépare portable, zip, et setup si Inno Setup présent).
 
-- Lance un hall LAN local et ouvre une invitation IP:port.
-- Les autres postes du meme reseau peuvent rejoindre.
+Structure du dépôt
+------------------
 
-### LAN - Rejoindre
+- `ui/`, `game/`, `network/`, `db/`, `assets/` — organisation principale.
 
-- Rejoint un hall LAN via l'invitation de l'hote.
+Contribuer & Support
+--------------------
 
-### Online (prototype)
+- Ouvrez une issue : https://github.com/on2-511/Arena_duel/issues
+- Licence : voir `LICENSE` à la racine du dépôt.
 
-- Mode online TCP present pour les tests reseau.
+Remerciements
+-------------
 
-## Scripts utiles
+Merci à toutes les personnes qui soutiennent et testent Arena Duel.
 
-- `run_local.bat` : lancer le jeu en mode source.
-- `run_lan_ui.bat` : ouvrir directement le hall LAN graphique.
-- `build_exe_quick.bat` : generer rapidement l'EXE.
-- `build_presentation.bat` : build canonique PyInstaller.
-- `build_windows_release.bat` : pack Windows complet (portable + zip + setup si dispo).
+© 2026 O(n²)
 
-## Build EXE
-
-- EXE de sortie (local build) : `dist_release/ArenaDuel/ArenaDuel.exe`.
-- Release distribuée : voir la page GitHub Releases (fichiers ZIP et Setup).
-- Scripts utiles pour build/package : `build_exe_quick.bat`, `build_presentation.bat`, `package_release.bat`.
-
-## Stack technique
-
-- Python
-- CustomTkinter
-- pygame-ce
-- Pillow
-- MariaDB Connector/Python
-- PyInstaller
-- Inno Setup
-
-## Arborescence principale
-
-- `ui/` : launcher et interfaces.
-- `game/` : gameplay et boucle de joute.
-- `network/` : client/serveur LAN et protocole.
-- `db/` : persistance et repositories.
-- `assets/` : icones, sons, sprites, fonds.
-
-## Documentation
-
-- `INSTALLATION.md`
-- `docs/ARCHITECTURE.md`
-- `docs/ARDUINO_INTEGRATION.md`
-- `SOUTENANCE_LAN.md`
-
-**Notes distribution & signature**
-
-- Les livraisons binaires (ZIP / EXE) sont publiées dans GitHub Releases. Evitez de committer régulièrement des binaires volumineux dans l'arbre principal.
-- Pour signer un installateur Windows, utilisez un certificat PFX et `signtool` :
-
-  - Exemple : `signtool sign /f "C:\path\to\cert.pfx" /p "PFX_PASSWORD" /fd SHA256 /tr "http://timestamp.digicert.com" /td SHA256 "Setup_ArenaDuel.exe"`
-
-Contactez‑moi si vous voulez que j'intègre la signature automatique dans `package_release.bat`.
