@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import queue
 import threading
+import traceback
 from functools import lru_cache
 from tkinter import TclError, messagebox
 
@@ -65,6 +66,31 @@ from ui.theme import (
 
 
 apply_theme_settings()
+
+
+def _install_ui_exception_handler() -> None:
+    def _report_callback_exception(_self, exc, val, tb):
+        _ = _self
+        error_details = "".join(traceback.format_exception(exc, val, tb))
+        print("[launcher] Exception UI non geree:")
+        print(error_details)
+        try:
+            messagebox.showerror(
+                "Erreur interface",
+                (
+                    "Une erreur est survenue pendant l'action demandee.\n\n"
+                    f"Detail: {val}"
+                ),
+            )
+        except TclError:
+            pass
+
+    ctk.CTk.report_callback_exception = _report_callback_exception
+    if hasattr(ctk, "CTkToplevel"):
+        ctk.CTkToplevel.report_callback_exception = _report_callback_exception
+
+
+_install_ui_exception_handler()
 
 
 ACTIVE_COMPACT_MENU_STATE = {"window": None}
@@ -2687,23 +2713,34 @@ def run_local_forge() -> None:
     app = ctk.CTk()
     prepare_hidden_root_window(app)
 
-    window = _build_player_select_view(
-        app,
-        restore_parent_on_close=False,
-        destroy_parent_on_close=True,
-    )
-
-    close_all = build_graceful_shutdown(
-        app,
-        steps=(lambda: close_window_gracefully(window, user_initiated=True),),
-    )
-    restore_signal_handlers = install_signal_shutdown(app, close_all)
-
-    window.protocol("WM_DELETE_WINDOW", close_all)
     try:
-        app.mainloop()
-    finally:
-        restore_signal_handlers()
+        window = _build_player_select_view(
+            app,
+            restore_parent_on_close=False,
+            destroy_parent_on_close=True,
+        )
+
+        close_all = build_graceful_shutdown(
+            app,
+            steps=(lambda: close_window_gracefully(window, user_initiated=True),),
+        )
+        restore_signal_handlers = install_signal_shutdown(app, close_all)
+
+        window.protocol("WM_DELETE_WINDOW", close_all)
+        try:
+            app.mainloop()
+        finally:
+            restore_signal_handlers()
+    except (RuntimeError, OSError, ValueError, TypeError, TclError) as error:
+        messagebox.showerror(
+            "Erreur Local",
+            f"Impossible de lancer le mode local: {error}",
+        )
+        try:
+            if app.winfo_exists():
+                app.destroy()
+        except TclError:
+            pass
 
 
 def _clear_active_compact_menu(*, except_window=None) -> None:
@@ -2878,12 +2915,24 @@ def _run_lan_lobby(*, host_mode: bool) -> None:
     )
     restore_signal_handlers = install_signal_shutdown(app, close_all)
 
-    window = _build_network_lobby_view(app, **lobby_kwargs)
-    _bind_lan_lobby_close(window, close_all, window_ref)
     try:
-        app.mainloop()
-    finally:
-        restore_signal_handlers()
+        window = _build_network_lobby_view(app, **lobby_kwargs)
+        _bind_lan_lobby_close(window, close_all, window_ref)
+        try:
+            app.mainloop()
+        finally:
+            restore_signal_handlers()
+    except (RuntimeError, OSError, ValueError, TypeError, TclError) as error:
+        shutdown_server()
+        try:
+            if app.winfo_exists():
+                app.destroy()
+        except TclError:
+            pass
+        messagebox.showerror(
+            "Erreur LAN",
+            f"Impossible d'ouvrir le hall LAN: {error}",
+        )
 
 
 def run_lan_host_lobby() -> None:

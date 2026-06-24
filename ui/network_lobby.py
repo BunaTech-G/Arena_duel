@@ -79,6 +79,55 @@ LAN_MATCH_LAUNCH_ERRORS = (
 )
 
 
+def _parse_window_geometry(
+    window,
+) -> tuple[int | None, int | None, int | None, int | None]:
+    try:
+        geometry_value = str(window.geometry())
+    except (AttributeError, TclError):
+        return None, None, None, None
+
+    try:
+        size_part, x_part, y_part = geometry_value.split("+", 2)
+        width_text, height_text = size_part.split("x", 1)
+        return int(width_text), int(height_text), int(x_part), int(y_part)
+    except ValueError:
+        return None, None, None, None
+
+
+def _ensure_window_visible(window, *, margin: int = 12) -> None:
+    try:
+        if not window.winfo_exists():
+            return
+        window.update_idletasks()
+    except TclError:
+        return
+
+    width, height, pos_x, pos_y = _parse_window_geometry(window)
+    if None in (width, height, pos_x, pos_y):
+        return
+
+    try:
+        screen_width = max(1, int(window.winfo_screenwidth()))
+        screen_height = max(1, int(window.winfo_screenheight()))
+    except TclError:
+        return
+
+    max_width = max(480, screen_width - (margin * 2))
+    max_height = max(420, screen_height - (margin * 2))
+    clamped_width = min(width, max_width)
+    clamped_height = min(height, max_height)
+    max_x = max(margin, screen_width - clamped_width - margin)
+    max_y = max(margin, screen_height - clamped_height - margin)
+    clamped_x = min(max(pos_x, margin), max_x)
+    clamped_y = min(max(pos_y, margin), max_y)
+
+    try:
+        window.geometry(f"{clamped_width}x{clamped_height}+{clamped_x}+{clamped_y}")
+    except TclError:
+        return
+
+
 class HallGuideWindow(ctk.CTkToplevel):
     def __init__(self, parent: "NetworkLobbyView"):
         super().__init__(parent)
@@ -223,6 +272,7 @@ class HallGuideWindow(ctk.CTkToplevel):
 
         self.refresh_content()
         present_window(self)
+        self.after(90, lambda: _ensure_window_visible(self))
 
     def _handle_close(self):
         play_click()
@@ -286,7 +336,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
         apply_window_icon(self, retry_after_ms=220)
 
         self.geometry("1320x860")
-        enable_large_window(self, 1120, 780)
+        enable_large_window(self, 1120, 780, start_zoomed=True)
 
         self.lift()
         self.focus_force()
@@ -350,6 +400,7 @@ class NetworkLobbyView(ctk.CTkToplevel):
 
         self._build_ui()
         present_window(self)
+        self.after(90, lambda: _ensure_window_visible(self))
         self._refresh_mode_label()
 
         start_menu_music()

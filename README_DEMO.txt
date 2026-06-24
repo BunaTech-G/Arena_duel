@@ -1,25 +1,28 @@
-ARENA DUEL - VERSION DEMO WINDOWS
+ARENA DUEL - GUIDE DEMO WINDOWS
 
-LANCEMENT
+OBJECTIF
+Ce package permet de lancer Arena Duel rapidement sur Windows sans installation
+manuelle de Python.
+
+LANCEMENT DE LA DEMO
 1. Ouvre le dossier Portable\ArenaDuel.
 2. Double-clique sur ArenaDuel.exe.
 
-IMPORTANT
-- Aucun Python, pip, XAMPP ou MariaDB n'est necessaire pour la demo.
-- Les donnees de demo sont stockees automatiquement dans %APPDATA%\ArenaDuel.
+NOTES IMPORTANTES
+- Aucun Python, pip, XAMPP ou MariaDB n'est requis pour cette demo.
+- Les donnees utilisateur de demo sont stockees dans %APPDATA%\ArenaDuel.
 
-SI WINDOWS BLOQUE LE LANCEMENT
-1. Si un dossier Installer est fourni avec la livraison, utilise
-   Installer\Setup_ArenaDuel.exe.
-2. Sinon, lance directement Portable\ArenaDuel\ArenaDuel.exe.
+SI WINDOWS AFFICHER UN BLOCAGE
+1. Si le dossier Installer est present, lance Installer\Setup_ArenaDuel.exe.
+2. Sinon, utilise directement Portable\ArenaDuel\ArenaDuel.exe.
 
-SI LA DEMO SE COMPORTE DE FACON INHABITUELLE
+SI TU VEUX REINITIALISER LA DEMO
 1. Ferme le jeu.
-2. Supprime le fichier %APPDATA%\ArenaDuel\arena_duel_demo_state.json.
+2. Supprime %APPDATA%\ArenaDuel\arena_duel_demo_state.json.
 3. Relance ArenaDuel.exe.
 
-DEMO CONSEILLEE
-- Ouvrir la forge locale.
-- Choisir des combattants deja presents dans le registre.
-- Lancer une joute.
-- Consulter les chroniques.
+PARCOURS DEMO RECOMMANDE
+1. Ouvre la forge locale.
+2. Choisis des combattants.
+3. Lance une joute.
+4. Consulte les chroniques.

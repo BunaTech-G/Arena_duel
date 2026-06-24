@@ -23,8 +23,38 @@ if defined ARENA_DUEL_SIGN_TIMESTAMP_URL (
 )
 
 if not exist "%PYTHON_EXE%" (
-    echo [ERREUR] Le venv n existe pas.
-    echo Lance d abord : setup_env.bat
+    echo [INFO] Venv absent. Initialisation automatique...
+    set "ARENA_DUEL_NO_PAUSE=1"
+    call setup_env.bat
+    if errorlevel 1 (
+        call :maybe_pause
+        exit /b 1
+    )
+) else (
+    "%PYTHON_EXE%" -c "import sys" >nul 2>nul
+    if errorlevel 1 (
+        echo [INFO] Venv existant invalide. Recreation automatique...
+        rmdir /s /q ".venv" >nul 2>nul
+        set "ARENA_DUEL_NO_PAUSE=1"
+        call setup_env.bat
+        if errorlevel 1 (
+            call :maybe_pause
+            exit /b 1
+        )
+    )
+)
+
+echo [INFO] Verification des dependances PyInstaller...
+"%PYTHON_EXE%" -m pip install --upgrade pip
+if errorlevel 1 (
+    echo [ERREUR] Impossible de mettre pip a jour
+    call :maybe_pause
+    exit /b 1
+)
+
+"%PYTHON_EXE%" -m pip install -r requirements-dev.txt
+if errorlevel 1 (
+    echo [ERREUR] Impossible d installer les dependances.
     call :maybe_pause
     exit /b 1
 )

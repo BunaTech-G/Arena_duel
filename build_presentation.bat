@@ -14,9 +14,41 @@ set "DIST_DIR=dist_release"
 set "WORK_DIR=build_release"
 
 if not exist "%PYTHON_EXE%" (
-    echo [ERREUR] Le venv n existe pas.
-    echo Lance d abord : setup_env.bat
-  call :maybe_pause
+    echo [INFO] Venv absent. Initialisation automatique...
+    set "ARENA_DUEL_NO_PAUSE=1"
+    call setup_env.bat
+    if errorlevel 1 (
+        echo [ERREUR] Echec de l initialisation Python.
+        call :maybe_pause
+        exit /b 1
+    )
+) else (
+    "%PYTHON_EXE%" -c "import sys" >nul 2>nul
+    if errorlevel 1 (
+        echo [INFO] Venv existant invalide. Recreation automatique...
+        rmdir /s /q ".venv" >nul 2>nul
+        set "ARENA_DUEL_NO_PAUSE=1"
+        call setup_env.bat
+        if errorlevel 1 (
+            echo [ERREUR] Echec de la recreation du venv.
+            call :maybe_pause
+            exit /b 1
+        )
+    )
+)
+
+echo [INFO] Installation des dependances requises pour le build...
+"%PYTHON_EXE%" -m pip install --upgrade pip
+if errorlevel 1 (
+    echo [ERREUR] Impossible de mettre pip a jour
+    call :maybe_pause
+    exit /b 1
+)
+
+"%PYTHON_EXE%" -m pip install -r requirements-dev.txt
+if errorlevel 1 (
+    echo [ERREUR] Impossible d installer les dependances.
+    call :maybe_pause
     exit /b 1
 )
 
@@ -32,16 +64,24 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo [INFO] Verification des assets avant PyInstaller...
+call verify_assets.bat
+if errorlevel 1 (
+    echo [ERREUR] Verification des assets a echoue. Corrige les erreurs precedentes.
+    call :maybe_pause
+    exit /b 1
+)
+
 echo [INFO] Si dist\ArenaDuel est verrouille par l Explorateur, OneDrive ou un ancien EXE,
 echo [INFO] cette build utilise un dossier de sortie propre pour eviter le blocage.
 echo.
 
 "%PYTHON_EXE%" -m PyInstaller ^
-  --noconfirm ^
-  --clean ^
-  --distpath "%DIST_DIR%" ^
-  --workpath "%WORK_DIR%" ^
-  ArenaDuel.spec
+    --noconfirm ^
+    --clean ^
+    --distpath "%DIST_DIR%" ^
+    --workpath "%WORK_DIR%" ^
+    "%~dp0ArenaDuel.spec"
 
 if errorlevel 1 (
     echo.
