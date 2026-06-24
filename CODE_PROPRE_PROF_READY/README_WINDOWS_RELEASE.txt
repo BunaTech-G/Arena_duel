@@ -16,10 +16,9 @@ Prerequis
 
 Comment generer la livraison
 ----------------------------
-
 1. Lance `build_windows_release.bat` ou `build_exe_quick.bat`.
 2. Localement les artefacts sont produits dans `dist_windows\ArenaDuel_Windows`.
-3. Par défaut, les livraisons binaires finales sont publiées sur GitHub Releases (ex: `v1.0.0`).
+3. Les livraisons finales sont publiées sur GitHub Releases (ex: `v1.0.0`).
 	- Téléchargement public : https://github.com/on2-511/Arena_duel/releases/tag/v1.0.0
 
 Ce que fait le script build_windows_release.bat

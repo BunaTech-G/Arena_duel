@@ -17,12 +17,6 @@ optionnelle pour l'historique des joutes.
 - Le script prepare automatiquement l'environnement Python si necessaire.
 - Il verifie puis installe les dependances manquantes avant de demarrer le jeu.
 
-Option rapide : Télécharger la Release
-------------------------------------
-
-- Pour obtenir une version précompilée Windows (portable + installateur), téléchargez la release `v1.0.0` sur GitHub : https://github.com/on2-511/Arena_duel/releases/tag/v1.0.0
-- La version portable contient `Portable\ArenaDuel\ArenaDuel.exe` prêt à lancer.
-
 ### Important
 
 - Sur un nouveau PC, evite `python main.py` directement.
@@ -59,9 +53,8 @@ Option rapide : Télécharger la Release
 
 ## Build EXE
 
-- EXE de sortie (local build) : `dist_release/ArenaDuel/ArenaDuel.exe`.
-- Release distribuée : voir la page GitHub Releases (fichiers ZIP et Setup).
-- Scripts utiles pour build/package : `build_exe_quick.bat`, `build_presentation.bat`, `package_release.bat`.
+- EXE de sortie : `dist_release/ArenaDuel/ArenaDuel.exe`.
+- Le build embarque les assets necessaires au lancement.
 
 ## Stack technique
 
@@ -87,12 +80,3 @@ Option rapide : Télécharger la Release
 - `docs/ARCHITECTURE.md`
 - `docs/ARDUINO_INTEGRATION.md`
 - `SOUTENANCE_LAN.md`
-
-**Notes distribution & signature**
-
-- Les livraisons binaires (ZIP / EXE) sont publiées dans GitHub Releases. Evitez de committer régulièrement des binaires volumineux dans l'arbre principal.
-- Pour signer un installateur Windows, utilisez un certificat PFX et `signtool` :
-
-  - Exemple : `signtool sign /f "C:\path\to\cert.pfx" /p "PFX_PASSWORD" /fd SHA256 /tr "http://timestamp.digicert.com" /td SHA256 "Setup_ArenaDuel.exe"`
-
-Contactez‑moi si vous voulez que j'intègre la signature automatique dans `package_release.bat`.
