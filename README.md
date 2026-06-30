@@ -29,16 +29,6 @@ Usage (Windows)
 - Installateur : exécutez `Setup_ArenaDuel.exe` en tant qu'administrateur pour une installation standard.
 - Aucun Python n'est requis pour utiliser les versions Windows distribuées.
 
-Vérification d'intégrité et signature
-------------------------------------
-
-- Vérifiez les checksums SHA256 :
-
-  - PowerShell (Windows) : `Get-FileHash .\Setup_ArenaDuel.exe -Algorithm SHA256`
-  - Linux/macOS : `sha256sum ArenaDuel_Windows.zip`
-
-- Vérification de signature (si fournie) : `signtool verify /pa /v Setup_ArenaDuel.exe`
-
 Conseils si Windows bloque la portable
 -------------------------------------
 
