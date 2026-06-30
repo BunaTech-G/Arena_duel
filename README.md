@@ -1,4 +1,4 @@
-# Arena Duel — Version 1.0.0
+# Arena Duel Version 1.0.0
 
 Première version stable d'Arena Duel, un jeu desktop centré sur le duel local et le jeu en réseau local.
 
@@ -44,7 +44,7 @@ Développement et build
 Structure du dépôt
 ------------------
 
-- `ui/`, `game/`, `network/`, `db/`, `assets/` — organisation principale.
+- `ui/`, `game/`, `network/`, `db/`, `assets/` - organisation principale.
 
 Contribuer & Support
 --------------------
